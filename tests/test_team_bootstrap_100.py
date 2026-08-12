@@ -930,3 +930,144 @@ def test_start_team_live_publishes_then_clears_prepublish(
     assert pre.is_file()
     clear_supervisor_prepublish_authorities(tmp_path, rid)
     assert not pre.is_file()
+
+
+def test_supervisor_team_json_token_alone_cannot_use_foreign_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PR #156: after team.json, shared token + arbitrary descriptor is refused."""
+    from omg_cli.team.plane import team_dir
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-tok-only"
+    _minimal_team_meta(
+        leader,
+        run_id=run_id,
+        owner_token="owner-token-test",
+    )
+    # Publish a legitimate worker descriptor under the team tree.
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('legit')"],
+    )
+    # Attacker points at a different schema-valid descriptor.
+    evil = write_provider_descriptor(
+        tmp_path / "evil.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('pwn')"],
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
+    clear_resolved_project_root()
+    rc = main(["team", "supervisor", "--descriptor", str(evil)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "failed to initialize" in err
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_team_json_unknown_worker_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Published task list must exclude unknown worker_ids even with token."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-unknown-w"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    # team.json with tasks listing only w1
+    path = team_meta_path(leader, run_id)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": run_id,
+                "team_id": "team",
+                "owner_token": "owner-token-test",
+                "schema_version": 1,
+                "tasks": [{"task_id": "w1", "status": "running"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # Attacker forges w2 descriptor path under team dir.
+    desc = write_provider_descriptor(
+        tdir / "w2.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w2")
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="not a published team task"):
+        admit_pane_supervisor(desc)
+
+
+def test_supervisor_team_json_published_descriptor_admits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching token + CLI path for a published worker admits without prepublish."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_dir, team_meta_path
+    from omg_cli.team.supervisor import admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pub-desc"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    path = team_meta_path(leader, run_id)
+    path.write_text(
+        json.dumps(
+            {
+                "writer": CLI_WRITER,
+                "run_id": run_id,
+                "team_id": "team",
+                "owner_token": "owner-token-test",
+                "schema_version": 1,
+                "tasks": [{"task_id": "w1"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # Mode may not be 0600 if write_text — load_team_meta requires 0600!
+    # Use atomic path via plane helper.
+    from omg_cli.team.plane import _atomic_write_json
+
+    _atomic_write_json(
+        path,
+        {
+            "writer": CLI_WRITER,
+            "run_id": run_id,
+            "team_id": "team",
+            "owner_token": "owner-token-test",
+            "schema_version": 1,
+            "tasks": [{"task_id": "w1"}],
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id, worker_id="w1")
+    clear_resolved_project_root()
+    rid, tid, wid, root = admit_pane_supervisor(desc)
+    assert rid == run_id and wid == "w1" and tid == "team"
+    assert root == leader.resolve()

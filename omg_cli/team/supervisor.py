@@ -105,8 +105,11 @@ def admit_pane_supervisor(
     2. Run / team / worker identity plus a validated canonical leader root
        (``bootstrap_env_identity`` / ``validate_canonical_leader_root``).
     3. Durable CLI authority:
-       - When authoritative ``team.json`` exists: bind ``team_id`` and
-         (when published) ``owner_token``.
+       - When authoritative ``team.json`` exists: bind ``team_id``,
+         (when published) ``owner_token``, **and** the per-worker CLI-published
+         provider descriptor path (and optional surviving prepublish record).
+         A shared owner token alone must never authorize an arbitrary
+         schema-valid descriptor or unknown worker id.
        - When ``team.json`` is absent: require a CLI-prepublished supervisor
          authority record binding root/run/team/worker, owner token, and the
          exact descriptor path + content digest. Metadata absence never
@@ -421,6 +424,84 @@ def _validate_prepublish_authority(
         )
 
 
+def _published_worker_descriptor_path(
+    leader: Path, run_id: str, worker_id: str
+) -> Path:
+    """Canonical CLI-published provider descriptor for a team worker."""
+    from omg_cli.team.plane import team_dir
+
+    rid = require_safe_id(run_id, label="run_id")
+    wid = require_safe_id(worker_id, label="worker_id")
+    return team_dir(leader, rid) / f"{wid}.provider.json"
+
+
+def _validate_published_worker_descriptor(
+    leader: Path,
+    *,
+    run_id: str,
+    worker_id: str,
+    descriptor_path: Path,
+    meta: Mapping[str, Any],
+) -> None:
+    """After team.json publication, bind worker_id + CLI-published descriptor.
+
+    A depth-1 worker that holds the shared owner token must not be able to
+    spawn an arbitrary schema-valid descriptor (or a nonexistent worker id).
+    Authority reduces to the exact path the CLI wrote under the team tree for
+    this worker, optionally constrained by the published task list.
+    """
+    try:
+        expected = _published_worker_descriptor_path(
+            leader, run_id, worker_id
+        ).resolve()
+    except (OSError, ValueError, TypeError) as exc:
+        raise SupervisorError(
+            f"supervisor published descriptor path invalid: {exc}",
+            exit_code=2,
+        ) from exc
+    try:
+        actual = Path(descriptor_path).resolve()
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor descriptor path not resolvable",
+            exit_code=2,
+        ) from exc
+    if actual != expected:
+        raise SupervisorError(
+            "supervisor descriptor_path is not the CLI-published worker "
+            "descriptor (forged or foreign provider argv)",
+            exit_code=2,
+        )
+    try:
+        if not expected.is_file() or expected.is_symlink():
+            raise SupervisorError(
+                "CLI-published worker provider descriptor missing "
+                "(stale or forged pane authority)",
+                exit_code=2,
+            )
+    except OSError as exc:
+        raise SupervisorError(
+            "CLI-published worker provider descriptor not usable",
+            exit_code=2,
+        ) from exc
+    # When team meta lists tasks, worker_id must be one of them.
+    tasks = meta.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        known: set[str] = set()
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            tid = str(item.get("task_id") or item.get("id") or "").strip()
+            if tid:
+                known.add(tid)
+        if known and worker_id not in known:
+            raise SupervisorError(
+                "supervisor worker_id is not a published team task "
+                "(stale or forged pane authority)",
+                exit_code=2,
+            )
+
+
 def _validate_supervisor_team_binding(
     leader: Path,
     *,
@@ -503,6 +584,32 @@ def _validate_supervisor_team_binding(
             "(stale or forged pane authority)",
             exit_code=2,
         )
+    # Token alone is insufficient: re-bind worker + descriptor. Prefer a
+    # surviving prepublish record (stronger digest bind); else path-bound
+    # CLI-published ``{worker_id}.provider.json`` under the team tree.
+    try:
+        prepub = supervisor_prepublish_path(leader, run_id, worker_id)
+        prepub_present = prepub.is_file() and not prepub.is_symlink()
+    except (OSError, ValueError, TypeError):
+        prepub_present = False
+    if prepub_present:
+        _validate_prepublish_authority(
+            leader,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker_id,
+            descriptor_path=descriptor_path,
+            env=env,
+            owner_token_env=owner_token_env,
+        )
+        return
+    _validate_published_worker_descriptor(
+        leader,
+        run_id=run_id,
+        worker_id=worker_id,
+        descriptor_path=descriptor_path,
+        meta=data,
+    )
 
 
 def write_provider_descriptor(
