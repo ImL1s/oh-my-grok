@@ -4,14 +4,25 @@ Absence of Medley must not disable ordinary OMG operation. This file is
 stock-host smoke (setup / package projection, current ``omg doctor``,
 ordinary agent/profile discovery, ordinary workflow parser/inventory). It
 is not a routing implementation and does not exercise #131 / #134 / #138.
+
+Absence is an explicit import blocker, never inferred from directory names
+on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` on a
+neutral path stays discoverable until that blocker is installed.
 """
 from __future__ import annotations
 
+import importlib
+import importlib.abc
 import importlib.util
 import json
 import os
 import sys
+from collections.abc import Sequence
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
+
+import pytest
 
 from omg_cli import doctor
 from omg_cli.setup_cmd import compute_package_identity, run_setup
@@ -24,6 +35,7 @@ HOST_FIXTURE = ROOT / "tests" / "fixtures" / "host" / "0.2.121.json"
 WORKFLOW_FIXTURE = (
     ROOT / "tests" / "fixtures" / "workflow" / "production-safety-review-v1.json"
 )
+_BLOCKER_MSG = "stock-host import blocker"
 
 _REQUIRE_MEDLEY_CLAIMS = (
     "requires medley",
@@ -37,6 +49,20 @@ _REQUIRE_MEDLEY_CLAIMS = (
 )
 
 
+class _StockHostMedleyImportBlocker(importlib.abc.MetaPathFinder):
+    """Raise for ``medley`` / ``medley.*`` so an installed optional copy is hidden."""
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
+        if fullname == "medley" or fullname.startswith("medley."):
+            raise ModuleNotFoundError(f"{_BLOCKER_MSG}: {fullname}", name=fullname)
+        return None
+
+
 def _this_file_does_not_import_medley() -> None:
     src = Path(__file__).read_text(encoding="utf-8")
     for line in src.splitlines():
@@ -46,8 +72,13 @@ def _this_file_does_not_import_medley() -> None:
             assert not stripped.startswith("from medley")
 
 
+def _evict_medley_modules(monkeypatch) -> None:
+    for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
+        monkeypatch.delitem(sys.modules, key)
+
+
 def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
-    """Fake/temp HOME + GROK_HOME; strip Medley env/path; install a local grok."""
+    """Fake/temp HOME + GROK_HOME; scrub MEDLEY* env; evict medley*; local grok."""
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"
     bin_dir = tmp_path / "bin"
@@ -61,23 +92,7 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     for key in [k for k in os.environ if k.upper().startswith("MEDLEY")]:
         monkeypatch.delenv(key, raising=False)
 
-    kept = [
-        part
-        for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-        if part and "medley" not in part.lower()
-    ]
-    if kept:
-        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(kept))
-    else:
-        monkeypatch.delenv("PYTHONPATH", raising=False)
-
-    monkeypatch.setattr(
-        sys,
-        "path",
-        [p for p in sys.path if "medley" not in str(p).lower()],
-    )
-    for key in [k for k in sys.modules if k == "medley" or k.startswith("medley.")]:
-        monkeypatch.delitem(sys.modules, key)
+    _evict_medley_modules(monkeypatch)
 
     monkeypatch.setenv(
         "PATH",
@@ -85,6 +100,63 @@ def _isolate_stock_host(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     )
     _install_fake_grok(bin_dir)
     return home, grok_home
+
+
+def _neutral_site_packages(tmp_path: Path, tmp_path_factory) -> Path:
+    """Install parent whose pathname does not contain ``medley``.
+
+    Pytest names ``tmp_path`` after the test function, so the required
+    smoke/discoverability names embed ``medley``. Use a factory temp
+    whose basename is ``vendor`` — still under pytest cleanup.
+    """
+    site = tmp_path / "opt" / "lib" / "site-packages"
+    if "medley" not in str(site).lower():
+        return site
+    site = tmp_path_factory.mktemp("vendor") / "lib" / "site-packages"
+    assert "medley" not in str(site).lower(), site
+    return site
+
+
+def _inject_fake_medley_package(monkeypatch, tmp_path: Path, tmp_path_factory) -> Path:
+    site = _neutral_site_packages(tmp_path, tmp_path_factory)
+    pkg = site / "medley"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        '"""Test-only installable medley stand-in."""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", [str(site), *sys.path])
+    prior = os.environ.get("PYTHONPATH", "")
+    prepended = str(site) if not prior else str(site) + os.pathsep + prior
+    monkeypatch.setenv("PYTHONPATH", prepended)
+    importlib.invalidate_caches()
+    return site
+
+
+def _install_import_blocker(monkeypatch) -> _StockHostMedleyImportBlocker:
+    blocker = _StockHostMedleyImportBlocker()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+    return blocker
+
+
+def _assert_medley_discoverable(site: Path) -> None:
+    assert "medley" not in str(site).lower(), site
+    spec = importlib.util.find_spec("medley")
+    assert spec is not None
+    assert spec.origin is not None
+    origin = Path(spec.origin).resolve()
+    assert site.resolve() in origin.parents
+
+
+def _assert_blocker_raises() -> None:
+    with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
+        importlib.util.find_spec("medley")
+    with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
+        importlib.import_module("medley")
+    with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
+        importlib.util.find_spec("medley.native")
+    with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
+        importlib.import_module("medley.native")
 
 
 def _install_fake_grok(bin_dir: Path) -> Path:
@@ -107,8 +179,8 @@ def _install_fake_grok(bin_dir: Path) -> Path:
 
 
 def _assert_medley_absent(home: Path) -> None:
+    """Env/config/module isolation after blocker — not sys.path directory names."""
     _this_file_does_not_import_medley()
-    assert importlib.util.find_spec("medley") is None
     leaked = [k for k in sys.modules if k == "medley" or k.startswith("medley.")]
     assert not leaked, f"medley leaked into sys.modules: {leaked}"
     assert not (home / ".medley").exists()
@@ -136,10 +208,23 @@ def _load_generator():
     return module
 
 
+def test_injected_medley_on_neutral_path_is_discoverable_without_blocker(
+    monkeypatch, tmp_path, tmp_path_factory
+) -> None:
+    _isolate_stock_host(monkeypatch, tmp_path)
+    site = _inject_fake_medley_package(monkeypatch, tmp_path, tmp_path_factory)
+    _assert_medley_discoverable(site)
+
+
 def test_ordinary_omg_surfaces_work_with_medley_absent(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, tmp_path_factory, capsys
 ) -> None:
     home, _grok_home = _isolate_stock_host(monkeypatch, tmp_path)
+    site = _inject_fake_medley_package(monkeypatch, tmp_path, tmp_path_factory)
+    _assert_medley_discoverable(site)
+    _evict_medley_modules(monkeypatch)
+    _install_import_blocker(monkeypatch)
+    _assert_blocker_raises()
     _assert_medley_absent(home)
 
     # 1. Package projection / setup
@@ -202,3 +287,6 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(
     assert compiled.get("name") or compiled.get("contract") or compiled.get("definition")
 
     _assert_medley_absent(home)
+    _assert_blocker_raises()
+    assert "medley" not in str(site).lower()
+    assert str(site) in sys.path

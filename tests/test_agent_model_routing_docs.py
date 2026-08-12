@@ -135,6 +135,7 @@ ARCH_REQUIRED_SNIPPETS: tuple[str, ...] = (
     "omg doctor",
     "route kind",
     "test_stock_host_medley_absent",
+    "explicit import blocker",
     "ROUTE_SCHEMA",
     "dual-carried",
     "never infer",
