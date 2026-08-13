@@ -437,6 +437,27 @@ def test_no_filesystem_mutation_or_subprocess(
     monkeypatch.setattr(os, "mkdir", orig_mkdir)
 
 
+def test_no_network_sockets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    home = _home(tmp_path)
+    central = tmp_path / "central"
+    central.mkdir()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("network forbidden in state-root resolver")
+
+    monkeypatch.setattr(socket, "socket", boom)
+    monkeypatch.setattr(socket, "create_connection", boom)
+
+    resolve_state_root(cwd=repo, env={}, home=home)
+    resolve_state_root(cwd=repo, env={ENV_STATE_DIR: str(central)}, home=home)
+
+
 def test_opaque_keys_and_deterministic_public_bytes(tmp_path: Path) -> None:
     repo = tmp_path / f"repo-{SECRET}"
     _init_git(repo)
