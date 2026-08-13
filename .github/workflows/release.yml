@@ -167,7 +167,7 @@ jobs:
         with:
           name: release-bundle-verified
           path: dist/release-bundle
-      - name: Refuse rebuild — only upload existing bytes
+      - name: Refuse rebuild — identity-safe upload (no blind clobber)
         env:
           EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
           ARCHIVE_NAME: ${{ needs.package.outputs.archive_name }}
@@ -179,14 +179,17 @@ jobs:
           test -f "$ARCHIVE" && test -f "$SUMS"
           ACTUAL=$(sha256sum "$ARCHIVE" | awk '{print $1}')
           test "$ACTUAL" = "$EXPECT_SHA"
-          # Idempotent: if assets already on release with same hash, success.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG exists"
           else
             gh release create "$TAG" --title "$TAG" --notes "Automated release $TAG (exact packaged bytes)."
           fi
-          # Upload archive then SHA256SUMS (public_upload_order).
-          gh release upload "$TAG" "$ARCHIVE" "$SUMS" --clobber
+          # Upload archive then SHA256SUMS without --clobber. Existing assets
+          # must match digest+length or the step fails closed (#169 PR1).
+          python scripts/release_upload_assets.py \
+            --tag "$TAG" \
+            --asset "$ARCHIVE" \
+            --asset "$SUMS"
           # Public hash readback (download API asset bytes).
           python - <<'PY'
           import hashlib, os, subprocess, tempfile
