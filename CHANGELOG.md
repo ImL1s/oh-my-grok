@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Fixed
+- **#164 supervisor signal-forwarding publication race:** Team supervisors now
+  install forwarding to the provider wrapper process group immediately after
+  spawn, refine the target after provider-child resolution, and only then
+  publish `provider_spawned`. A termination signal delivered as soon as the
+  receipt becomes observable can no longer bypass forwarding and orphan the
+  provider process group.
 - **#159 ralplan staged-proposal mtime freshness flake:**
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock

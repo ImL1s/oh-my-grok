@@ -865,6 +865,10 @@ def run_supervisor(
             argv, cwd=cwd, needs_pty=needs_pty, stdin_path=stdin_path
         )
         wrapper_pid = int(proc.pid)
+        # Protect the new session immediately. Child resolution may inspect the
+        # process tree for several polls; a terminating signal during that
+        # interval must still reach the wrapper's process group (#164).
+        _forward_signals(_pgid(wrapper_pid), wrapper_pid)
         resolved_pid, resolve_err = resolve_provider_child_pid(
             wrapper_pid,
             expected_basenames=identity_names,
@@ -949,6 +953,12 @@ def run_supervisor(
                 code="IDENTITY",
             )
 
+        # Refine the forwarding target before publishing provider_spawned.
+        # Receipt readers may signal the supervisor as soon as this write is
+        # observable, so publication must be the last step in this sequence.
+        _forward_signals(
+            provider_pgid, provider_pid, wrapper_pid=wrapper_pid
+        )
         write_startup_phase(
             root,
             run_id=run_id,
@@ -961,9 +971,6 @@ def run_supervisor(
             provider_pgid=provider_pgid,
             provider_pid_start=provider_start,
             evidence_code=EvidenceCode.PROVIDER_SPAWNED,
-        )
-        _forward_signals(
-            provider_pgid, provider_pid, wrapper_pid=wrapper_pid
         )
 
         deadline = time.monotonic() + max(0.05, timeout_s)
