@@ -194,7 +194,9 @@ def test_host_owned_cannot_claim_omg_implementation_in_release_path(
         "issues": ["#105"],
         "maturity_floor": "catalogued",
     }
-    _write_host_baseline_snapshot(tmp_path, inventory, snapshot_override=snapshot)
+    _write_host_baseline_snapshot(
+        tmp_path, inventory, snapshot_override=snapshot, write_binding_review=False
+    )
     with pytest.raises(ContractValidationError, match="omg_paths"):
         assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
 

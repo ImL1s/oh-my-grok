@@ -527,23 +527,30 @@ def host_snapshot_content_hash(snapshot: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def generated_docs_content_hash_from_bytes(docs: Mapping[str, bytes]) -> str:
+    """SHA-256 over concatenated generated host doc bytes (sorted paths)."""
+    hasher = hashlib.sha256()
+    for relative in sorted(docs):
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(docs[relative])
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
 def generated_docs_content_hash(repo_root: Path | str, relative_docs: list[str]) -> str:
     """SHA-256 over concatenated generated host doc bytes (sorted paths)."""
     root = Path(repo_root)
-    hasher = hashlib.sha256()
-    for relative in sorted(relative_docs):
+    blobs: dict[str, bytes] = {}
+    for relative in relative_docs:
         path = root / relative
         try:
-            data = path.read_bytes()
+            blobs[relative] = path.read_bytes()
         except OSError as exc:
             raise ContractValidationError(
                 f"missing generated host baseline doc {relative}: {exc}"
             ) from exc
-        hasher.update(relative.encode("utf-8"))
-        hasher.update(b"\0")
-        hasher.update(data)
-        hasher.update(b"\0")
-    return hasher.hexdigest()
+    return generated_docs_content_hash_from_bytes(blobs)
 
 
 def build_host_baseline_refresh_plan(

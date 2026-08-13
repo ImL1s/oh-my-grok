@@ -16,6 +16,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   publish `provider_spawned`. A termination signal delivered as soon as the
   receipt becomes observable can no longer bypass forwarding and orphan the
   provider process group.
+- **Host-review historical to_ref HIGH:** pin-transition no longer
+  swallows `assert_host_generated_docs_consistent`, globs arbitrary
+  `GROK_BUILD-from-to-*.json` receipts, or authorizes a
+  candidate-provided `generated_docs_hash`. Historical edges recompute
+  the exact transition plan and canonical generated-doc digest from
+  committed blobs at `to_ref` (fail closed if unrecomputable), resolve
+  only the content-binding filename, and advertise that filename when
+  missing. Claim-gate git used for committed-blob identity now passes
+  `--no-replace-objects` and a sanitized env that drops `GIT_DIR` and
+  related object overrides. Refs #158 / #105.
 - **Host-review receipt HIGH:** `assert_host_review_binds_current_content`
   no longer accepts a forged untracked or committed JSON file just
   because nested `host_baseline` hashes match. Current-content and

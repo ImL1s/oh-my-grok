@@ -379,30 +379,27 @@ def _minimal_host_capability(pin: str) -> dict:
 _HOST_REVIEW_SENTINEL_FROM = "0000000000000000000000000000000000000001"
 
 
-def _write_binding_host_review(tmp_path: Path) -> Path | None:
-    """Mint a content-bound GROK_BUILD receipt for the fixture snapshot."""
-    try:
-        snapshot = load_host_baseline_snapshot(tmp_path)
-    except (OSError, ContractValidationError):
-        return None
+def _write_binding_host_review(tmp_path: Path) -> Path:
+    """Mint a content-bound GROK_BUILD receipt for the fixture snapshot.
+
+    Fail closed on setup errors — never swallow and return None (false-green).
+    """
+    snapshot = load_host_baseline_snapshot(tmp_path)
     pin = snapshot["public_commit"]
     previous = _HOST_REVIEW_SENTINEL_FROM
     if previous == pin:
         previous = "0000000000000000000000000000000000000002"
-    try:
-        docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
-        plan = build_host_baseline_refresh_plan(
-            from_revision=previous,
-            to_revision=pin,
-            host_snapshot=snapshot,
-            previous_snapshot=None,
-            generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
-            snapshot_hash=host_snapshot_content_hash(snapshot),
-            generated_docs_hash=docs_hash,
-        )
-        return write_committed_host_baseline_review(tmp_path, plan)
-    except (OSError, ContractValidationError):
-        return None
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision=previous,
+        to_revision=pin,
+        host_snapshot=snapshot,
+        previous_snapshot=None,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    return write_committed_host_baseline_review(tmp_path, plan)
 
 
 def _write_host_baseline_snapshot(

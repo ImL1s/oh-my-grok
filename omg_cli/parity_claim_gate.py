@@ -42,6 +42,7 @@ from omg_cli.parity_refresh import (
     committed_review_filename,
     committed_review_path,
     generated_docs_content_hash,
+    generated_docs_content_hash_from_bytes,
     host_baseline_receipt_digest,
     host_snapshot_content_hash,
     validate_upstream_catalog,
@@ -359,23 +360,17 @@ def assert_upstream_drift_resolved(
 def _previous_release_tag(repo_root: Path) -> str | None:
     """Return the newest v* tag reachable from HEAD^ (durable release base)."""
     try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "describe",
-                "--tags",
-                "--abbrev=0",
-                "--match",
-                "v*",
-                "HEAD^",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
+        proc = _run_git(
+            repo_root,
+            "describe",
+            "--tags",
+            "--abbrev=0",
+            "--match",
+            "v*",
+            "HEAD^",
+            label="describe --tags --match v* HEAD^",
         )
-    except OSError:
+    except ContractValidationError:
         return None
     tag = proc.stdout.strip()
     if proc.returncode != 0 or not tag:
@@ -385,6 +380,33 @@ def _previous_release_tag(repo_root: Path) -> str | None:
 
 _INVENTORY_GIT_PATH = "docs/parity/omg-parity.json"
 _REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
+# Claim-gate git identity: never inherit repository/object overrides from the
+# process environment. Foreign GIT_DIR / replace-refs must not authorize a
+# victim-tree receipt.
+_CLAIM_GATE_GIT_SAFE_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_COLLATE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+)
+
+
+def _claim_gate_git_env() -> dict[str, str]:
+    """Explicit env for committed-blob identity. Drops GIT_* repo overrides."""
+    env: dict[str, str] = {}
+    for key in _CLAIM_GATE_GIT_SAFE_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
 
 
 def _run_git(
@@ -392,10 +414,25 @@ def _run_git(
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            ["git", "-C", str(repo_root), *args],
+            ["git", "--no-replace-objects", "-C", str(repo_root), *args],
             check=False,
             capture_output=True,
             text=True,
+            env=_claim_gate_git_env(),
+        )
+    except OSError as exc:
+        raise ContractValidationError(f"git {label} failed: {exc}") from exc
+
+
+def _run_git_bytes(
+    repo_root: Path, *args: str, label: str
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(repo_root), *args],
+            check=False,
+            capture_output=True,
+            env=_claim_gate_git_env(),
         )
     except OSError as exc:
         raise ContractValidationError(f"git {label} failed: {exc}") from exc
@@ -557,12 +594,8 @@ def assert_host_baseline_matches_inventory(
         )
 
 
-def assert_host_generated_docs_consistent(
-    *,
-    repo_root: Path,
-    host_snapshot: Mapping[str, Any],
-) -> str:
-    """Ensure generated host docs exist, are non-symlink, and hash is computable."""
+def _canonical_generated_doc_relatives(host_snapshot: Mapping[str, Any]) -> list[str]:
+    """Fail closed unless generated.docs is exactly the canonical host-doc list."""
     generated = host_snapshot.get("generated")
     if not isinstance(generated, dict):
         raise ContractValidationError("host snapshot missing generated docs list")
@@ -577,11 +610,84 @@ def assert_host_generated_docs_consistent(
             + ",".join(expected)
             + f" (got {rel_docs})"
         )
+    return rel_docs
+
+
+def _git_regular_blob_bytes(
+    repo_root: Path, git_ref: str, relative: str, *, label: str
+) -> bytes:
+    """Read a regular committed blob at ref:path. Symlinks/gitlinks fail closed."""
+    object_spec = f"{git_ref}:{relative}"
+    ls_tree = _run_git(
+        repo_root,
+        "ls-tree",
+        "--full-tree",
+        git_ref,
+        "--",
+        relative,
+        label=f"ls-tree {object_spec}",
+    )
+    if ls_tree.returncode != 0 or not ls_tree.stdout.strip():
+        raise ContractValidationError(f"{label} missing at {object_spec}")
+    meta = ls_tree.stdout.strip().split("\t", 1)[0].split()
+    if len(meta) < 3:
+        raise ContractValidationError(
+            f"{label} ls-tree unreadable at {object_spec}"
+        )
+    mode, obj_type = meta[0], meta[1]
+    if obj_type != "blob" or mode not in _REGULAR_BLOB_MODES:
+        raise ContractValidationError(
+            f"{label} at {object_spec} must be a regular blob "
+            f"(mode={mode}, type={obj_type})"
+        )
+    proc = _run_git_bytes(
+        repo_root, "show", object_spec, label=f"show {object_spec}"
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip()
+        raise ContractValidationError(
+            f"git show failed for {object_spec}"
+            + (f": {detail}" if detail else "")
+        )
+    return proc.stdout
+
+
+def assert_host_generated_docs_consistent(
+    *,
+    repo_root: Path,
+    host_snapshot: Mapping[str, Any],
+) -> str:
+    """Ensure generated host docs exist, are non-symlink, and hash is computable."""
+    rel_docs = _canonical_generated_doc_relatives(host_snapshot)
     for relative in rel_docs:
         _assert_regular_nonsymlink_file(
             repo_root, relative, label="generated host baseline doc"
         )
     return generated_docs_content_hash(repo_root, rel_docs)
+
+
+def assert_host_generated_docs_consistent_at_ref(
+    *,
+    repo_root: Path,
+    git_ref: str,
+    host_snapshot: Mapping[str, Any],
+) -> str:
+    """Recompute the canonical generated-doc digest from committed blobs at ref.
+
+    Never takes a hash from a candidate receipt. Non-canonical docs lists,
+    missing blobs, or symlink/gitlink entries fail closed.
+    """
+    require_nonempty_string(git_ref, label="host generated docs git_ref")
+    rel_docs = _canonical_generated_doc_relatives(host_snapshot)
+    blobs: dict[str, bytes] = {}
+    for relative in rel_docs:
+        blobs[relative] = _git_regular_blob_bytes(
+            repo_root,
+            git_ref,
+            relative,
+            label="generated host baseline doc",
+        )
+    return generated_docs_content_hash_from_bytes(blobs)
 
 
 def _git_show_host_snapshot_if_present(
@@ -879,19 +985,18 @@ def _require_host_pin_transition_review(
             f"stale host baseline snapshot at pin transition: "
             f"public_commit {snapshot['public_commit']!r} != to_revision {to_revision!r}"
         )
-    docs_hash = ""
-    docs_required = to_ref is None
-    if docs_required:
+    # Always recompute the canonical generated-doc digest from trusted
+    # repository content. Never take expected_docs_hash from a candidate
+    # receipt; never glob arbitrary digest suffixes; never fall back to a
+    # change-digest filename. If the digest cannot be recomputed, fail closed.
+    if to_ref:
+        docs_hash = assert_host_generated_docs_consistent_at_ref(
+            repo_root=root, git_ref=to_ref, host_snapshot=snapshot
+        )
+    else:
         docs_hash = assert_host_generated_docs_consistent(
             repo_root=root, host_snapshot=snapshot
         )
-    else:
-        try:
-            docs_hash = assert_host_generated_docs_consistent(
-                repo_root=root, host_snapshot=snapshot
-            )
-        except ContractValidationError:
-            docs_hash = ""
     plan = build_host_baseline_refresh_plan(
         from_revision=from_revision,
         to_revision=to_revision,
@@ -904,92 +1009,39 @@ def _require_host_pin_transition_review(
         [c for c in plan.get("changes", []) if isinstance(c, dict)]
     )
     snapshot_hash = str(plan["host_baseline"]["snapshot_hash"])
-    bind_docs_hash = docs_hash or str(plan["host_baseline"].get("generated_docs_hash") or "")
-    reviews_dir = root / COMMITTED_REVIEWS_RELATIVE
-    if bind_docs_hash:
-        lookup_digest = host_baseline_receipt_digest(
-            change_digest=digest,
-            snapshot_hash=snapshot_hash,
-            generated_docs_hash=bind_docs_hash,
-        )
-        path = committed_review_path(
-            root,
+    lookup_digest = host_baseline_receipt_digest(
+        change_digest=digest,
+        snapshot_hash=snapshot_hash,
+        generated_docs_hash=docs_hash,
+    )
+    path = committed_review_path(
+        root,
+        source=HOST_BASELINE_PIN_ID,
+        from_revision=from_revision,
+        to_revision=to_revision,
+        change_digest=lookup_digest,
+    )
+    try:
+        path.lstat()
+    except OSError:
+        expected_name = committed_review_filename(
             source=HOST_BASELINE_PIN_ID,
             from_revision=from_revision,
             to_revision=to_revision,
             change_digest=lookup_digest,
         )
-        try:
-            path.lstat()
-        except OSError:
-            try:
-                missing.append(_lexical_repo_relative(root, path))
-            except ContractValidationError:
-                missing.append(str(path))
-            return
-        assert_canonical_immutable_host_review_receipt(
-            repo_root=root,
-            path=path,
-            expected_source=HOST_BASELINE_PIN_ID,
-            expected_from_revision=from_revision,
-            expected_to_revision=to_revision,
-            expected_plan=plan,
-            expected_snapshot_hash=snapshot_hash,
-            expected_docs_hash=bind_docs_hash,
-            match_plan_docs_hash=docs_required or bool(docs_hash),
-        )
-        return
-
-    # Historical edge without recomputable docs: still require a content-bound
-    # committed receipt. Never fall back to change_digest-only filenames.
-    pattern = f"{HOST_BASELINE_PIN_ID}-{from_revision}-{to_revision}-*.json"
-    candidates = (
-        sorted(reviews_dir.glob(pattern)) if reviews_dir.is_dir() else []
-    )
-    if not candidates:
-        expected_name = committed_review_filename(
-            source=HOST_BASELINE_PIN_ID,
-            from_revision=from_revision,
-            to_revision=to_revision,
-            change_digest=digest,
-        )
         missing.append(f"{COMMITTED_REVIEWS_RELATIVE}/{expected_name}")
         return
-    errors: list[str] = []
-    for path in candidates:
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            review = load_json_object(path)
-        except (OSError, ContractValidationError, ValueError) as exc:
-            errors.append(f"{path.name}: {exc}")
-            continue
-        host_meta = review.get("host_baseline")
-        if not isinstance(host_meta, dict):
-            errors.append(f"{path.name}: missing host_baseline")
-            continue
-        cand_docs = host_meta.get("generated_docs_hash")
-        if not isinstance(cand_docs, str) or not cand_docs:
-            errors.append(f"{path.name}: missing generated_docs_hash")
-            continue
-        try:
-            assert_canonical_immutable_host_review_receipt(
-                repo_root=root,
-                path=path,
-                expected_source=HOST_BASELINE_PIN_ID,
-                expected_from_revision=from_revision,
-                expected_to_revision=to_revision,
-                expected_plan=plan,
-                expected_snapshot_hash=snapshot_hash,
-                expected_docs_hash=cand_docs,
-                match_plan_docs_hash=False,
-            )
-            return
-        except ContractValidationError as exc:
-            errors.append(f"{path.name}: {exc}")
-    raise ContractValidationError(
-        "GROK_BUILD pin transition has no valid immutable host review receipt: "
-        + "; ".join(errors)
+    assert_canonical_immutable_host_review_receipt(
+        repo_root=root,
+        path=path,
+        expected_source=HOST_BASELINE_PIN_ID,
+        expected_from_revision=from_revision,
+        expected_to_revision=to_revision,
+        expected_plan=plan,
+        expected_snapshot_hash=snapshot_hash,
+        expected_docs_hash=docs_hash,
+        match_plan_docs_hash=True,
     )
 
 
