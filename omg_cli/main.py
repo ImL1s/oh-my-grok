@@ -286,8 +286,13 @@ def main(argv: list[str] | None = None) -> int:
         catalog_forbidden_supplied,
         catalog_usage_message,
         catalog_verb_from_argv,
+        normalize_ask_argv,
     )
     from omg_cli.cli_envelope import emit_json, failure
+
+    # CPython <3.12: hoist options between ask positionals (see normalize_ask_argv).
+    if "ask" in raw:
+        raw = normalize_ask_argv(raw)
 
     catalog_verb = catalog_verb_from_argv(raw)
     if catalog_verb is not None:

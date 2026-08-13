@@ -128,6 +128,89 @@ def catalog_verb_from_argv(argv: Sequence[str]) -> str | None:
     return None
 
 
+def _option_consumes_value(token: str) -> bool:
+    """Whether *token* is an option that takes a following argv word."""
+
+    if "=" in token:
+        return False
+    name = token.split("=", 1)[0]
+    if _unique_prefix_match(name, _GLOBAL_FLAG_OPTIONS | _ASK_FLAG_OPTIONS):
+        return False
+    if _unique_prefix_match(
+        name, ASK_EXECUTION_OPTION_STRINGS | _GLOBAL_VALUE_OPTIONS
+    ):
+        return True
+    # Unknown long options: consume a following non-option word so
+    # ``ask provider --mod x prompt`` keeps ``prompt`` positional after hoist.
+    return name.startswith("--")
+
+
+def normalize_ask_argv(argv: Sequence[str]) -> list[str]:
+    """Hoist options that sit between ``ask`` positionals.
+
+    CPython <3.12 rejects ``omg ask explain --json fable`` (and the same
+    shape for provider prompts) with ``unrecognized arguments``. Move any
+    options that appear after the provider positional to the end so argparse
+    on 3.11–3.13 still binds prompt words.
+    """
+
+    raw = list(argv)
+    try:
+        ask_i = next(i for i, tok in enumerate(raw) if tok == "ask")
+    except StopIteration:
+        return raw
+
+    head = raw[: ask_i + 1]
+    rest = raw[ask_i + 1 :]
+    if not rest:
+        return raw
+
+    if "--" in rest:
+        dash = rest.index("--")
+        body, tail = rest[:dash], rest[dash:]
+    else:
+        body, tail = rest, []
+
+    def _take_option(tokens: list[str], index: int) -> tuple[list[str], int]:
+        tok = tokens[index]
+        taken = [tok]
+        nxt = index + 1
+        if _option_consumes_value(tok) and nxt < len(tokens):
+            nxt_tok = tokens[nxt]
+            if not (nxt_tok.startswith("-") and nxt_tok not in {"-", "--"}):
+                taken.append(nxt_tok)
+                nxt += 1
+        return taken, nxt
+
+    leading: list[str] = []
+    i = 0
+    while i < len(body):
+        tok = body[i]
+        if tok.startswith("-") and tok not in {"-", "--"}:
+            chunk, i = _take_option(body, i)
+            leading.extend(chunk)
+            continue
+        break
+    body = body[i:]
+    if not body:
+        return head + leading + tail
+
+    provider = body[0]
+    rem = body[1:]
+    positionals: list[str] = []
+    trailing: list[str] = []
+    i = 0
+    while i < len(rem):
+        tok = rem[i]
+        if tok.startswith("-") and tok not in {"-", "--"}:
+            chunk, i = _take_option(rem, i)
+            trailing.extend(chunk)
+            continue
+        positionals.append(tok)
+        i += 1
+    return head + leading + [provider] + positionals + trailing + tail
+
+
 __all__ = [
     "ASK_EXECUTION_OPTION_STRINGS",
     "CATALOG_USAGE_CODE",
@@ -136,4 +219,5 @@ __all__ = [
     "catalog_usage_message",
     "catalog_verb_from_argv",
     "match_execution_option",
+    "normalize_ask_argv",
 ]

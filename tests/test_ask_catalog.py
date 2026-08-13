@@ -16,6 +16,7 @@ from omg_cli.ask.catalog_usage import (
     CATALOG_USAGE_CODE,
     catalog_forbidden_supplied,
     catalog_verb_from_argv,
+    normalize_ask_argv,
 )
 from omg_cli.ask.registry import CANONICAL_HARNESS_IDS
 from omg_cli.ask.views import (
@@ -35,6 +36,31 @@ _SUPPORT_KEYS = (
     "supports_structured_output",
     "supports_resume",
 )
+
+
+def test_normalize_ask_argv_hoists_interleaved_options() -> None:
+    """CPython <3.12 needs options after all ask positionals."""
+
+    assert normalize_ask_argv(["ask", "explain", "--json", "fable"]) == [
+        "ask",
+        "explain",
+        "fable",
+        "--json",
+    ]
+    assert normalize_ask_argv(["ask", "codex", "--timeout", "5", "hello"]) == [
+        "ask",
+        "codex",
+        "hello",
+        "--timeout",
+        "5",
+    ]
+    assert normalize_ask_argv(["ask", "--json", "explain", "fable"]) == [
+        "ask",
+        "--json",
+        "explain",
+        "fable",
+    ]
+    assert normalize_ask_argv(["doctor"]) == ["doctor"]
 
 
 @pytest.fixture
