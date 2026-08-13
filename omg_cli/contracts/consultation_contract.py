@@ -208,12 +208,12 @@ _BEARER_RE = re.compile(r"(?i)(?:^|[\s:=])bearer\s+\S")
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[\s=\"'])sk-[a-z0-9]")
 _JWT_RE = re.compile(r"eyJ")
 _PEM_RE = re.compile(r"-----BEGIN")
-_DRIVE_RE = re.compile(r"(?i)(?:^|[\s:=\"'])[a-z]:[\\/]")
+_DRIVE_RE = re.compile(r"(?i)(?:^|[\s:=\"'/]|://)[a-z]:[\\/]")
 _POSIX_PATH_RE = re.compile(
-    r"(?i)(?:^|[\s:=\"'])(/tmp|/private/tmp|/var/folders|/home|/users|/private)"
+    r"(?i)(?:^|[\s:=\"'/]|://)(/tmp|/private/tmp|/var/folders|/home|/users|/private)"
     r"(?:/|\\|$)"
 )
-_TILDE_PATH_RE = re.compile(r"(?:^|[\s:=\"'])~/")
+_TILDE_PATH_RE = re.compile(r"(?:^|[\s:=\"'/]|://)~/")
 
 
 def _require_bool(value: Any, *, label: str) -> bool:
@@ -530,7 +530,7 @@ def _home_in_text(text: str) -> bool:
         if text == home or text.startswith(home + "/") or text.startswith(home + "\\"):
             return True
         escaped = re.escape(home)
-        if re.search(rf"(?:^|[\s:=\"']){escaped}(?:/|\\|$)", text):
+        if re.search(rf"(?:^|[\s:=\"'/]|://){escaped}(?:/|\\|$)", text):
             return True
     return False
 

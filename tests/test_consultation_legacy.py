@@ -401,12 +401,43 @@ def test_public_strings_reject_secrets_and_private_paths(value: str) -> None:
         parse_council_view_v1(council)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "file:///tmp/secret",
+        "file:///private/tmp/secret",
+        "file:///Users/foo/.config/token",
+        r"file:///C:/Users/omg/secret",
+    ],
+)
+def test_public_strings_reject_file_uri_private_paths(value: str) -> None:
+    assert public_string_is_copy_unsafe(value)
+    with pytest.raises(ContractValidationError, match="secret|private-path"):
+        parse_consultation_receipt_v1(_valid_receipt(selected_model=value))
+    if " " not in value and not value.startswith("-"):
+        with pytest.raises(ContractValidationError, match="secret|private-path"):
+            parse_consultation_request_v1(_valid_request(requested_model=value))
+    receipt = parse_consultation_receipt_v1(_valid_receipt(selected_model="safe-model"))
+    view = consultation_view_from_receipt(receipt, attempt=1)
+    view["reasons"] = [{"code": "leak", "message": value}]
+    with pytest.raises(ContractValidationError, match="secret|private-path"):
+        parse_consultation_view_v1(view)
+    council = parse_council_view_v1(_valid_council_view())
+    council["reasons"] = [{"code": "leak", "message": value}]
+    with pytest.raises(ContractValidationError, match="secret|private-path"):
+        parse_council_view_v1(council)
+
+
 def test_public_strings_reject_current_home(monkeypatch) -> None:
     monkeypatch.setenv("HOME", "/opt/omg-s8-home")
     leaked = "/opt/omg-s8-home/.config/token"
     assert public_string_is_copy_unsafe(leaked)
+    wrapped = "file:///opt/omg-s8-home/.config/token"
+    assert public_string_is_copy_unsafe(wrapped)
     with pytest.raises(ContractValidationError, match="secret|private-path"):
         parse_consultation_receipt_v1(_valid_receipt(selected_model=leaked))
+    with pytest.raises(ContractValidationError, match="secret|private-path"):
+        parse_consultation_receipt_v1(_valid_receipt(selected_model=wrapped))
 
 
 def test_safe_cjk_and_model_ids_remain_copy_safe() -> None:

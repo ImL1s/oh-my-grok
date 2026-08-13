@@ -21,6 +21,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (does not close)**.
 
 ### Fixed
+- **#138 Slice A:** Public consultation strings also reject `file://` private paths (`file:///tmp`, `file:///private/tmp`, `file:///Users`, `file:///C:/`) by treating `://` and extra `/` as path delimiters. Relative `docs/tmp` stays copy-safe. Does not close #138.
 - **#138 Slice A:** Public consultation/council strings reject copy-unsafe secrets and private paths (redaction delta, `/tmp`/`HOME`/UNC, `token=sk-*`, Authorization/Cookie) instead of best-effort redact. Does not close #138.
 - **#138 Slice A:** Legacy ask mapper rejects contradictory taxonomy/flags and nested `advisor_route` facts instead of silently rewriting them; only genuine write_ask_meta v1 providers map. Does not close #138.
 - **#138 Slice A:** Consultation v1 rejects `qualified` on attempt/receipt/view, rejects structured output and advisor synthesis (harnesses unproven), requires `succeeded` ⇒ `exit_class=ok`, binds every duplicated attempt/receipt fact, and derives view output from `response_digest`. Exit-0 empty output is allowed. Does not close #138.
