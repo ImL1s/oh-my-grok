@@ -10,6 +10,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 
+### Fixed
+- **#169 PR1 identity-safe release upload:** publish no longer uses
+  `gh release upload --clobber`. `scripts/release_upload_assets.py` +
+  `omg_cli.release_upload.plan_release_asset_upload` skip only when remote
+  digest matches; length/digest mismatch fails closed. Does **not** close
+  #169 (manifest / finalize-release / latest install still open).
+
 ### Added
 - **#147 PR1 Team worker I/O capability (fail-closed):** CLI-authoritative
   `io_mode` / `provider_tty_owner` / `input_ready` / `operator_input_supported`
