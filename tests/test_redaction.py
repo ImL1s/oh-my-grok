@@ -309,9 +309,9 @@ def test_redact_text_closes_pr94p_residual_p2_classes() -> None:
 
     # Separator flood must stay O(n) (no per-separator 4096 backscan).
     flood = ":" * 12_000
-    started = time.perf_counter()
+    started = time.process_time()
     assert redact_text(flood) == flood
-    assert time.perf_counter() - started < 1.0
+    assert time.process_time() - started < 1.0
 
 
 def test_redact_text_closes_pr94q_residual_p2_classes() -> None:
@@ -346,13 +346,13 @@ def test_redact_text_closes_pr94q_residual_p2_classes() -> None:
     n = 50_000
     q_flood = "?" * n
     c_flood = ":" * n
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     assert redact_text(q_flood) == q_flood
-    q_elapsed = time.perf_counter() - t0
-    t0 = time.perf_counter()
+    q_elapsed = time.process_time() - t0
+    t0 = time.process_time()
     assert redact_text(c_flood) == c_flood
-    c_elapsed = time.perf_counter() - t0
-    # Allow generous slack for CI noise; catastrophic O(n²) is ~10–50× worse.
+    c_elapsed = time.process_time() - t0
+    # Allow generous interpreter variance; catastrophic O(n²) is ~10–50× worse.
     assert q_elapsed < 1.0 and c_elapsed < 1.0
     assert q_elapsed < max(0.05, c_elapsed * 8.0), (q_elapsed, c_elapsed)
 
@@ -470,9 +470,9 @@ def test_redact_text_closes_pr94s_residual_p2_classes() -> None:
     # Bracket / separator floods stay O(n).
     n = 50_000
     for flood in ("[" * n, ("?&" * (n // 2)), (":=" * (n // 2))):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         redact_text(flood)
-        assert time.perf_counter() - t0 < 1.0
+        assert time.process_time() - t0 < 1.0
 
 
 def test_redact_text_closes_pr94t_residual_p2_classes() -> None:
@@ -554,16 +554,16 @@ def test_redact_text_closes_pr94t_residual_p2_classes() -> None:
     timings: list[float] = []
     for n in (1_000, 2_000, 4_000):
         source = "[" * n + "]" * n
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         assert redact_text(source) == source
-        timings.append(time.perf_counter() - t0)
+        timings.append(time.process_time() - t0)
     # Doubling n must not ~4× the time (quadratic). Absolute floor is above
-    # 50ms so brief CI scheduler noise (observed ~70–90ms) does not flake.
+    # 50ms absorbs interpreter and platform variance without admitting O(n²).
     assert timings[2] < max(0.15, timings[0] * 10.0), timings
     n = 50_000
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     redact_text("[" * n + "]" * n)
-    assert time.perf_counter() - t0 < 1.0
+    assert time.process_time() - t0 < 1.0
 
 
 def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
@@ -630,10 +630,10 @@ def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
     timings: list[float] = []
     for n in (1_600, 3_200, 6_400):
         source = '\\"' * n
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         redact_text(source)
-        timings.append(time.perf_counter() - t0)
-    # Escaped-quote flood must stay near-linear; floor absorbs CI noise.
+        timings.append(time.process_time() - t0)
+    # Escaped-quote flood must stay near-linear; floor absorbs CPU variance.
     assert timings[2] < max(0.15, timings[0] * 10.0), timings
     assert timings[2] < 1.0
 
@@ -644,15 +644,15 @@ def test_redact_text_closes_pr94u_residual_p2_classes() -> None:
         nest_timings: list[float] = []
         for n in (200, 400, 800):
             source = "[" * n + "safe" + "]=x" * n
-            t0 = time.perf_counter()
+            t0 = time.process_time()
             redact_text(source)
-            nest_timings.append(time.perf_counter() - t0)
+            nest_timings.append(time.process_time() - t0)
         assert nest_timings[2] < max(0.15, nest_timings[0] * 10.0), nest_timings
         # Depth past the recursion ceiling of the prior sliced implementation.
         source = "[" * 975 + "safe" + "]=x" * 975
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         redact_text(source)
-        assert time.perf_counter() - t0 < 1.0
+        assert time.process_time() - t0 < 1.0
     finally:
         sys.setrecursionlimit(old_limit)
 
@@ -707,15 +707,15 @@ def test_redact_text_closes_pr94v_residual_p2_classes() -> None:
     rewrite_timings: list[float] = []
     for n in (200, 400, 800, 1_600):
         source = "[" * n + "token=secret" + "]=x" * n
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         out = redact_text(source)
-        rewrite_timings.append(time.perf_counter() - t0)
+        rewrite_timings.append(time.process_time() - t0)
         assert "secret" not in out, n
         assert REDACTED in out, n
-    # Doubling n must not ~4× the time (quadratic). Allow CI slack.
+    # Doubling n must not ~4× the CPU time (quadratic).
     # Nest rewrite must stay near-linear. Absolute floor is slightly above
-    # 50ms so brief CI scheduler noise (observed ~60ms) does not flake the
-    # O(n) ratio guard.
+    # 50ms absorbs interpreter and platform variance without admitting the
+    # historical O(n²) regression.
     assert rewrite_timings[3] < max(0.1, rewrite_timings[0] * 10.0), rewrite_timings
     assert rewrite_timings[3] < 1.0, rewrite_timings
     # Small functional shape.
