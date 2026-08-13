@@ -380,7 +380,12 @@ def test_installed_cli_update_runs_from_proven_source_checkout(tmp_path, monkeyp
         check=True,
     )
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(remote)], check=True)
+    # Avoid Git's local hardlink/copy optimization: shared CI filesystems can
+    # transiently lose a loose-object fanout path while the fixture is cloned.
+    subprocess.run(
+        ["git", "clone", "-q", "--no-local", "--bare", str(seed), str(remote)],
+        check=True,
+    )
     source = tmp_path / "source"
     subprocess.run(["git", "clone", "-q", str(remote), str(source)], check=True)
 
