@@ -160,6 +160,19 @@ def test_unknown_advisor_read_only_enum_fails_closed() -> None:
         parse_advisor_harness_spec_v1(_valid_spec(advisor_read_only="maybe"))
 
 
+def test_flipping_unproven_to_qualified_without_evidence_is_rejected() -> None:
+    parsed = parse_advisor_harness_spec_v1(_valid_spec())
+    assert parsed["advisor_read_only"] == "unproven"
+    with pytest.raises(ContractValidationError, match="qualified"):
+        parse_advisor_harness_spec_v1(_valid_spec(advisor_read_only="qualified"))
+    for spec in list_harness_specs():
+        assert parse_advisor_harness_spec_v1(spec)["advisor_read_only"] == "unproven"
+        mutated = dict(spec)
+        mutated["advisor_read_only"] = "qualified"
+        with pytest.raises(ContractValidationError, match="qualified"):
+            parse_advisor_harness_spec_v1(mutated)
+
+
 @pytest.mark.parametrize("key", ["task_id", "worktree", "token", "member"])
 def test_team_forbidden_keys_fail_and_mention_team(key: str) -> None:
     raw = _valid_spec()

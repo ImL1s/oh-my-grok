@@ -379,6 +379,12 @@ def parse_advisor_harness_spec_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         raise ContractValidationError(
             f"unknown advisor_read_only {advisor_read_only!r}"
         )
+    # schema_version=1 has no pinned identity/version/behavior evidence fields.
+    # Keep "qualified" in ADVISOR_READ_ONLY_STATES for a future schema that can.
+    if advisor_read_only == "qualified":
+        raise ContractValidationError(
+            "advisor_read_only=qualified requires pinned identity/version/behavior evidence; schema_version=1 has none"
+        )
 
     limitations = require_string_list(payload["limitations"], label="limitations")
     if not limitations:

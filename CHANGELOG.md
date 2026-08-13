@@ -21,6 +21,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (does not close)**.
 
 ### Fixed
+- **#138 Slice A:** AdvisorHarnessSpecV1 rejects `advisor_read_only=qualified` without pinned identity/version/behavior evidence (schema v1 has none). Does not close #138.
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
   install forwarding to the provider wrapper process group immediately after
   spawn, refine the target after provider-child resolution, and only then
