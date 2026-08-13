@@ -10,6 +10,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#75 PR-A Visual Contract V1:** pure library `omg_cli.contracts.visual_contract` — copy-safe comparison schema, scores, digests; status only `scored`/`blocked`; never emits `approved`/`passes`/`verified` or image bytes. No screenshot capture, agent loop, or `.omg/state` writer. Docs: `docs/visual-contract-v1.md`. Hermetic: `tests/test_visual_contract.py`. Refs #75 (does not close).
 - **#74 PR1 canonical state-root contract:** pure resolver
   `omg_cli.state_root.resolve_state_root` (API/env only:
   `OMG_STATE_DIR`, `OMG_WORKSPACE_MARKER`,
