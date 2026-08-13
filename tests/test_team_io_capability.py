@@ -278,6 +278,7 @@ def test_legacy_descriptor_without_io_keys_still_loads(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    path.chmod(0o600)
     data = load_provider_descriptor(path)
     assert "io_mode" not in data
     cap = normalize_worker_io_capability(data)
