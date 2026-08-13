@@ -55,13 +55,46 @@ def test_repository_session_surface_is_complete_and_fail_closed() -> None:
     assert all(item["capability_mode"] in {"read-only", "read-write"} for item in surface["agents"])
     assert not any(item["code"] == "W_AGENT_CAPABILITY_MISMATCH" for item in surface["issues"])
 
-    routing = surface["advisor_routing"]
+    routing = surface["legacy_ask_execution"]
+    assert routing["kind"] == "legacy_execution"
+    assert routing["canonical_qualification"] is False
+    assert routing["canonical_support"] is False
     assert routing["skills"] == ["omg-ask", "omg-dual-review", "omg-ralplan"]
     assert routing["providers"]["claude"]["aliases"] == ["fable"]
     assert routing["worker_eligible"] is False
     assert routing["auto_apply"] is False
     assert routing["authoritative"] is False
     assert routing["posture"] == "read-only"
+
+    catalog = surface["advisor_catalog"]
+    assert catalog["kind"] == "canonical_catalog"
+    from omg_cli.ask.registry import CANONICAL_HARNESS_IDS, list_harness_specs
+    from omg_cli.ask.views import list_advisor_catalog
+
+    lock_rows = catalog["harnesses"]
+    listed = list_advisor_catalog()
+    specs = list_harness_specs()
+    parity = (
+        "harness_id",
+        "aliases",
+        "advisor_read_only",
+        "supports_advisor",
+        "supports_executor",
+        "supports_background",
+        "supports_structured_output",
+        "supports_resume",
+    )
+    assert [row["harness_id"] for row in lock_rows] == list(CANONICAL_HARNESS_IDS)
+    assert [row["harness_id"] for row in listed] == list(CANONICAL_HARNESS_IDS)
+    for lock_row, listed_row, spec in zip(lock_rows, listed, specs, strict=True):
+        for key in parity:
+            assert lock_row[key] == listed_row[key]
+        assert lock_row["aliases"] == sorted(spec["aliases"])
+        assert lock_row["advisor_read_only"] == spec["advisor_read_only"] == "unproven"
+        for key in parity:
+            if key.startswith("supports_"):
+                assert lock_row[key] is False
+                assert spec[key] is False
 
     assert surface["mcp"]["operations"] == EXACT_NINE
     assert surface["mcp"]["operation_count"] == 9

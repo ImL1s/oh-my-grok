@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "writer": "omg-cli",
+  "kind": "ask",
+  "provider": "fable",
+  "ts": "2026-08-12T19:40:14Z",
+  "cwd": "/tmp/workspace",
+  "exit_code": 0,
+  "duration_s": 2.5,
+  "argv": ["fable", "--print", "review this patch"],
+  "artifact": "/tmp/workspace/.omg/artifacts/ask-fable.md",
+  "run_id": "run-1",
+  "truncated": false,
+  "bytes_captured": 80,
+  "dry_run": false,
+  "advisor_route": {}
+}

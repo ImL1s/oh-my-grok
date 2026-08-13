@@ -1,11 +1,21 @@
 ---
 name: omg-ask
-description: Human-only broker for external advisor CLIs (codex/claude/gemini/agy). Use when user wants a second opinion via omg ask. Never shell external CLIs as workers.
+description: Human-only broker for external advisor CLIs (codex/claude/gemini/agy). Offline list-advisors/explain catalog is unproven. Use when user wants a second opinion via omg ask. Never shell external CLIs as workers.
 ---
 
 # omg-ask — External advisors (user-invoked only)
 
 `omg ask` is a **trusted human broker** for Codex / Claude (fable) / optional Gemini / Antigravity (`agy`). It is **not** a product executor and **not** a default worker path.
+
+## Offline catalog (unproven)
+
+`omg ask list-advisors` and `omg ask explain <id>` print **offline registry** facts only. Every harness is `unproven`. Binaries are `not_probed`. This is not qualification and does not execute a provider.
+
+```bash
+omg ask list-advisors
+omg ask explain fable    # resolves to claude-cli
+omg ask explain agy      # resolves to antigravity-cli
+```
 
 ## HARD RULES (non-negotiable)
 

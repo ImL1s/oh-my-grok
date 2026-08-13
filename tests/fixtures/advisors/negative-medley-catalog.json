@@ -1,0 +1,6 @@
+{
+  "store_kind": "medley_provider_catalog",
+  "provider": "claude",
+  "catalog_id": "x",
+  "access": "route"
+}

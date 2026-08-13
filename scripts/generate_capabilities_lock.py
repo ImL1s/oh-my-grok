@@ -34,7 +34,17 @@ LSP_REGISTRATION: Final = ".lsp.json"
 WORKFLOW_CONTRACT_SOURCE: Final = "omg_cli/contracts/workflow_contract.py"
 WORKFLOW_NATIVE_SOURCE: Final = "omg_cli/workflows/grok_adapter.py"
 ADVISOR_SOURCE: Final = "omg_cli/ask/providers.py"
+ADVISOR_REGISTRY_SOURCE: Final = "omg_cli/ask/registry.py"
+ADVISOR_CONTRACT_SOURCE: Final = "omg_cli/contracts/advisor_contract.py"
 ROLES_SOURCE: Final = "omg_cli/team/roles.py"
+_FAIL_CLOSED_SPEC_FLAGS: Final = {
+    "supports_advisor": False,
+    "supports_executor": False,
+    "supports_background": False,
+    "supports_structured_output": False,
+    "supports_resume": False,
+    "advisor_read_only": "unproven",
+}
 # Validators only: claims are always extracted from the installed source bytes.
 EXPECTED_MCP_OPERATIONS: Final = (
     "run_status.read",
@@ -279,6 +289,40 @@ def _string_sequence(node: ast.expr | None) -> list[str]:
     return sorted(rows) if isinstance(value, (set, frozenset)) else rows
 
 
+def _string_tuple_map(node: ast.expr | None) -> dict[str, list[str]]:
+    value = _literal(node)
+    if not isinstance(value, dict):
+        raise ValueError("expected mapping")
+    result: dict[str, list[str]] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("mapping keys must be non-empty strings")
+        if not isinstance(item, (tuple, list)) or not all(
+            isinstance(alias, str) and alias for alias in item
+        ):
+            raise ValueError("mapping values must be string sequences")
+        result[key] = list(item)
+    return result
+
+
+def _registry_fail_closed_flags(tree: ast.Module) -> None:
+    funcs = _functions(tree)
+    builder = funcs.get("_build_specs")
+    if builder is None:
+        raise ValueError("missing _build_specs")
+    found: dict[str, Any] = {}
+    for node in ast.walk(builder):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                continue
+            if key.value in _FAIL_CLOSED_SPEC_FLAGS:
+                found[key.value] = ast.literal_eval(value)
+    if found != _FAIL_CLOSED_SPEC_FLAGS:
+        raise ValueError("registry spec flags are not fail-closed")
+
+
 def _dict_string_keys(node: ast.expr | None) -> list[str]:
     if not isinstance(node, ast.Dict):
         raise ValueError("expected mapping")
@@ -389,16 +433,11 @@ def _discover_roles(
     return roles, "claimed"
 
 
-def _discover_advisors(
-    root: Path,
-    skill_names: set[str],
-    issues: list[dict[str, str]],
-    bindings: list[dict[str, Any]],
-) -> tuple[dict[str, Any], str]:
-    tree, binding = _python_source(
-        root, ADVISOR_SOURCE, surface="advisor", issues=issues, bindings=bindings
-    )
-    empty = {
+def _legacy_execution_payload(**fields: Any) -> dict[str, Any]:
+    payload = {
+        "kind": "legacy_execution",
+        "canonical_qualification": False,
+        "canonical_support": False,
         "skills": [],
         "providers": {},
         "posture": "unclaimed",
@@ -406,6 +445,24 @@ def _discover_advisors(
         "auto_apply": False,
         "authoritative": False,
     }
+    payload.update(fields)
+    return payload
+
+
+def _discover_advisors(
+    root: Path,
+    skill_names: set[str],
+    issues: list[dict[str, str]],
+    bindings: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    tree, binding = _python_source(
+        root,
+        ADVISOR_SOURCE,
+        surface="legacy_ask_execution",
+        issues=issues,
+        bindings=bindings,
+    )
+    empty = _legacy_execution_payload()
     if tree is None:
         return empty, str(binding["status"])
     try:
@@ -434,14 +491,19 @@ def _discover_advisors(
             _surface_issue(
                 issues,
                 ADVISOR_SOURCE,
-                "W_ADVISOR_SOURCE_MISMATCH",
+                "W_LEGACY_ASK_EXECUTION_SOURCE_MISMATCH",
                 f"missing_skills={','.join(missing)}",
             )
             return empty, "mismatch"
     except (TypeError, ValueError):
         if binding["status"] != "mismatch":
             binding["status"] = "malformed"
-            _surface_issue(issues, ADVISOR_SOURCE, "W_ADVISOR_SOURCE_MALFORMED", "constants")
+            _surface_issue(
+                issues,
+                ADVISOR_SOURCE,
+                "W_LEGACY_ASK_EXECUTION_SOURCE_MALFORMED",
+                "constants",
+            )
         return empty, str(binding["status"])
     policies = {
         provider: {
@@ -451,11 +513,79 @@ def _discover_advisors(
         for provider in sorted(providers)
     }
     binding["status"] = "valid"
-    return {
-        "skills": sorted(advisor_skills),
-        "providers": policies,
+    return _legacy_execution_payload(
+        skills=sorted(advisor_skills),
+        providers=policies,
         **defaults,
-    }, "claimed"
+    ), "claimed"
+
+
+def _discover_advisor_catalog(
+    root: Path,
+    issues: list[dict[str, str]],
+    bindings: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    contract_tree, contract_binding = _python_source(
+        root,
+        ADVISOR_CONTRACT_SOURCE,
+        surface="advisor_catalog",
+        issues=issues,
+        bindings=bindings,
+    )
+    registry_tree, registry_binding = _python_source(
+        root,
+        ADVISOR_REGISTRY_SOURCE,
+        surface="advisor_catalog",
+        issues=issues,
+        bindings=bindings,
+    )
+    empty = {"kind": "canonical_catalog", "harnesses": []}
+    if contract_tree is None or registry_tree is None:
+        statuses = {str(contract_binding["status"]), str(registry_binding["status"])}
+        if "malformed" in statuses:
+            return empty, "malformed"
+        return empty, "missing"
+    try:
+        harness_ids = _string_sequence(
+            _assignment(contract_tree, "CANONICAL_HARNESS_IDS")
+        )
+        aliases = _string_tuple_map(_assignment(contract_tree, "HARNESS_ALIASES"))
+        binary_names = _string_tuple_map(
+            _assignment(registry_tree, "HARNESS_BINARY_NAMES")
+        )
+        _registry_fail_closed_flags(registry_tree)
+        if (
+            not harness_ids
+            or set(aliases) != set(harness_ids)
+            or set(binary_names) != set(harness_ids)
+        ):
+            raise ValueError("registry identity mismatch")
+    except (TypeError, ValueError, SyntaxError):
+        contract_binding["status"] = "malformed"
+        registry_binding["status"] = "malformed"
+        _surface_issue(
+            issues,
+            ADVISOR_REGISTRY_SOURCE,
+            "W_ADVISOR_CATALOG_SOURCE_MALFORMED",
+            "constants",
+        )
+        return empty, "malformed"
+    contract_binding["status"] = "valid"
+    registry_binding["status"] = "valid"
+    harnesses = [
+        {
+            "harness_id": harness_id,
+            "aliases": sorted(aliases[harness_id]),
+            "advisor_read_only": "unproven",
+            "supports_advisor": False,
+            "supports_executor": False,
+            "supports_background": False,
+            "supports_structured_output": False,
+            "supports_resume": False,
+        }
+        for harness_id in harness_ids
+    ]
+    return {"kind": "canonical_catalog", "harnesses": harnesses}, "claimed"
 
 
 def _discover_mcp(
@@ -780,7 +910,10 @@ def discover_session_surface(root: Path) -> dict[str, Any]:
     skills.sort(key=lambda item: (item["name"], item["path"]))
     agents.sort(key=lambda item: (item["name"], item["path"]))
     skill_names = {str(item["name"]) for item in skills}
-    advisor_routing, advisor_status = _discover_advisors(
+    advisor_catalog, catalog_status = _discover_advisor_catalog(
+        root, issues, bindings
+    )
+    legacy_ask_execution, legacy_status = _discover_advisors(
         root, skill_names, issues, bindings
     )
     mcp, mcp_status = _discover_mcp(root, issues, bindings)
@@ -794,13 +927,15 @@ def discover_session_surface(root: Path) -> dict[str, Any]:
         "agents": agents,
         "claim_status": {
             "roles": roles_status,
-            "advisor_routing": advisor_status,
+            "advisor_catalog": catalog_status,
+            "legacy_ask_execution": legacy_status,
             "mcp": mcp_status,
             "lsp": lsp_status,
             "workflow": workflow_status,
         },
         "source_bindings": bindings,
-        "advisor_routing": advisor_routing,
+        "advisor_catalog": advisor_catalog,
+        "legacy_ask_execution": legacy_ask_execution,
         "mcp": mcp,
         "lsp": lsp,
         "workflow": workflow,

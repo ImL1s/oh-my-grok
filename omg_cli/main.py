@@ -280,8 +280,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"omg team: {exc}", file=sys.stderr)
         return int(exc.exit_code)
 
+    from omg_cli.ask.catalog_usage import (
+        CATALOG_USAGE_CODE,
+        argv_wants_json,
+        catalog_forbidden_supplied,
+        catalog_usage_message,
+        catalog_verb_from_argv,
+        normalize_ask_argv,
+    )
+    from omg_cli.cli_envelope import emit_json, failure
+
+    # CPython <3.12: hoist options between ask positionals (see normalize_ask_argv).
+    if "ask" in raw:
+        raw = normalize_ask_argv(raw)
+
+    catalog_verb = catalog_verb_from_argv(raw)
+    if catalog_verb is not None:
+        catalog_forbidden = catalog_forbidden_supplied(raw)
+        if catalog_forbidden:
+            catalog_command = f"ask.{catalog_verb}"
+            catalog_message = catalog_usage_message(catalog_forbidden)
+            if argv_wants_json(raw):
+                emit_json(
+                    failure(catalog_command, CATALOG_USAGE_CODE, catalog_message)
+                )
+            else:
+                print(
+                    f"omg ask {catalog_verb}: {catalog_message}",
+                    file=sys.stderr,
+                )
+            return 2
+
     parser = build_parser()
     args = parser.parse_args(raw)
+    args.raw_argv = list(raw)
     apply_safe_yolo_flags(parser, args)
     apply_output_flags(parser, args)
     # Bridge: legacy dest names used by team/ask handlers

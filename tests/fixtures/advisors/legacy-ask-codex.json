@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "writer": "omg-cli",
+  "kind": "ask",
+  "provider": "codex",
+  "ts": "2026-08-12T19:40:16Z",
+  "cwd": "/tmp/workspace",
+  "exit_code": 0,
+  "duration_s": 4.1,
+  "argv": ["codex", "exec", "explain the failure"],
+  "artifact": "/tmp/workspace/.omg/artifacts/ask-codex.md",
+  "run_id": "run-1",
+  "truncated": false,
+  "bytes_captured": 120,
+  "dry_run": false,
+  "advisor_route": {}
+}

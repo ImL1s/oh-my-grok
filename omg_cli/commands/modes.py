@@ -240,8 +240,44 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ask_catalog_usage(args: argparse.Namespace, command: str, message: str) -> int:
+    from omg_cli.ask.catalog_usage import CATALOG_USAGE_CODE
+    from omg_cli.cli_envelope import emit_json, failure, wants_json
+
+    if wants_json(args):
+        emit_json(failure(command, CATALOG_USAGE_CODE, message))
+    else:
+        print(f"omg {command.replace('.', ' ')}: {message}", file=sys.stderr)
+    return 2
+
+
+def _reject_catalog_execution_options(
+    args: argparse.Namespace, command: str
+) -> int | None:
+    from omg_cli.ask.catalog_usage import (
+        catalog_forbidden_supplied,
+        catalog_usage_message,
+    )
+
+    raw = getattr(args, "raw_argv", None)
+    if raw is None:
+        return _ask_catalog_usage(
+            args, command, "missing invocation argv"
+        )
+    supplied = catalog_forbidden_supplied(raw)
+    if not supplied:
+        return None
+    return _ask_catalog_usage(args, command, catalog_usage_message(supplied))
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """User-invoked trusted broker for external advisor CLIs (never product executor)."""
+    verb = str(getattr(args, "provider", "") or "").strip()
+    if verb == "list-advisors":
+        return _cmd_ask_list_advisors(args)
+    if verb == "explain":
+        return _cmd_ask_explain(args)
+
     prompt_parts = list(args.prompt or [])
     prompt = " ".join(prompt_parts).strip()
     if getattr(args, "prompt_file", None):
@@ -286,6 +322,61 @@ def cmd_ask(args: argparse.Namespace) -> int:
         write_json=bool(getattr(args, "json", True)),
         files=files or None,
     )
+
+
+def _cmd_ask_list_advisors(args: argparse.Namespace) -> int:
+    """Offline catalog list.  No provider exec, PATH probe, or prompt required."""
+    blocked = _reject_catalog_execution_options(args, "ask.list-advisors")
+    if blocked is not None:
+        return blocked
+    if args.prompt:
+        return _ask_catalog_usage(
+            args, "ask.list-advisors", "unexpected arguments"
+        )
+    from omg_cli.ask.views import list_advisor_catalog, render_catalog_list_human
+    from omg_cli.cli_envelope import emit_json, success, wants_json
+
+    facts = list_advisor_catalog()
+    if wants_json(args):
+        emit_json(success("ask.list-advisors", advisors=facts))
+    else:
+        print(render_catalog_list_human(facts))
+    return 0
+
+
+def _cmd_ask_explain(args: argparse.Namespace) -> int:
+    """Offline catalog explain.  No provider exec or PATH probe."""
+    blocked = _reject_catalog_execution_options(args, "ask.explain")
+    if blocked is not None:
+        return blocked
+    parts = list(args.prompt or [])
+    if len(parts) != 1:
+        message = (
+            "unexpected arguments" if len(parts) > 1 else "advisor id required"
+        )
+        return _ask_catalog_usage(args, "ask.explain", message)
+    from omg_cli.ask.views import (
+        AdvisorCatalogError,
+        explain_advisor_catalog,
+        render_catalog_row_human,
+    )
+    from omg_cli.cli_envelope import emit_json, failure, success, wants_json
+
+    try:
+        row = explain_advisor_catalog(parts[0])
+    except AdvisorCatalogError as exc:
+        message = str(exc)
+        code = getattr(exc, "code", "E_ADVISOR_NOT_FOUND")
+        if wants_json(args):
+            emit_json(failure("ask.explain", code, message))
+        else:
+            print(f"omg ask explain: {code}: {message}", file=sys.stderr)
+        return 1
+    if wants_json(args):
+        emit_json(success("ask.explain", advisor=row))
+    else:
+        print(render_catalog_row_human(row))
+    return 0
 
 
 def _cmd_ask_background(args: argparse.Namespace, prompt: str) -> int:
@@ -761,11 +852,17 @@ def register_modes_parsers(
     p_ask = sub.add_parser(
         "ask",
         parents=[common],
-        help="trusted user broker for external advisors (codex/claude/gemini/agy)",
+        help=(
+            "trusted user broker for external advisors (codex/claude/gemini/agy) "
+            "or offline catalog (list-advisors/explain)"
+        ),
     )
     p_ask.add_argument(
         "provider",
-        help="provider: codex | claude (fable) | gemini (optional) | agy (Antigravity adapter)",
+        help=(
+            "existing provider (codex | claude/fable | gemini | agy) "
+            "or catalog verb list-advisors | explain"
+        ),
     )
     p_ask.add_argument("prompt", nargs="*", help="prompt text")
     p_ask.add_argument(

@@ -34,6 +34,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Refs #76 (does not close).
 
 ### Fixed
+- **#138 Slice A / PR #161:** `normalize_ask_argv` hoists options that sit
+  between `ask` positionals so CPython 3.11–3.13 accept
+  `omg ask explain --json fable` (and `ask provider --timeout N prompt`)
+  instead of `unrecognized arguments`. Does not close #138.
+- **#138 Slice A:** Public consultation strings also reject `file://` private paths (`file:///tmp`, `file:///private/tmp`, `file:///Users`, `file:///C:/`) by treating `://` and extra `/` as path delimiters. Relative `docs/tmp` stays copy-safe. Does not close #138.
+- **#138 Slice A:** Public consultation/council strings reject copy-unsafe secrets and private paths (redaction delta, `/tmp`/`HOME`/UNC, `token=sk-*`, Authorization/Cookie) instead of best-effort redact. Does not close #138.
+- **#138 Slice A:** Legacy ask mapper rejects contradictory taxonomy/flags and nested `advisor_route` facts instead of silently rewriting them; only genuine write_ask_meta v1 providers map. Does not close #138.
+- **#138 Slice A:** Consultation v1 rejects `qualified` on attempt/receipt/view, rejects structured output and advisor synthesis (harnesses unproven), requires `succeeded` ⇒ `exit_class=ok`, binds every duplicated attempt/receipt fact, and derives view output from `response_digest`. Exit-0 empty output is allowed. Does not close #138.
+- **#138 Slice A:** Capabilities lock binds the canonical advisor registry (`advisor_catalog` from the six unproven specs) and isolates `providers.py` structured-verdict routing under `legacy_ask_execution` (not qualification/support). Registry byte drift fails `--check`. Does not close #138.
+- **#138 Slice A:** `omg ask list-advisors` / `explain` reject every ask execution option by explicit presence (including explicit defaults) in either ordering, reject `--` extras, emit JSON `E_USAGE` on usage exit 2, and include `E_ADVISOR_NOT_FOUND` on human unknown. Does not close #138.
+- **#138 Slice A:** Council receipt and view share one count/status invariant helper: lane_count is the exact digest count, `0<=success_count<=lane_count`, `1<=minimum_successes<=lane_count`; succeeded iff all lanes, mixed iff threshold met but not all, fail-family only below threshold; queued/running may be 0..lane_count. Does not close #138.
+- **#138 Slice A:** ConsultationView rejects an injected ConsultationAttempt whose harness_id, attempt, or receipt_digest does not match the supplied receipt (consultation_id bound via that receipt). Does not close #138.
+- **#138 Slice A:** AdvisorHarnessSpecV1 rejects `advisor_read_only=qualified` without pinned identity/version/behavior evidence (schema v1 has none). Does not close #138.
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
   install forwarding to the provider wrapper process group immediately after
   spawn, refine the target after provider-child resolution, and only then
@@ -166,6 +179,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `#67` and remaining live/team `#69`, so generated FEATURE-MATRIX agrees
   with GAPS. Inventory stays `bootstrapping`. Open P0 remains `#69` only.
   No live promotion. Refs #77 #69 (does not close).
+
+### Added
+- **#138 Slice A external-advisor contracts + offline catalog:** versioned
+  taxonomy (`runtime_kind=external_cli`, `purpose=advisory`,
+  `lifecycle=foreground|background_job`), canonical harness registry
+  (`claude-cli` / `codex-cli` / `grok-cli` / `cursor-cli` /
+  `antigravity-cli` / `gemini-cli`; `fable`→`claude-cli`,
+  `agy`/`antigravity`→`antigravity-cli`), fail-closed
+  `AdvisorHarnessSpecV1` plus Consultation/Council V1 documents, and a
+  legacy ask-meta mapper (`legacy_field=true`; never Team/Medley/native).
+  Every listed harness stays `advisor_read_only=unproven` with no
+  identity/version/behavior fixture. Offline CLI: `omg ask list-advisors`
+  and `omg ask explain <id>` (human + global `--json`; unknown id exit 1
+  `E_ADVISOR_NOT_FOUND`; usage exit 2). No PATH/binary/network probe, no
+  execution-path change, no consultation store. Docs: `skills/omg-ask`,
+  `docs/skills.md` (+ zh / zh-TW), `docs/cli-contract.md`. Tests:
+  `tests/test_advisor_registry.py`, `tests/test_consultation_legacy.py`,
+  `tests/test_ask_catalog.py`. Does **not** close #138.
 
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped
