@@ -30,6 +30,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   tolerance). Closes #159.
 
 ### Changed
+- **Reconcile #105 current host downstream owners:** session attach/close
+  caps list `#74` only (not closed `#103`); queue/subagent/fan-out and
+  auto-recap-no-interleave stay `#69` (not closed `#68`); auto-theme must
+  not list `#95`/`#104`/`#147` as current owners. Production
+  `check_host_downstream_owners` plus mutation tests.
+  `HISTORICAL_GOVERNANCE_GAP_IDS` now restricts closed-gap `#78` to
+  `gap.parity.governance.remaining` only. Minted a new content-bound
+  `GROK_BUILD` receipt (`731c4c27…` / snapshot `31ff814c…` / docs
+  `c2488910…`); historical `80a22517…` and `81e709b1…` ledgers
+  untouched. Release-gate hermetic fixtures retain F4 issue-state
+  bindings (`#67`/`#68` closed gaps + `v1.json`) so `--release` still
+  fails on upstream drift, not missing evidence. Inventory stays
+  `bootstrapping`. No live/completeness promotion. Refs #105 #74 #69
+  (does not close). Historical #78.
 - **Pinned offline issue-state evidence:** `--strict` consumes
   `docs/parity/issue-state/v1.json` (digest-bound, no network) for
   closure-sensitive `#67`/`#68`/`#78`. Observed GitHub: `#67`/`#68`

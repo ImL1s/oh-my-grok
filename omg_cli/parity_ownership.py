@@ -3,7 +3,8 @@
 Schema-only ``validate_parity_inventory`` still accepts historical ``#78``
 on unit fixtures. Closed governance milestone ``#78`` must not remain a
 present-tense residual owner on capability/gap ``issues`` except the
-allowlisted historical governance rows.
+allowlisted historical governance rows. Host-baseline
+``downstream_issues`` cannot list closed issues as current owners.
 """
 
 from __future__ import annotations
@@ -23,19 +24,40 @@ REQUIRED_CHILD_OWNERS = {
     "omc.tools.lsp_ast": "#73",
     "omo.tools.lsp_ast_codegraph_mcp": "#73",
 }
+CLOSED_HOST_DOWNSTREAM_OWNERS = frozenset({"#67", "#68", "#78", "#95", "#103", "#104"})
+AUTO_THEME_CAPABILITY_ID = "grok.tmux.auto_theme"
+AUTO_THEME_FORBIDDEN_OWNERS = CLOSED_HOST_DOWNSTREAM_OWNERS | frozenset({"#147"})
+REQUIRED_HOST_CURRENT_OWNERS = {
+    "grok.session.acp_resume_no_replay": "#74",
+    "grok.session.acp_close": "#74",
+    "grok.session.child_restore_registration": "#74",
+    "grok.session.restore_code_explicit": "#74",
+    "grok.prompt_queue.lossless_ordered": "#69",
+    "grok.prompt_queue.visible_while_waiting": "#69",
+    "grok.prompt_queue.reorderable": "#69",
+    "grok.subagent.parent_continue_reminder": "#69",
+    "grok.subagent.cancel_no_restart": "#69",
+    "grok.workflow.parallel_child_cap": "#69",
+    "grok.dashboard.auto_recap_no_interleave": "#69",
+}
 
 __all__ = [
     "AGGREGATE_TRACKER",
+    "AUTO_THEME_CAPABILITY_ID",
+    "AUTO_THEME_FORBIDDEN_OWNERS",
     "CLOSED_GOVERNANCE_MILESTONE",
+    "CLOSED_HOST_DOWNSTREAM_OWNERS",
     "HISTORICAL_GOVERNANCE_CAPABILITY_IDS",
     "HISTORICAL_GOVERNANCE_GAP_IDS",
     "REQUIRED_CHILD_OWNERS",
+    "REQUIRED_HOST_CURRENT_OWNERS",
+    "check_host_downstream_owners",
     "check_parity_residual_owners",
 ]
 
 
-def _issue_list(row: dict[str, Any]) -> list[str]:
-    raw = row.get("issues") or []
+def _issue_list(row: dict[str, Any], key: str = "issues") -> list[str]:
+    raw = row.get(key) or []
     if not isinstance(raw, list):
         return []
     return [str(item) for item in raw]
@@ -72,12 +94,17 @@ def check_parity_residual_owners(inventory: dict[str, Any]) -> None:
 
     for gap_id, gap in gaps.items():
         issues = _issue_list(gap)
-        if gap.get("status") != "open":
+        if CLOSED_GOVERNANCE_MILESTONE not in issues:
             continue
-        # Closed HISTORICAL_GOVERNANCE_GAP_IDS may keep #78; open rows may not.
-        if CLOSED_GOVERNANCE_MILESTONE in issues:
+        # Open gaps never keep #78; closed gaps only if historically allowlisted.
+        if gap.get("status") == "open":
             raise ContractValidationError(
                 f"open gap {gap_id} issues contain residual "
+                f"{CLOSED_GOVERNANCE_MILESTONE}"
+            )
+        if gap_id not in HISTORICAL_GOVERNANCE_GAP_IDS:
+            raise ContractValidationError(
+                f"closed gap {gap_id} issues contain residual "
                 f"{CLOSED_GOVERNANCE_MILESTONE}"
             )
 
@@ -107,3 +134,29 @@ def check_parity_residual_owners(inventory: dict[str, Any]) -> None:
                 raise ContractValidationError(
                     f"{gap_id} owners {missing} missing from {cap_id}.issues"
                 )
+
+
+def check_host_downstream_owners(snapshot: dict[str, Any]) -> None:
+    """Fail closed when host downstream_issues list a closed current owner."""
+    capabilities = _rows_by_id(snapshot.get("capabilities"))
+    for cap_id, row in capabilities.items():
+        issues = set(_issue_list(row, "downstream_issues"))
+        closed = sorted(issues & CLOSED_HOST_DOWNSTREAM_OWNERS)
+        if closed:
+            raise ContractValidationError(
+                f"{cap_id} lists {closed[0]} as current downstream owner"
+            )
+        if cap_id == AUTO_THEME_CAPABILITY_ID:
+            forbidden = sorted(issues & AUTO_THEME_FORBIDDEN_OWNERS)
+            if forbidden:
+                raise ContractValidationError(
+                    f"{cap_id} lists {forbidden[0]} as current downstream owner"
+                )
+    for cap_id, owner in REQUIRED_HOST_CURRENT_OWNERS.items():
+        required = capabilities.get(cap_id)
+        if required is None:
+            continue
+        if owner not in _issue_list(required, "downstream_issues"):
+            raise ContractValidationError(
+                f"{cap_id} missing required current downstream owner {owner}"
+            )

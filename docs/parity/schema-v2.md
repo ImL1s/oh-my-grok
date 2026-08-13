@@ -47,7 +47,7 @@ Refresh workflow: `omg parity refresh --source … --pin … --plan --catalog �
 - Pin transitions use the same committed ledger path as other sources:
   `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`). The filename digest for GROK_BUILD is content-bound (`change_digest` + current snapshot/docs hashes) so a new receipt can be added instead of rewriting an immutable ledger.
 
-Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here.
+Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here. Closed issues cannot be current host `downstream_issues` owners; `#78` on closed gaps is allowlisted only via `HISTORICAL_GOVERNANCE_GAP_IDS`.
 
 ## Issue-state evidence (closure-sensitive)
 

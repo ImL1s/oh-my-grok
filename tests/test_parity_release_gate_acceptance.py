@@ -12,6 +12,7 @@ import pytest
 
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_check import check_parity_inventory
+from omg_cli.parity_issue_state import ISSUE_STATE_EVIDENCE_RELATIVE
 from tests.test_parity_claim_gate import (
     OVERCLAIM_README,
     _bootstrapping_inventory,
@@ -53,6 +54,10 @@ def _assert_release_gate_fails(
     if catalog is not None:
         override = {catalog["source"]: catalog}
     _write_required_snapshots(tmp_path, inventory, override=override)
+    evidence_src = ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest = tmp_path / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest.parent.mkdir(parents=True, exist_ok=True)
+    evidence_dest.write_text(evidence_src.read_text(encoding="utf-8"), encoding="utf-8")
 
     with pytest.raises(ContractValidationError, match=error_pattern):
         check_parity_inventory(

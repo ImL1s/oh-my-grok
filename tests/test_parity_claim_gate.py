@@ -46,17 +46,17 @@ def _fresh_iso(*, days_ago: float = 0.0, now: datetime = FIXED_NOW) -> str:
 
 def _minimal_inventory() -> dict:
     full = load_json_object(INVENTORY)
-    omc_ids = {
+    keep_ids = {
         "team.plane_v3",
         "parity.inventory.governance",
         "omc.cli.session_surfaces",
+        # F4 closure-sensitive closed gaps must remain so issue-state can bind.
+        "antigravity.provider.adapter",
+        "jobs.durable_background",
     }
     inv = copy.deepcopy(full)
     inv["capabilities"] = [
-        row
-        for row in inv["capabilities"]
-        if row.get("upstream", {}).get("source") == "OMC"
-        and row["id"] in omc_ids
+        row for row in inv["capabilities"] if row["id"] in keep_ids
     ]
     cap_ids = {row["id"] for row in inv["capabilities"]}
     inv["gaps"] = [

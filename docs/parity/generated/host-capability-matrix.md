@@ -22,17 +22,17 @@ Pin `a5589e958437d79e13db026eedcb1720bffd4063` / release `0.2.121` (catalogue-on
 | `grok.prompt_queue.visible_while_waiting` | queue | `consumed_downstream` | `catalogued` | #69 | Plain queued prompts remain visible/reachable while waiting |
 | `grok.release.public_sync_a5589e9` | reliability | `irrelevant` | `catalogued` | — | Public sync commit packaging for v0.2.121 release line |
 | `grok.reliability.server_5xx_retry` | reliability | `host_owned` | `catalogued` | — | More server/Cloudflare 5xx failures are retried |
-| `grok.session.acp_close` | session | `consumed_downstream` | `catalogued` | #103, #74 | ACP clients can explicitly close sessions via session/close |
-| `grok.session.acp_resume_no_replay` | session | `consumed_downstream` | `catalogued` | #103, #74 | ACP session/resume attaches without transcript replay |
-| `grok.session.child_restore_registration` | session | `consumed_downstream` | `catalogued` | #103, #74 | Restored child sessions are registered so resume after remote-parent restore does not 404 |
+| `grok.session.acp_close` | session | `consumed_downstream` | `catalogued` | #74 | ACP clients can explicitly close sessions via session/close |
+| `grok.session.acp_resume_no_replay` | session | `consumed_downstream` | `catalogued` | #74 | ACP session/resume attaches without transcript replay |
+| `grok.session.child_restore_registration` | session | `consumed_downstream` | `catalogued` | #74 | Restored child sessions are registered so resume after remote-parent restore does not 404 |
 | `grok.session.codebase_restore_no_hang` | session | `consumed_downstream` | `catalogued` | #74 | Codebase restore no longer hangs on large or shallow repositories |
 | `grok.session.plan_mode_after_resume` | session | `consumed_downstream` | `catalogued` | #74 | Plan-mode state and controls remain usable/correct after resume |
-| `grok.session.restore_code_explicit` | session | `consumed_downstream` | `catalogued` | #103, #74 | Remote resume restores conversation only unless code restoration is explicitly requested; session/load may restore code |
+| `grok.session.restore_code_explicit` | session | `consumed_downstream` | `catalogued` | #74 | Remote resume restores conversation only unless code restoration is explicitly requested; session/load may restore code |
 | `grok.session.uuid_cross_directory_search` | session | `consumed_downstream` | `catalogued` | #74 | Resume search finds a session UUID across directories |
 | `grok.slash.menu_enter_behavior` | slash | `host_owned` | `catalogued` | — | Slash-command menu Enter behavior and dashboard-only command guidance |
 | `grok.subagent.cancel_no_restart` | subagent | `consumed_downstream` | `catalogued` | #69 | Esc/stop prevents cancelled background work from restarting the model |
 | `grok.subagent.parent_continue_reminder` | subagent | `consumed_downstream` | `catalogued` | #69 | After a background subagent starts, the parent is reminded to continue its original work |
-| `grok.tmux.auto_theme` | tmux | `host_owned` | `catalogued` | #95, #104 | Automatic theme detection over SSH and inside tmux |
+| `grok.tmux.auto_theme` | tmux | `host_owned` | `catalogued` | — | Automatic theme detection over SSH and inside tmux |
 | `grok.tools.voice_finance_icons` | tools | `host_owned` | `catalogued` | — | Voice/Finance tool-card icons and localized labels |
 | `grok.tui.blocking_card_tab_esc` | terminal | `host_owned` | `catalogued` | — | Consistent Tab/Esc behavior on blocking cards |
 | `grok.tui.cjk_selection_edge` | terminal | `host_owned` | `catalogued` | — | CJK selection-edge correctness |

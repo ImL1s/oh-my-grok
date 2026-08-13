@@ -14,6 +14,8 @@ from omg_cli.contracts.parity_schema import (
     HOST_BASELINE_GENERATED_RELATIVE,
     HOST_BASELINE_PIN_ID,
     HOST_BASELINE_SNAPSHOT_RELATIVE,
+    load_json_object,
+    validate_host_baseline_snapshot,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_claim_gate import (
@@ -21,6 +23,7 @@ from omg_cli.parity_claim_gate import (
     check_parity_release_claims,
     load_host_baseline_snapshot,
 )
+from omg_cli.parity_ownership import check_host_downstream_owners
 from tests.test_parity_claim_gate import (
     FIXED_NOW,
     _bootstrapping_inventory,
@@ -29,6 +32,25 @@ from tests.test_parity_claim_gate import (
     _write_host_baseline_snapshot,
     _write_inventory,
     _write_required_snapshots,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+HOST_SNAPSHOT = ROOT / "docs" / "parity" / "upstream-snapshots" / "grok-build.json"
+
+_SESSION_CAPS = (
+    "grok.session.acp_resume_no_replay",
+    "grok.session.acp_close",
+    "grok.session.child_restore_registration",
+    "grok.session.restore_code_explicit",
+)
+_QUEUE_SUBAGENT_FANOUT_CAPS = (
+    "grok.prompt_queue.lossless_ordered",
+    "grok.prompt_queue.visible_while_waiting",
+    "grok.prompt_queue.reorderable",
+    "grok.subagent.parent_continue_reminder",
+    "grok.subagent.cancel_no_restart",
+    "grok.workflow.parallel_child_cap",
+    "grok.dashboard.auto_recap_no_interleave",
 )
 
 
@@ -290,3 +312,75 @@ def test_host_gate_accepts_content_bound_review(tmp_path: Path) -> None:
     payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
     assert payload["ok"] is True
     assert payload["generated_docs_hash"] == docs_hash
+
+
+def _committed_host_snapshot() -> dict:
+    return validate_host_baseline_snapshot(load_json_object(HOST_SNAPSHOT))
+
+
+def _cap_by_id(snapshot: dict, cap_id: str) -> dict:
+    for row in snapshot["capabilities"]:
+        if row["id"] == cap_id:
+            return row
+    raise AssertionError(cap_id)
+
+
+def test_committed_host_snapshot_current_downstream_owners() -> None:
+    snapshot = _committed_host_snapshot()
+    check_host_downstream_owners(snapshot)
+    for cap_id in _SESSION_CAPS:
+        issues = _cap_by_id(snapshot, cap_id)["downstream_issues"]
+        assert issues == ["#74"]
+        assert "#103" not in issues
+    for cap_id in _QUEUE_SUBAGENT_FANOUT_CAPS:
+        issues = _cap_by_id(snapshot, cap_id)["downstream_issues"]
+        assert "#69" in issues
+        assert "#68" not in issues
+    theme = set(_cap_by_id(snapshot, "grok.tmux.auto_theme")["downstream_issues"])
+    assert not theme & {"#95", "#104", "#147"}
+
+
+def test_host_downstream_owners_reject_closed_session_103() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.session.acp_close")["downstream_issues"] = ["#103"]
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.session\.acp_close.*#103.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+def test_host_downstream_owners_reject_closed_queue_68() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.prompt_queue.lossless_ordered")["downstream_issues"] = [
+        "#68",
+        "#69",
+    ]
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.prompt_queue\.lossless_ordered.*#68.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+@pytest.mark.parametrize("owner", ["#95", "#147"])
+def test_host_downstream_owners_reject_auto_theme_forbidden(owner: str) -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.tmux.auto_theme")["downstream_issues"] = [owner]
+    with pytest.raises(
+        ContractValidationError,
+        match=rf"grok\.tmux\.auto_theme.*{owner}.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+def test_host_downstream_owners_reject_missing_auto_recap_69() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.dashboard.auto_recap_no_interleave")[
+        "downstream_issues"
+    ] = []
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.dashboard\.auto_recap_no_interleave.*#69",
+    ):
+        check_host_downstream_owners(snapshot)

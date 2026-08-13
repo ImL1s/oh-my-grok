@@ -29,6 +29,7 @@ from omg_cli.contracts.state_schemas import (
     ContractValidationError,
     require_nonempty_string,
 )
+from omg_cli.parity_ownership import check_host_downstream_owners
 from omg_cli.parity_refresh import (
     COMMITTED_REVIEWS_RELATIVE,
     build_host_baseline_refresh_plan,
@@ -792,6 +793,7 @@ def assert_host_baseline_gate(
     """Fail-closed host-baseline presence, freshness, and pin-transition review."""
     root = Path(repo_root)
     snapshot = load_host_baseline_snapshot(root)
+    check_host_downstream_owners(snapshot)
     assert_host_baseline_matches_inventory(inventory=inventory, host_snapshot=snapshot)
     docs_hash = assert_host_generated_docs_consistent(
         repo_root=root, host_snapshot=snapshot

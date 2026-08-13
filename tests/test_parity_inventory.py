@@ -22,7 +22,9 @@ from omg_cli.contracts.writer_chain import owner_for_path
 from omg_cli.parity_check import apply_strict_parity_gates
 from omg_cli.parity_ownership import (
     HISTORICAL_GOVERNANCE_CAPABILITY_IDS,
+    HISTORICAL_GOVERNANCE_GAP_IDS,
     REQUIRED_CHILD_OWNERS,
+    check_parity_residual_owners,
 )
 
 
@@ -207,6 +209,29 @@ def test_strict_gate_rejects_residual_78_and_tracker_only_locks() -> None:
     validate_parity_inventory(orphan)
     with pytest.raises(ContractValidationError, match=r"gap\.team\.v3.*#69"):
         apply_strict_parity_gates(orphan)
+
+
+def test_strict_gate_rejects_closed_non_historical_gap_78() -> None:
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    closed_gap = copy.deepcopy(inventory)
+    mutated_closed = "gap.jobs.durable"
+    assert mutated_closed not in HISTORICAL_GOVERNANCE_GAP_IDS
+    for gap in closed_gap["gaps"]:
+        if gap["id"] == mutated_closed:
+            assert gap["status"] == "closed"
+            gap["issues"] = list(gap["issues"]) + ["#78"]
+            break
+    else:
+        raise AssertionError(mutated_closed)
+    validate_parity_inventory(closed_gap)
+    with pytest.raises(
+        ContractValidationError, match=re.escape(mutated_closed) + r".*#78"
+    ):
+        apply_strict_parity_gates(closed_gap)
+    with pytest.raises(
+        ContractValidationError, match=re.escape(mutated_closed) + r".*#78"
+    ):
+        check_parity_residual_owners(closed_gap)
 
 
 def test_v1_migration_fixture_still_validates() -> None:
