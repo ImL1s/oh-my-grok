@@ -27,6 +27,7 @@ from omg_cli.parity_ownership import check_host_downstream_owners
 from tests.test_parity_claim_gate import (
     FIXED_NOW,
     _bootstrapping_inventory,
+    _ensure_fixture_git_commit,
     _honest_docs,
     _scaffold_inventory_paths,
     _write_host_baseline_snapshot,
@@ -58,6 +59,7 @@ def test_host_baseline_gate_passes_matching_snapshot(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     _scaffold_inventory_paths(tmp_path, inventory)
     _write_host_baseline_snapshot(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
     payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
     assert payload["ok"] is True
     assert payload["public_commit"] == FROZEN_PINS[HOST_BASELINE_PIN_ID]
@@ -222,6 +224,7 @@ def test_release_gate_still_passes_with_host_snapshot(tmp_path: Path) -> None:
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
     payload = check_parity_release_claims(
         inventory_path=inv_path,
         repo_root=tmp_path,
@@ -268,7 +271,10 @@ def test_host_gate_rejects_stale_review_hashes_when_receipts_exist(
             other.unlink()
     with pytest.raises(
         ContractValidationError,
-        match="snapshot_hash|generated_docs_hash|bind",
+        match=(
+            "snapshot_hash|generated_docs_hash|bind|not tracked|"
+            "differs from HEAD|content_binding_digest|change_digest"
+        ),
     ):
         assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
 
@@ -309,6 +315,7 @@ def test_host_gate_accepts_content_bound_review(tmp_path: Path) -> None:
         generated_docs_hash=docs_hash,
     )
     write_committed_host_baseline_review(tmp_path, plan)
+    _ensure_fixture_git_commit(tmp_path, "commit content-bound review")
     payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
     assert payload["ok"] is True
     assert payload["generated_docs_hash"] == docs_hash

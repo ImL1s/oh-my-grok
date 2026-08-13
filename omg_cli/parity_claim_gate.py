@@ -27,7 +27,11 @@ from omg_cli.contracts.parity_schema import (
 )
 from omg_cli.contracts.state_schemas import (
     ContractValidationError,
+    require_git_oid,
     require_nonempty_string,
+    require_object,
+    require_sha256,
+    validate_store_header,
 )
 from omg_cli.parity_ownership import check_host_downstream_owners
 from omg_cli.parity_refresh import (
@@ -35,6 +39,7 @@ from omg_cli.parity_refresh import (
     build_host_baseline_refresh_plan,
     build_refresh_plan,
     canonical_changes_digest,
+    committed_review_filename,
     committed_review_path,
     generated_docs_content_hash,
     host_baseline_receipt_digest,
@@ -266,7 +271,9 @@ def _review_binds_drift_context(
 ) -> bool:
     if review_artifact.get("store_kind") != "parity_refresh_review":
         return False
-    if review_artifact.get("schema_version") != 1:
+    version = review_artifact.get("schema_version")
+    # bool is a subclass of int; True == 1 must not authorize.
+    if isinstance(version, bool) or version != 1:
         return False
     if review_artifact.get("source") != source:
         return False
@@ -604,6 +611,240 @@ def _git_show_host_snapshot_strict(repo_root: Path, git_ref: str) -> dict[str, A
     return loaded
 
 
+HOST_REVIEW_STORE_KIND = "parity_refresh_review"
+HOST_REVIEW_SCHEMA_VERSION = 1
+_HOST_REVIEW_FILENAME_OID = re.compile(r"^[0-9a-f]{40}$")
+_HOST_REVIEW_FILENAME_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def parse_committed_review_filename(name: str) -> tuple[str, str, str, str]:
+    """Parse ``<source>-<from>-<to>-<digest>.json`` from the right (digest last)."""
+    if not isinstance(name, str) or not name.endswith(".json") or "/" in name:
+        raise ContractValidationError(f"host review filename is not canonical: {name!r}")
+    stem = name[: -len(".json")]
+    parts = stem.split("-")
+    if len(parts) < 4:
+        raise ContractValidationError(f"host review filename is not canonical: {name}")
+    digest = parts[-1]
+    to_revision = parts[-2]
+    from_revision = parts[-3]
+    source = "-".join(parts[:-3])
+    if not _HOST_REVIEW_FILENAME_DIGEST.fullmatch(digest):
+        raise ContractValidationError(f"host review filename digest is not SHA-256: {name}")
+    if not _HOST_REVIEW_FILENAME_OID.fullmatch(from_revision):
+        raise ContractValidationError(
+            f"host review filename from_revision is not a Git object ID: {name}"
+        )
+    if not _HOST_REVIEW_FILENAME_OID.fullmatch(to_revision):
+        raise ContractValidationError(
+            f"host review filename to_revision is not a Git object ID: {name}"
+        )
+    require_nonempty_string(source, label="host review filename source")
+    return source, from_revision, to_revision, digest
+
+
+def _canonical_host_review_changes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = review.get("changes")
+    if not isinstance(raw, list):
+        raise ContractValidationError("host review changes must be an array")
+    entries: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ContractValidationError(
+                f"host review changes[{index}] must be an object"
+            )
+        entries.append(entry)
+    return entries
+
+
+def assert_canonical_immutable_host_review_receipt(
+    *,
+    repo_root: Path | str,
+    path: Path | str,
+    expected_source: str,
+    expected_from_revision: str,
+    expected_to_revision: str,
+    expected_plan: Mapping[str, Any],
+    expected_snapshot_hash: str,
+    expected_docs_hash: str,
+    expected_snapshot_path: str = HOST_BASELINE_SNAPSHOT_RELATIVE,
+    match_plan_docs_hash: bool = True,
+) -> dict[str, Any]:
+    """Fail-closed immutable GROK_BUILD receipt: schema, context, digests, commit.
+
+    Shared by current-content and pin-transition gates. Untracked files never
+    authorize. There is no nested-hash-only or change_digest-filename fallback.
+    """
+    root = Path(repo_root)
+    target = Path(path)
+    _assert_review_blob_committed(root, target)
+    review = load_json_object(target)
+    validate_store_header(
+        review,
+        store_kind=HOST_REVIEW_STORE_KIND,
+        schema_version=HOST_REVIEW_SCHEMA_VERSION,
+    )
+    source = require_nonempty_string(review.get("source"), label="host review source")
+    if source != expected_source:
+        raise ContractValidationError(
+            f"host review source mismatch: expected {expected_source!r}, got {source!r}"
+        )
+    from_revision = require_git_oid(
+        review.get("from_revision"), label="host review from_revision"
+    )
+    to_revision = require_git_oid(
+        review.get("to_revision"), label="host review to_revision"
+    )
+    if from_revision != expected_from_revision or to_revision != expected_to_revision:
+        raise ContractValidationError(
+            "host review from_revision/to_revision mismatch: "
+            f"expected {expected_from_revision}→{expected_to_revision}, "
+            f"got {from_revision}→{to_revision}"
+        )
+    plan_source = expected_plan.get("source")
+    plan_from = expected_plan.get("from_revision")
+    plan_to = expected_plan.get("to_revision")
+    if (
+        plan_source != expected_source
+        or plan_from != expected_from_revision
+        or plan_to != expected_to_revision
+    ):
+        raise ContractValidationError(
+            "reconstructed host review plan context mismatch"
+        )
+
+    host_meta = require_object(review.get("host_baseline"), label="host review host_baseline")
+    snapshot_path = require_nonempty_string(
+        host_meta.get("snapshot_path"), label="host_baseline.snapshot_path"
+    )
+    if snapshot_path != expected_snapshot_path:
+        raise ContractValidationError(
+            f"host review snapshot_path mismatch: expected {expected_snapshot_path!r}, "
+            f"got {snapshot_path!r}"
+        )
+    reviewed_pin = require_git_oid(
+        host_meta.get("reviewed_pin"), label="host_baseline.reviewed_pin"
+    )
+    previous_pin = require_git_oid(
+        host_meta.get("previous_pin"), label="host_baseline.previous_pin"
+    )
+    if reviewed_pin != expected_to_revision or previous_pin != expected_from_revision:
+        raise ContractValidationError(
+            "host review reviewed_pin/previous_pin mismatch: "
+            f"expected previous={expected_from_revision} reviewed={expected_to_revision}, "
+            f"got previous={previous_pin} reviewed={reviewed_pin}"
+        )
+    snapshot_hash = require_sha256(
+        host_meta.get("snapshot_hash"), label="host_baseline.snapshot_hash"
+    )
+    docs_hash = require_sha256(
+        host_meta.get("generated_docs_hash"), label="host_baseline.generated_docs_hash"
+    )
+    expected_snap = require_sha256(
+        expected_snapshot_hash, label="expected snapshot_hash"
+    )
+    expected_docs = require_sha256(expected_docs_hash, label="expected generated_docs_hash")
+    if snapshot_hash != expected_snap:
+        raise ContractValidationError("host review snapshot_hash mismatch")
+    if docs_hash != expected_docs:
+        raise ContractValidationError("host review generated_docs_hash mismatch")
+
+    plan_host = require_object(
+        expected_plan.get("host_baseline"), label="plan.host_baseline"
+    )
+    plan_path = plan_host.get("snapshot_path")
+    plan_snap = plan_host.get("snapshot_hash")
+    plan_reviewed = plan_host.get("reviewed_pin")
+    plan_previous = plan_host.get("previous_pin")
+    if (
+        plan_path != expected_snapshot_path
+        or plan_snap != expected_snap
+        or plan_reviewed != expected_to_revision
+        or plan_previous != expected_from_revision
+    ):
+        raise ContractValidationError(
+            "reconstructed host review plan host_baseline context mismatch"
+        )
+    if match_plan_docs_hash and plan_host.get("generated_docs_hash") != expected_docs:
+        raise ContractValidationError(
+            "reconstructed host review plan generated_docs_hash mismatch"
+        )
+
+    changes = _canonical_host_review_changes(review)
+    change_digest = require_sha256(
+        review.get("change_digest"), label="host review change_digest"
+    )
+    recomputed_changes = canonical_changes_digest(changes)
+    if change_digest != recomputed_changes:
+        raise ContractValidationError(
+            "host review change_digest does not match canonical changes"
+        )
+    plan_changes = [
+        change
+        for change in (expected_plan.get("changes") or [])
+        if isinstance(change, dict)
+    ]
+    expected_change_digest = canonical_changes_digest(plan_changes)
+    if change_digest != expected_change_digest:
+        raise ContractValidationError(
+            "host review change_digest does not match reconstructed plan"
+        )
+
+    identity = host_baseline_receipt_digest(
+        change_digest=change_digest,
+        snapshot_hash=expected_snap,
+        generated_docs_hash=expected_docs,
+    )
+    binding = require_sha256(
+        review.get("content_binding_digest"), label="host review content_binding_digest"
+    )
+    if binding != identity:
+        raise ContractValidationError(
+            "host review content_binding_digest does not match canonical receipt facts"
+        )
+
+    file_source, file_from, file_to, file_digest = parse_committed_review_filename(
+        target.name
+    )
+    if (
+        file_source != expected_source
+        or file_from != expected_from_revision
+        or file_to != expected_to_revision
+    ):
+        raise ContractValidationError(
+            "host review filename source/from/to does not bind reconstructed context"
+        )
+    if file_digest != identity:
+        raise ContractValidationError(
+            "host review filename digest does not bind content_binding_digest"
+        )
+    expected_name = committed_review_filename(
+        source=expected_source,
+        from_revision=expected_from_revision,
+        to_revision=expected_to_revision,
+        change_digest=identity,
+    )
+    if target.name != expected_name:
+        raise ContractValidationError(
+            f"host review filename mismatch: expected {expected_name}, got {target.name}"
+        )
+
+    for change in plan_changes:
+        if change.get("change_kind") not in _DRIFT_CHANGE_KINDS:
+            continue
+        if not _is_change_acknowledged(
+            change,
+            review,
+            source=expected_source,
+            from_revision=expected_from_revision,
+            to_revision=expected_to_revision,
+        ):
+            raise ContractValidationError(
+                f"committed host baseline review missing acknowledgment for {change}"
+            )
+    return review
+
+
 def _require_host_pin_transition_review(
     *,
     root: Path,
@@ -662,85 +903,94 @@ def _require_host_pin_transition_review(
     digest = canonical_changes_digest(
         [c for c in plan.get("changes", []) if isinstance(c, dict)]
     )
+    snapshot_hash = str(plan["host_baseline"]["snapshot_hash"])
     bind_docs_hash = docs_hash or str(plan["host_baseline"].get("generated_docs_hash") or "")
+    reviews_dir = root / COMMITTED_REVIEWS_RELATIVE
     if bind_docs_hash:
         lookup_digest = host_baseline_receipt_digest(
             change_digest=digest,
-            snapshot_hash=str(plan["host_baseline"]["snapshot_hash"]),
+            snapshot_hash=snapshot_hash,
             generated_docs_hash=bind_docs_hash,
         )
-    else:
-        lookup_digest = digest
-    path = committed_review_path(
-        root,
-        source=HOST_BASELINE_PIN_ID,
-        from_revision=from_revision,
-        to_revision=to_revision,
-        change_digest=lookup_digest,
-    )
-    try:
-        path.lstat()
-    except OSError:
-        try:
-            missing.append(_lexical_repo_relative(root, path))
-        except ContractValidationError:
-            missing.append(str(path))
-        return
-    _assert_review_blob_committed(root, path)
-    review = load_json_object(path)
-    if not _review_binds_drift_context(
-        review,
-        source=HOST_BASELINE_PIN_ID,
-        from_revision=from_revision,
-        to_revision=to_revision,
-    ):
-        raise ContractValidationError(
-            f"committed host baseline review context mismatch: {path.name}"
-        )
-    review_digest = review.get("change_digest")
-    if review_digest != digest:
-        raise ContractValidationError(
-            f"committed host baseline review change_digest mismatch: "
-            f"expected {digest}, got {review_digest!r}"
-        )
-    host_meta = review.get("host_baseline")
-    if not isinstance(host_meta, dict):
-        raise ContractValidationError(
-            f"committed host baseline review missing host_baseline block: {path.name}"
-        )
-    if host_meta.get("snapshot_hash") != plan["host_baseline"]["snapshot_hash"]:
-        raise ContractValidationError(
-            "committed host baseline review snapshot_hash mismatch"
-        )
-    if host_meta.get("reviewed_pin") != to_revision:
-        raise ContractValidationError(
-            "committed host baseline review reviewed_pin mismatch"
-        )
-    review_docs_hash = host_meta.get("generated_docs_hash")
-    if docs_required:
-        if review_docs_hash != docs_hash:
-            raise ContractValidationError(
-                "committed host baseline review generated_docs_hash mismatch"
-            )
-    elif docs_hash and review_docs_hash not in (None, "", docs_hash):
-        raise ContractValidationError(
-            "committed host baseline review generated_docs_hash mismatch"
-        )
-    for change in plan.get("changes", []):
-        if not isinstance(change, dict):
-            continue
-        if change.get("change_kind") not in _DRIFT_CHANGE_KINDS:
-            continue
-        if not _is_change_acknowledged(
-            change,
-            review,
+        path = committed_review_path(
+            root,
             source=HOST_BASELINE_PIN_ID,
             from_revision=from_revision,
             to_revision=to_revision,
-        ):
-            raise ContractValidationError(
-                f"committed host baseline review missing acknowledgment for {change}"
+            change_digest=lookup_digest,
+        )
+        try:
+            path.lstat()
+        except OSError:
+            try:
+                missing.append(_lexical_repo_relative(root, path))
+            except ContractValidationError:
+                missing.append(str(path))
+            return
+        assert_canonical_immutable_host_review_receipt(
+            repo_root=root,
+            path=path,
+            expected_source=HOST_BASELINE_PIN_ID,
+            expected_from_revision=from_revision,
+            expected_to_revision=to_revision,
+            expected_plan=plan,
+            expected_snapshot_hash=snapshot_hash,
+            expected_docs_hash=bind_docs_hash,
+            match_plan_docs_hash=docs_required or bool(docs_hash),
+        )
+        return
+
+    # Historical edge without recomputable docs: still require a content-bound
+    # committed receipt. Never fall back to change_digest-only filenames.
+    pattern = f"{HOST_BASELINE_PIN_ID}-{from_revision}-{to_revision}-*.json"
+    candidates = (
+        sorted(reviews_dir.glob(pattern)) if reviews_dir.is_dir() else []
+    )
+    if not candidates:
+        expected_name = committed_review_filename(
+            source=HOST_BASELINE_PIN_ID,
+            from_revision=from_revision,
+            to_revision=to_revision,
+            change_digest=digest,
+        )
+        missing.append(f"{COMMITTED_REVIEWS_RELATIVE}/{expected_name}")
+        return
+    errors: list[str] = []
+    for path in candidates:
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            review = load_json_object(path)
+        except (OSError, ContractValidationError, ValueError) as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        host_meta = review.get("host_baseline")
+        if not isinstance(host_meta, dict):
+            errors.append(f"{path.name}: missing host_baseline")
+            continue
+        cand_docs = host_meta.get("generated_docs_hash")
+        if not isinstance(cand_docs, str) or not cand_docs:
+            errors.append(f"{path.name}: missing generated_docs_hash")
+            continue
+        try:
+            assert_canonical_immutable_host_review_receipt(
+                repo_root=root,
+                path=path,
+                expected_source=HOST_BASELINE_PIN_ID,
+                expected_from_revision=from_revision,
+                expected_to_revision=to_revision,
+                expected_plan=plan,
+                expected_snapshot_hash=snapshot_hash,
+                expected_docs_hash=cand_docs,
+                match_plan_docs_hash=False,
             )
+            return
+        except ContractValidationError as exc:
+            errors.append(f"{path.name}: {exc}")
+    raise ContractValidationError(
+        "GROK_BUILD pin transition has no valid immutable host review receipt: "
+        + "; ".join(errors)
+    )
 
 
 def assert_host_review_binds_current_content(
@@ -749,38 +999,55 @@ def assert_host_review_binds_current_content(
     snapshot: Mapping[str, Any],
     docs_hash: str,
 ) -> Path:
-    """Require a committed GROK_BUILD receipt bound to current snapshot/docs."""
+    """Require a committed immutable GROK_BUILD receipt for current content."""
     root = Path(repo_root)
-    pin = require_nonempty_string(
+    pin = require_git_oid(
         snapshot.get("public_commit"), label="host snapshot public_commit"
     )
     snapshot_hash = host_snapshot_content_hash(snapshot)
+    expected_docs = require_sha256(docs_hash, label="generated_docs_hash")
     reviews_dir = root / COMMITTED_REVIEWS_RELATIVE
-    matches: list[Path] = []
+    errors: list[str] = []
     if reviews_dir.is_dir():
-        for path in sorted(reviews_dir.glob(f"GROK_BUILD-*-{pin}-*.json")):
+        for path in sorted(reviews_dir.glob(f"{HOST_BASELINE_PIN_ID}-*-{pin}-*.json")):
             if path.is_symlink() or not path.is_file():
                 continue
             try:
-                review = load_json_object(path)
-            except (OSError, ContractValidationError, ValueError):
+                source, from_revision, to_revision, _digest = (
+                    parse_committed_review_filename(path.name)
+                )
+            except ContractValidationError as exc:
+                errors.append(f"{path.name}: {exc}")
                 continue
-            host_meta = review.get("host_baseline")
-            if not isinstance(host_meta, dict):
+            if source != HOST_BASELINE_PIN_ID or to_revision != pin:
                 continue
-            if host_meta.get("reviewed_pin") != pin:
-                continue
-            if (
-                host_meta.get("snapshot_hash") == snapshot_hash
-                and host_meta.get("generated_docs_hash") == docs_hash
-            ):
-                matches.append(path)
-    if not matches:
-        raise ContractValidationError(
-            "no committed GROK_BUILD review binds current snapshot_hash and "
-            f"generated_docs_hash for reviewed_pin {pin}"
-        )
-    return matches[0]
+            try:
+                plan = build_host_baseline_refresh_plan(
+                    from_revision=from_revision,
+                    to_revision=pin,
+                    host_snapshot=snapshot,
+                    previous_snapshot=None,
+                    snapshot_hash=snapshot_hash,
+                    generated_docs_hash=expected_docs,
+                )
+                assert_canonical_immutable_host_review_receipt(
+                    repo_root=root,
+                    path=path,
+                    expected_source=HOST_BASELINE_PIN_ID,
+                    expected_from_revision=from_revision,
+                    expected_to_revision=pin,
+                    expected_plan=plan,
+                    expected_snapshot_hash=snapshot_hash,
+                    expected_docs_hash=expected_docs,
+                )
+                return path
+            except ContractValidationError as exc:
+                errors.append(f"{path.name}: {exc}")
+    detail = f": {'; '.join(errors)}" if errors else ""
+    raise ContractValidationError(
+        "no committed GROK_BUILD review binds current snapshot_hash and "
+        f"generated_docs_hash for reviewed_pin {pin}{detail}"
+    )
 
 
 def assert_host_baseline_gate(

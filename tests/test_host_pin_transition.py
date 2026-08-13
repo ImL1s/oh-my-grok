@@ -28,6 +28,7 @@ from omg_cli.parity_refresh import (
 from tests.test_parity_claim_gate import (
     FIXED_NOW,
     _bootstrapping_inventory,
+    _ensure_fixture_git_commit,
     _git_commit_all,
     _honest_docs,
     _init_git_repo,
@@ -66,6 +67,7 @@ def test_host_pin_transition_requires_review_ledger(
     monkeypatch.setitem(FROZEN_PINS, HOST_BASELINE_PIN_ID, NEW_PIN)
     _scaffold_inventory_paths(tmp_path, inventory)
     _write_host_baseline_snapshot(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit current host review")
     with pytest.raises(
         ContractValidationError,
         match="GROK_BUILD pin transition missing committed host baseline review",

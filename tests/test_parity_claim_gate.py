@@ -270,8 +270,18 @@ def _init_git_repo(root: Path) -> None:
 
 
 def _git_commit_all(root: Path, message: str) -> str:
+    if not (root / ".git").exists():
+        _init_git_repo(root)
     _git(root, "add", "-A")
-    _git(root, "commit", "-m", message)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        _git(root, "commit", "-m", message)
     proc = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
         check=True,
@@ -279,6 +289,22 @@ def _git_commit_all(root: Path, message: str) -> str:
         text=True,
     )
     return proc.stdout.strip()
+
+
+def _ensure_fixture_git_commit(root: Path, message: str = "commit fixture") -> None:
+    """Commit dirty fixture files so host-review receipts can be HEAD-bound."""
+    if not (root / ".git").exists():
+        _init_git_repo(root)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        return
+    _git_commit_all(root, message)
 
 
 def _bump_omc_pin(inventory: dict, new_pin: str) -> None:
@@ -603,6 +629,7 @@ def test_release_gate_passes_honest_bootstrapping_inventory(tmp_path: Path) -> N
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -759,6 +786,7 @@ def test_upstream_drift_passes_when_acknowledged(tmp_path: Path) -> None:
     )
     review_path = tmp_path / "review.json"
     review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -793,6 +821,7 @@ def test_upstream_drift_passes_when_rename_acknowledged(tmp_path: Path) -> None:
     )
     review_path = tmp_path / "review.json"
     review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -833,6 +862,7 @@ def test_upstream_drift_passes_when_acknowledgments_key_used(tmp_path: Path) -> 
         json.dumps(_ack_review(plan, use_acknowledgments_key=True), indent=2),
         encoding="utf-8",
     )
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,

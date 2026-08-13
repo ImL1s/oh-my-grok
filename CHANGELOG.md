@@ -16,6 +16,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   publish `provider_spawned`. A termination signal delivered as soon as the
   receipt becomes observable can no longer bypass forwarding and orphan the
   provider process group.
+- **Host-review receipt HIGH:** `assert_host_review_binds_current_content`
+  no longer accepts a forged untracked or committed JSON file just
+  because nested `host_baseline` hashes match. Current-content and
+  compatible pin-transition gates share
+  `assert_canonical_immutable_host_review_receipt`: exact non-bool
+  `schema_version`, exact `store_kind`/`source`/`from`/`to`/
+  `reviewed_pin`/`previous_pin`/`snapshot_path`, canonical
+  `change_digest`, recomputed `content_binding_digest`, filename bind,
+  required acknowledgments, and a HEAD-committed blob. No
+  change_digest-only filename fallback. Refs #158 / #105.
 - **#159 ralplan staged-proposal mtime freshness flake:**
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock
