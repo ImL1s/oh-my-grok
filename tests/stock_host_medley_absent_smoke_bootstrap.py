@@ -1,7 +1,8 @@
 """Isolated Medley-absent smoke. Not collected by pytest.
 
-Installs the import blocker before any omg_cli import, then exercises the
-four ordinary OMG surfaces and writes a JSON result file.
+Installs the import blocker at module level. Network/subprocess guards
+are installed via create_isolation before any omg_cli import, then the
+four ordinary OMG surfaces run and a JSON result file is written.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -21,12 +23,6 @@ if str(_BOOTSTRAP_ROOT) not in sys.path:
 import tests.stock_host_medley_absent_support as support
 
 support.install_blocker()
-
-from omg_cli import doctor
-from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
-from omg_cli.setup_cmd import compute_package_identity, run_setup
-from omg_cli.team.roles import CANONICAL_ROLES
-from omg_cli.workflows.schema import compile_workflow
 
 
 def _fail(message: str) -> int:
@@ -46,9 +42,14 @@ def _load_generator(root: Path):
     return module
 
 
-def _fake_host_report(host_fixture: Path):
-    report = probe_host_from_fixture(host_fixture)
-    return report, host_report_for_doctor(report)
+def _popen_is_guarded(popen) -> bool:
+    try:
+        popen(["curl", "https://example.com"])
+    except PermissionError as exc:
+        return support._SUBPROCESS_DENIED in str(exc)
+    except OSError:
+        return False
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,7 +64,60 @@ def main(argv: list[str] | None = None) -> int:
     result_path = args.result.resolve()
 
     try:
+        preexisting = [
+            k for k in sys.modules if k == "omg_cli" or k.startswith("omg_cli.")
+        ]
+        if preexisting:
+            return _fail(f"omg_cli imported before isolation: {preexisting}")
+
+        real_posix_spawn = getattr(os, "posix_spawn", None)
         iso = support.create_isolation(work, root=root)
+        guards_installed_before_omg_cli = True
+        posix_spawn_unpatched = getattr(os, "posix_spawn", None) is real_posix_spawn
+
+        import tests.stock_host_medley_absent_import_probe as import_probe
+
+        import_probe_network = bool(import_probe.NETWORK_DENIED)
+        import_probe_subprocess = bool(import_probe.SUBPROCESS_DENIED)
+        if not import_probe_network:
+            return _fail(
+                f"import-time network not denied: {import_probe.NETWORK_ERROR!r}"
+            )
+        if not import_probe_subprocess:
+            return _fail(
+                f"import-time subprocess not denied: {import_probe.SUBPROCESS_ERROR!r}"
+            )
+
+        from omg_cli import doctor
+        from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
+        from omg_cli.setup_cmd import compute_package_identity, run_setup
+        from omg_cli.team.roles import CANONICAL_ROLES
+        from omg_cli.workflows.schema import compile_workflow
+        import omg_cli.state as _st
+
+        def _fake_host_report(host_fixture: Path):
+            report = probe_host_from_fixture(host_fixture)
+            return report, host_report_for_doctor(report)
+
+        captured_system_popen_guarded = _popen_is_guarded(_st._SYSTEM_POPEN)
+        if not captured_system_popen_guarded:
+            return _fail("omg_cli.state._SYSTEM_POPEN is not the guarded Popen")
+
+        integrate_imported = "omg_cli.integrate" in sys.modules
+        captured_real_popen_guarded = None
+        if integrate_imported:
+            import omg_cli.integrate as _ig
+
+            captured_real_popen_guarded = _popen_is_guarded(_ig._REAL_POPEN)
+            if not captured_real_popen_guarded:
+                return _fail("omg_cli.integrate._REAL_POPEN is not the guarded Popen")
+
+        missing_smoke = [
+            name for name in support.SMOKE_IMPORTED if name not in sys.modules
+        ]
+        if missing_smoke:
+            return _fail(f"expected smoke modules missing: {missing_smoke}")
+
         site = support.inject_medley_under_work(work, root=root)
         if "medley" not in str(site).lower():
             return _fail(f"injected site ancestor must contain medley: {site}")
@@ -147,15 +201,37 @@ def main(argv: list[str] | None = None) -> int:
             return _fail("medley appeared in sys.modules after surfaces")
         if os_home_mismatch(iso):
             return _fail("isolation HOME/GROK_HOME drifted")
+        if "omg_cli.integrate" in sys.modules:
+            import omg_cli.integrate as _ig
+
+            captured_real_popen_guarded = _popen_is_guarded(_ig._REAL_POPEN)
+            if not captured_real_popen_guarded:
+                return _fail("omg_cli.integrate._REAL_POPEN is not the guarded Popen")
+            integrate_imported = True
+        # madmax may be imported via doctor → team.plane. Its os.execvp is
+        # denied at call time. posix_spawn stays unpatched; fail if an
+        # imported OMG module actually calls it.
+        spawn_hits = support.imported_omg_posix_spawn_calls()
+        if spawn_hits:
+            return _fail(f"imported omg_cli calls posix_spawn: {spawn_hits}")
 
         result = {
             "ok": True,
             "blocker_installed_before_omg_cli": True,
+            "guards_installed_before_omg_cli": guards_installed_before_omg_cli,
             "imported": list(support.SMOKE_IMPORTED),
             "surfaces": list(support.SMOKE_SURFACES),
             "doctor_checks_ok": list(support.REQUIRED_DOCTOR_CHECKS),
             "setup_omg_dir": True,
             "blocker_raises": True,
+            "import_probe_network": import_probe_network,
+            "import_probe_subprocess": import_probe_subprocess,
+            "captured_system_popen_guarded": captured_system_popen_guarded,
+            "posix_spawn_unpatched": posix_spawn_unpatched,
+            "imported_posix_spawn_calls": spawn_hits,
+            "madmax_imported": "omg_cli.madmax" in sys.modules,
+            "integrate_imported": integrate_imported,
+            "captured_real_popen_guarded": captured_real_popen_guarded,
         }
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

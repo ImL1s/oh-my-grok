@@ -5,12 +5,14 @@ only inside the argv reviewers, and only after early rejects.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import importlib.abc
 import importlib.util
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -125,6 +127,8 @@ _NETWORK_DENIED = "stock-host smoke: network denied"
 _SUBPROCESS_DENIED = "stock-host smoke: subprocess denied"
 _EXEC_DENIED = "stock-host smoke: process-exec denied"
 _FAKE_GROK_UNEXPECTED = "stock-host fake grok: unexpected argv"
+ISOLATION_GROK_IDENTITY = "stock-host-isolation-grok-inode"
+ISOLATION_PYTHON3_IDENTITY = "stock-host-isolation-python3-inode"
 
 _STAGE_BASENAME_RE = re.compile(
     r"^\.omg_pretool_deny_standalone\.py\.stage\.[a-z0-9_]+\.tmp$"
@@ -137,6 +141,15 @@ class _StockHostIsolation(NamedTuple):
     bin_dir: Path
     xdg: Path
     grok: Path
+
+
+class _IsolationExecIdentity(NamedTuple):
+    bin_dir: Path
+    grok: Path
+    python3: Path
+    grok_digest: bytes
+    python3_digest: bytes
+    path_snapshot: str
 
 
 class _StockHostMedleyImportBlocker(importlib.abc.MetaPathFinder):
@@ -158,6 +171,41 @@ def install_blocker() -> _StockHostMedleyImportBlocker:
     blocker = _StockHostMedleyImportBlocker()
     sys.meta_path.insert(0, blocker)
     return blocker
+
+
+_POSIX_SPAWN_NAMES = frozenset({"posix_spawn", "posix_spawnp"})
+
+
+def imported_omg_posix_spawn_calls() -> list[str]:
+    """Call sites of posix_spawn in *already imported* omg_cli modules.
+
+    String literals (deny lists) do not count. posix_spawn stays unpatched so
+    Darwin Popen works; this smoke is not a universal sandbox.
+    """
+    hits: list[str] = []
+    for name, mod in list(sys.modules.items()):
+        if name != "omg_cli" and not name.startswith("omg_cli."):
+            continue
+        path = getattr(mod, "__file__", None)
+        if not path or not str(path).endswith(".py"):
+            continue
+        try:
+            src = Path(path).read_text(encoding="utf-8")
+            tree = ast.parse(src)
+        except (OSError, SyntaxError, TypeError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            attr = None
+            if isinstance(func, ast.Attribute):
+                attr = func.attr
+            elif isinstance(func, ast.Name):
+                attr = func.id
+            if attr in _POSIX_SPAWN_NAMES:
+                hits.append(f"{name}:{getattr(node, 'lineno', 0)}")
+    return hits
 
 
 def evict_medley_modules() -> None:
@@ -267,16 +315,30 @@ def _link_python(bin_dir: Path) -> None:
     python3 = bin_dir / "python3"
     python = bin_dir / "python"
     if not python3.exists():
-        python3.symlink_to(target)
+        python3.write_text(
+            f"#!{target}\n"
+            "import os\n"
+            "import sys\n"
+            f"REAL = {str(target)!r}\n"
+            "if sys.argv[1:] == ['--isolation-identity']:\n"
+            f"    print({ISOLATION_PYTHON3_IDENTITY!r})\n"
+            "    raise SystemExit(0)\n"
+            "os.execv(REAL, [REAL, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        python3.chmod(0o755)
     if not python.exists():
         python.symlink_to(target)
 
 
 def _is_fake_grok_argv0(raw: str, bin_dir: Path) -> bool:
+    """Shape helper: bare ``grok`` or an absolute path whose realpath is bin_dir/grok."""
     if raw == "grok":
         return True
+    if not os.path.isabs(raw):
+        return False
     try:
-        return Path(raw).resolve() == (bin_dir / "grok").resolve()
+        return os.path.realpath(raw) == os.path.realpath(bin_dir / "grok")
     except OSError:
         return False
 
@@ -320,6 +382,37 @@ def _is_reviewed_python_argv(args: Sequence[object], raw: str, grok_home: Path) 
     return actual == expected
 
 
+def _is_isolation_python_identity_argv(args: Sequence[object], raw: str) -> bool:
+    return raw == "python3" and len(args) == 2 and str(args[1]) == "--isolation-identity"
+
+
+def _python_argv0_as_bare(raw: str, bin_dir: Path) -> str | None:
+    """Map isolation python wrapper argv0 to the bare name, else None."""
+    if raw == "python3":
+        return "python3"
+    if not os.path.isabs(raw):
+        return None
+    try:
+        if os.path.realpath(raw) == os.path.realpath(bin_dir / "python3"):
+            return "python3"
+    except OSError:
+        return None
+    return None
+
+
+def _is_reviewed_python_launch(
+    args: Sequence[object], raw: str, bin_dir: Path, grok_home: Path
+) -> bool:
+    """Bare or absolute isolation python3 plus reviewed stage / identity argv."""
+    if _python_argv0_as_bare(raw, bin_dir) is None:
+        return False
+    rest = tuple(args[1:])
+    rewritten = ("python3", *rest)
+    return _is_reviewed_python_argv(rewritten, "python3", grok_home) or (
+        _is_isolation_python_identity_argv(rewritten, "python3")
+    )
+
+
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
     """Doctor hook smoke: exact canonical ``/bin/sh -c`` launcher plus lstat+digest.
 
@@ -357,7 +450,7 @@ def _allowed_subprocess_argv(
     raw = str(args[0])
     if _is_fake_grok_argv0(raw, bin_dir):
         return True
-    if _is_reviewed_python_argv(args, raw, grok_home):
+    if _is_reviewed_python_launch(args, raw, bin_dir, grok_home):
         return True
     if _is_reviewed_hook_shell_argv(args, raw, grok_home):
         return True
@@ -379,18 +472,18 @@ def _reviewed_smoke_cwd(cwd: object) -> bool:
     return actual in allowed
 
 
-def _reviewed_smoke_env(env: object) -> bool:
-    """Allow inherit or the exact PATH-only reviewed smoke mapping."""
+def _reviewed_smoke_env(env: object, path_snapshot: str) -> bool:
+    """Allow inherit or the PATH-only mapping when PATH equals the frozen snapshot."""
     if env is None:
-        return True
+        return os.environ.get("PATH") == path_snapshot
     if not isinstance(env, Mapping):
         return False
     if set(env.keys()) != {"PATH"}:
         return False
-    return env["PATH"] == os.environ.get("PATH", "/usr/bin:/bin")
+    return env["PATH"] == path_snapshot
 
 
-def _safe_popen_kwargs(kwargs: Mapping[str, object]) -> bool:
+def _safe_popen_kwargs(kwargs: Mapping[str, object], path_snapshot: str) -> bool:
     """Reject launch overrides that can retarget an argv-allowed binary."""
     if kwargs.get("executable") is not None:
         return False
@@ -413,7 +506,7 @@ def _safe_popen_kwargs(kwargs: Mapping[str, object]) -> bool:
         return False
     if not _reviewed_smoke_cwd(kwargs.get("cwd")):
         return False
-    if not _reviewed_smoke_env(kwargs.get("env")):
+    if not _reviewed_smoke_env(kwargs.get("env"), path_snapshot):
         return False
     return True
 
@@ -432,16 +525,131 @@ def _effective_executable(
     return args[0]
 
 
+def _regular_non_symlink_digest(path: Path) -> bytes:
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return b""
+        return hashlib.sha256(path.read_bytes()).digest()
+    except OSError:
+        return b""
+
+
+def _freeze_exec_identity(bin_dir: Path) -> _IsolationExecIdentity:
+    grok = bin_dir / "grok"
+    python3 = bin_dir / "python3"
+    return _IsolationExecIdentity(
+        bin_dir=bin_dir,
+        grok=grok,
+        python3=python3,
+        grok_digest=_regular_non_symlink_digest(grok),
+        python3_digest=_regular_non_symlink_digest(python3),
+        path_snapshot=str(bin_dir),
+    )
+
+
+def _effective_child_path(
+    kwargs: Mapping[str, object], identity: _IsolationExecIdentity
+) -> str | None:
+    env = kwargs.get("env")
+    if env is None:
+        # Inherit is allowed only when live PATH still equals the frozen snapshot.
+        if os.environ.get("PATH") != identity.path_snapshot:
+            return None
+        return identity.path_snapshot
+    if not isinstance(env, Mapping):
+        return None
+    if "PATH" not in env:
+        return None
+    if env["PATH"] != identity.path_snapshot:
+        return None
+    return identity.path_snapshot
+
+
+def _argv0_has_separator(raw: str) -> bool:
+    if os.sep in raw or "/" in raw:
+        return True
+    alt = os.altsep
+    return alt is not None and alt in raw
+
+
+def _matches_isolation_regular_file(raw: str, expected: Path, digest: bytes) -> bool:
+    if not digest:
+        return False
+    try:
+        if os.path.realpath(raw) != os.path.realpath(expected):
+            return False
+        st = os.lstat(raw)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return False
+        return hashlib.sha256(Path(raw).read_bytes()).digest() == digest
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _bare_resolves_to_isolation(
+    name: str, expected: Path, digest: bytes, child_path: str
+) -> bool:
+    found = shutil.which(name, path=child_path)
+    if not found:
+        return False
+    if os.path.normpath(found) != os.path.normpath(str(expected)):
+        return False
+    return _matches_isolation_regular_file(found, expected, digest)
+
+
+def _child_will_exec_isolation_inode(
+    args: Sequence[object],
+    kwargs: Mapping[str, object],
+    identity: _IsolationExecIdentity,
+) -> bool:
+    argv0 = str(args[0])
+    # /bin/sh is not isolation-owned; hook argv stays a shape+digest review.
+    if argv0 == "/bin/sh":
+        return True
+    if _argv0_has_separator(argv0) and not os.path.isabs(argv0):
+        return False
+    child_path = _effective_child_path(kwargs, identity)
+    if argv0 == "grok":
+        if child_path is None:
+            return False
+        return _bare_resolves_to_isolation(
+            "grok", identity.grok, identity.grok_digest, child_path
+        )
+    if argv0 == "python3":
+        if child_path is None:
+            return False
+        return _bare_resolves_to_isolation(
+            "python3", identity.python3, identity.python3_digest, child_path
+        )
+    if not os.path.isabs(argv0):
+        return False
+    try:
+        real = os.path.realpath(argv0)
+    except OSError:
+        return False
+    if real == os.path.realpath(identity.grok):
+        return _matches_isolation_regular_file(
+            argv0, identity.grok, identity.grok_digest
+        )
+    if real == os.path.realpath(identity.python3):
+        return _matches_isolation_regular_file(
+            argv0, identity.python3, identity.python3_digest
+        )
+    return False
+
+
 def _allowed_subprocess_launch(
     args: Sequence[object] | str | None,
     kwargs: Mapping[str, object],
     bin_dir: Path,
     grok_home: Path,
+    identity: _IsolationExecIdentity,
 ) -> bool:
-    """Authorize argv, launch kwargs, and the normalized effective executable."""
+    """Authorize argv, launch kwargs, and the isolation inode the child will exec."""
     if not _allowed_subprocess_argv(args, bin_dir, grok_home):
         return False
-    if not _safe_popen_kwargs(kwargs):
+    if not _safe_popen_kwargs(kwargs, identity.path_snapshot):
         return False
     # Safe kwargs imply executable is None and shell is false. Deny anyway
     # if an override still produced a different effective executable.
@@ -452,11 +660,13 @@ def _allowed_subprocess_launch(
     argv0 = str(args[0])
     if str(_effective_executable(args, kwargs)) != argv0:
         return False
-    return (
+    if not (
         _is_fake_grok_argv0(argv0, bin_dir)
-        or _is_reviewed_python_argv(args, argv0, grok_home)
+        or _is_reviewed_python_launch(args, argv0, bin_dir, grok_home)
         or _is_reviewed_hook_shell_argv(args, argv0, grok_home)
-    )
+    ):
+        return False
+    return _child_will_exec_isolation_inode(args, kwargs, identity)
 
 
 def _setattr_live(module: object, name: str, value: object) -> None:
@@ -499,12 +709,22 @@ def _install_subprocess_guard(
     *,
     assign: Callable[..., None] | None = None,
 ) -> None:
+    """Replace Popen and exec wrappers. Does not patch posix_spawn.
+
+    CPython 3.14 Darwin uses os.posix_spawn inside real_popen for absolute
+    executables when cwd is None. posix_spawn / posix_spawnp stay the
+    builtins; they are outside the exercised surface. This smoke is not a
+    universal sandbox.
+    """
     apply = assign if assign is not None else _setattr_live
     real_popen = subprocess.Popen
+    identity = _freeze_exec_identity(bin_dir)
 
     def guarded_popen(args, *rest, **kwargs):  # noqa: ANN001
         launch_kwargs = _merge_popen_launch_kwargs(rest, kwargs)
-        if not _allowed_subprocess_launch(args, launch_kwargs, bin_dir, grok_home):
+        if not _allowed_subprocess_launch(
+            args, launch_kwargs, bin_dir, grok_home, identity
+        ):
             raise PermissionError(f"{_SUBPROCESS_DENIED}: {args!r}")
         return real_popen(args, *rest, **kwargs)
 
@@ -518,8 +738,10 @@ def _install_subprocess_guard(
     apply(os, "system", denied_system)
     if hasattr(os, "popen"):
         apply(os, "popen", denied_system)
-    # Gate children at Popen. Do not replace posix_spawn — CPython 3.14 on
-    # Darwin uses it inside Popen for absolute executables (cwd is None).
+    # Gate children at Popen. Do not replace posix_spawn / posix_spawnp —
+    # CPython 3.14 on Darwin uses posix_spawn inside real_popen for
+    # absolute executables when cwd is None. posix_spawn is outside the
+    # exercised surface; this smoke is not a universal sandbox.
     for name in (
         "execv",
         "execve",
@@ -533,6 +755,10 @@ def _install_subprocess_guard(
         "spawnve",
         "spawnvp",
         "spawnvpe",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
     ):
         if hasattr(os, name):
             apply(os, name, denied_exec)
@@ -562,16 +788,20 @@ def _install_network_denial(*, assign: Callable[..., None] | None = None) -> Non
 
 
 def _install_fake_grok(bin_dir: Path) -> Path:
-    """Tiny local grok: version / --version only. Unexpected argv exits 2."""
+    """Tiny local grok: version / --version / identity. Unexpected argv exits 2."""
     path = bin_dir / "grok"
     path.write_text(
         f"#!{sys.executable}\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
-        "allowed = {('--version',), ('version',), ('version', '--json')}\n"
+        "allowed = {('--version',), ('version',), ('version', '--json'), "
+        "('--isolation-identity',)}\n"
         "if tuple(args) not in allowed:\n"
         "    print('stock-host fake grok: unexpected argv', args, file=sys.stderr)\n"
         "    raise SystemExit(2)\n"
+        "if args == ['--isolation-identity']:\n"
+        f"    print({ISOLATION_GROK_IDENTITY!r})\n"
+        "    raise SystemExit(0)\n"
         "if '--json' in args:\n"
         "    print('{\"currentVersion\":\"0.2.121\"}')\n"
         "else:\n"

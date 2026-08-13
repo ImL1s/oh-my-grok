@@ -697,6 +697,13 @@ def test_locale_architecture_projection_honesty() -> None:
         assert (
             "不可跑" in text or "不可运行" in text or "not runnable" in text
         ), f"{rel} missing not-runnable honesty"
+        assert "requested OMG posture" in text, f"{rel} missing requested OMG posture"
+        assert (
+            "qualified enforcement" in text or "provider-dependent" in text
+        ), f"{rel} missing provider-dependent / qualified enforcement"
+        assert "provider" in text, f"{rel} missing provider"
+        assert "不能** mutate" not in text, f"{rel} sandbox-guarantee 不能** mutate"
+        assert "**不能** mutate" not in text, f"{rel} sandbox-guarantee **不能** mutate"
         assert "host.native-exact-model.v1" not in text
         assert "Normative support matrix" not in text
         assert _MATRIX_TABLE_HEADER not in text

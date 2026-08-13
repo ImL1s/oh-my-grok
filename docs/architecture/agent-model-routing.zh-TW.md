@@ -87,7 +87,7 @@ schema 變更需要另一次 versioned migration。
 三個正交維度（規範以英文為準）：
 
 - `runtime_kind` = `native_host` | `external_cli`
-- `purpose` = `advisory` | `task_execution`（權威任務參與；與 read-only / read-write posture **獨立**；唯讀 reviewer **不能** mutate）
+- `purpose` = `advisory` | `task_execution`（權威任務參與；與 read-only / read-write posture **獨立**。read-only / read-write posture 是 **requested OMG posture**，僅在所選 runtime/provider 提供 **qualified enforcement** 時生效；否則為 **unproven** / **unsupported**，或 route 被 blocked。不要把 role floor 當成 sandbox）
 - `lifecycle` = `foreground` | `background_job` | `team_member`
 
 `external_cli` + `advisory` **不是** external Team executor。`omg ask` 產物（`.omg/artifacts/ask-*.md`）與 consultation／council 產物都是 advisory／非權威，**永不**寫入 acceptance / `verified`。本頁不宣稱已出貨 council runtime。

@@ -11,12 +11,15 @@ discoverable until that blocker is installed. Ancestor pathnames may
 contain the substring ``medley``; the blocker never inspects them.
 
 The four ordinary OMG surfaces run in an isolated subprocess that
-installs the import blocker before any omg_cli import.
+installs the import blocker and network/subprocess guards before any
+omg_cli import. An import-time probe records whether those guards deny
+socket/urlopen and Popen at import.
 
 The smoke process is an explicit allowlisted environment: fake HOME /
 GROK_HOME / XDG dirs, scrubbed credentials, bounded PATH, fail-closed
 fake grok, network denial, and subprocess/exec guards. Ambient
-site-packages and PYTHONPATH are not inherited.
+site-packages and PYTHONPATH are not inherited. posix_spawn stays the
+builtin (not a universal sandbox).
 """
 from __future__ import annotations
 
@@ -36,6 +39,8 @@ import pytest
 
 from tests.stock_host_medley_absent_support import (
     EXPECTED_DOCTOR_HOST_IDENTITY,
+    ISOLATION_GROK_IDENTITY,
+    ISOLATION_PYTHON3_IDENTITY,
     REQUIRED_DOCTOR_CHECKS,
     ROOT,
     SMOKE_IMPORTED,
@@ -60,6 +65,8 @@ from tests.stock_host_medley_absent_support import (
 )
 
 BOOTSTRAP = Path(__file__).resolve().parent / "stock_host_medley_absent_smoke_bootstrap.py"
+IMPORT_PROBE = Path(__file__).resolve().parent / "stock_host_medley_absent_import_probe.py"
+IMPORT_PROBE_MODULE = "tests.stock_host_medley_absent_import_probe"
 
 
 def _this_file_does_not_import_medley() -> None:
@@ -151,6 +158,69 @@ def _assert_blocker_before_first_omg_cli_import(path: Path) -> None:
     assert omg_pos is not None
     assert blocker_pos < omg_pos, (
         f"AST omg_cli import {omg_pos} is not after blocker {blocker_pos} in {path}"
+    )
+
+
+def _assert_guards_before_first_omg_cli_import(path: Path) -> None:
+    src = path.read_text(encoding="utf-8")
+    guard_line: int | None = None
+    omg_line: int | None = None
+    for lineno, line in enumerate(src.splitlines(), start=1):
+        code = line.split("#", 1)[0]
+        if guard_line is None and (
+            "create_isolation(" in code
+            or "_install_network_denial(" in code
+            or "_install_subprocess_guard(" in code
+        ):
+            guard_line = lineno
+        stripped = code.lstrip()
+        if omg_line is None and (
+            stripped.startswith("import omg_cli") or stripped.startswith("from omg_cli")
+        ):
+            omg_line = lineno
+    assert guard_line is not None, f"no create_isolation/guard install in {path}"
+    assert omg_line is not None, f"no omg_cli import in {path}"
+    assert guard_line < omg_line, (
+        f"omg_cli import at line {omg_line} before guards at {guard_line} in {path}"
+    )
+
+    tree = ast.parse(src)
+    guard_pos: tuple[int, int] | None = None
+    omg_pos: tuple[int, int] | None = None
+    for node in ast.walk(tree):
+        node_lineno = getattr(node, "lineno", None)
+        col = getattr(node, "col_offset", 0)
+        if node_lineno is None:
+            continue
+        pos = (node_lineno, col)
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = None
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif isinstance(func, ast.Attribute):
+                name = func.attr
+            if name in {
+                "create_isolation",
+                "_install_network_denial",
+                "_install_subprocess_guard",
+            }:
+                if guard_pos is None or pos < guard_pos:
+                    guard_pos = pos
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "omg_cli" or alias.name.startswith("omg_cli."):
+                    if omg_pos is None or pos < omg_pos:
+                        omg_pos = pos
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "omg_cli" or mod.startswith("omg_cli."):
+                if omg_pos is None or pos < omg_pos:
+                    omg_pos = pos
+    assert guard_pos is not None
+    assert omg_pos is not None
+    assert guard_pos < omg_pos, (
+        f"AST omg_cli import {omg_pos} is not after guards {guard_pos} in {path}"
     )
 
 
@@ -310,7 +380,11 @@ def test_stock_host_module_has_no_collection_time_omg_cli_import() -> None:
     support = here.with_name("stock_host_medley_absent_support.py")
     assert _module_level_omg_cli_imports(here) == []
     assert _module_level_omg_cli_imports(support) == []
+    assert _module_level_omg_cli_imports(BOOTSTRAP) == []
+    assert IMPORT_PROBE.is_file()
+    assert _module_level_omg_cli_imports(IMPORT_PROBE) == []
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
+    assert IMPORT_PROBE_MODULE not in sys.modules
 
 
 def test_doctor_host_identity_requires_exact_grok_binary() -> None:
@@ -349,9 +423,12 @@ def test_doctor_host_identity_requires_exact_grok_binary() -> None:
 def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
     here = Path(__file__)
     assert _module_level_omg_cli_imports(here) == []
+    assert _module_level_omg_cli_imports(BOOTSTRAP) == []
     assert BOOTSTRAP.is_file()
     _assert_blocker_before_first_omg_cli_import(BOOTSTRAP)
+    _assert_guards_before_first_omg_cli_import(BOOTSTRAP)
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
+    assert IMPORT_PROBE_MODULE not in sys.modules
 
     result_path = tmp_path / "result.json"
     work = tmp_path / "work"
@@ -383,6 +460,17 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
     assert payload["doctor_checks_ok"] == list(REQUIRED_DOCTOR_CHECKS)
     assert payload["setup_omg_dir"] is True
     assert payload["blocker_raises"] is True
+    assert payload["guards_installed_before_omg_cli"] is True
+    assert payload["import_probe_network"] is True
+    assert payload["import_probe_subprocess"] is True
+    assert payload["captured_system_popen_guarded"] is True
+    assert payload["posix_spawn_unpatched"] is True
+    assert payload["imported_posix_spawn_calls"] == []
+    if payload["integrate_imported"]:
+        assert payload["captured_real_popen_guarded"] is True
+    else:
+        assert payload["captured_real_popen_guarded"] is None
+    assert IMPORT_PROBE_MODULE not in sys.modules
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
 
 
@@ -735,3 +823,239 @@ def test_reviewed_python_argv_rejects_unrelated_and_lookalikes(
     ]
     for label, argv in cases:
         assert _is_reviewed_python_argv(argv, str(argv[0]), grok_home) is False, label
+
+
+def _legacy_string_only_grok_argv0(raw: str, bin_dir: Path) -> bool:
+    """Prior string-only argv0 predicate. Not the live allow."""
+    if raw == "grok":
+        return True
+    try:
+        return Path(raw).resolve() == (bin_dir / "grok").resolve()
+    except OSError:
+        return False
+
+
+def test_guarded_subprocess_binds_isolation_exec_inode(monkeypatch, tmp_path) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    denied = "subprocess denied"
+    wrapper = iso.bin_dir / "python3"
+    assert wrapper.is_file()
+    assert wrapper.is_symlink() is False
+
+    absolute = subprocess.run(
+        [str(iso.grok), "--isolation-identity"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert absolute.returncode == 0
+    assert ISOLATION_GROK_IDENTITY in (absolute.stdout or "")
+
+    bare = subprocess.run(
+        ["grok", "--isolation-identity"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bare.returncode == 0
+    assert ISOLATION_GROK_IDENTITY in (bare.stdout or "")
+
+    python_marker = subprocess.run(
+        ["python3", "--isolation-identity"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert python_marker.returncode == 0
+    assert ISOLATION_PYTHON3_IDENTITY in (python_marker.stdout or "")
+
+    absolute_python = subprocess.run(
+        [str(wrapper), "--isolation-identity"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert absolute_python.returncode == 0
+    assert ISOLATION_PYTHON3_IDENTITY in (absolute_python.stdout or "")
+
+    snapshot_env = subprocess.run(
+        [str(iso.grok), "--isolation-identity"],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert snapshot_env.returncode == 0
+    assert ISOLATION_GROK_IDENTITY in (snapshot_env.stdout or "")
+
+    alias_dir = tmp_path / "alias"
+    alias_dir.mkdir()
+    grok_link = alias_dir / "grok"
+    grok_link.symlink_to(iso.grok)
+    assert _legacy_string_only_grok_argv0(str(grok_link), iso.bin_dir) is True
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run([str(grok_link), "version"], check=False)
+
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    evil = attacker / "grok"
+    evil.write_text("#!/bin/sh\necho PWNED\n", encoding="utf-8")
+    evil.chmod(0o755)
+    poisoned = f"{attacker}{os.pathsep}{iso.bin_dir}"
+
+    assert _legacy_string_only_grok_argv0("grok", iso.bin_dir) is True
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "version"], env={"PATH": "/usr/bin:/bin"}, check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "version"], env={"PATH": poisoned}, check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "version"], env={}, check=False)
+
+    monkeypatch.delenv("PATH", raising=False)
+    assert _legacy_string_only_grok_argv0("grok", iso.bin_dir) is True
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "version"], check=False)
+
+    monkeypatch.setenv("PATH", poisoned)
+    assert _legacy_string_only_grok_argv0("grok", iso.bin_dir) is True
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["grok", "version"], check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.Popen(["grok", "version"])
+    monkeypatch.setenv("PATH", str(iso.bin_dir))
+
+    monkeypatch.chdir(iso.bin_dir)
+    assert _legacy_string_only_grok_argv0("./grok", iso.bin_dir) is True
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(
+            ["./grok", "version"],
+            cwd=tempfile.gettempdir(),
+            check=False,
+        )
+
+    wrapper.write_text("#!/bin/sh\necho PWNED\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run([str(wrapper), "--isolation-identity"], check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(["python3", "--isolation-identity"], check=False)
+
+
+def test_import_probe_denied_only_after_isolation(monkeypatch, tmp_path) -> None:
+    assert IMPORT_PROBE_MODULE not in sys.modules
+    _isolate_stock_host(monkeypatch, tmp_path)
+    probe = importlib.import_module(IMPORT_PROBE_MODULE)
+    try:
+        assert probe.NETWORK_DENIED is True
+        assert probe.SUBPROCESS_DENIED is True
+    finally:
+        sys.modules.pop(IMPORT_PROBE_MODULE, None)
+    assert IMPORT_PROBE_MODULE not in sys.modules
+
+
+def test_isolation_leaves_posix_spawn_unpatched_and_popen_works(
+    monkeypatch, tmp_path
+) -> None:
+    real_spawn = getattr(os, "posix_spawn", None)
+    real_spawnp = getattr(os, "posix_spawnp", None)
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    assert getattr(os, "posix_spawn", None) is real_spawn
+    if real_spawnp is not None:
+        assert getattr(os, "posix_spawnp", None) is real_spawnp
+    allowed = subprocess.run(
+        [str(iso.grok), "version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert allowed.returncode == 0
+    assert "0.2.121" in (allowed.stdout or "")
+    with pytest.raises(PermissionError, match="process-exec denied"):
+        os.execv("/usr/bin/curl", ["curl", "https://example.com"])
+    if hasattr(os, "spawnl"):
+        with pytest.raises(PermissionError, match="process-exec denied"):
+            os.spawnl(os.P_WAIT, "/bin/sh", "sh", "-c", "true")
+
+
+def _install_isolation_hook(iso: _StockHostIsolation) -> tuple[Path, str]:
+    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+
+    hooks = iso.grok_home / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    installed = hooks / STANDALONE_BASENAME
+    installed.write_bytes(committed_standalone().read_bytes())
+    return installed, launcher_command(installed)
+
+
+def test_live_hook_shell_injections_raise_permission_error(
+    monkeypatch, tmp_path
+) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    installed, expected = _install_isolation_hook(iso)
+    valid = ["/bin/sh", "-c", expected]
+    allowed = subprocess.run(
+        valid,
+        input="",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert allowed.returncode == 0, allowed.stderr
+
+    quoted_path = expected[len("python3 -I -S ") : -len(" || true")]
+    cases: list[tuple[str, list[str]]] = [
+        ("prefix true", ["/bin/sh", "-c", "true; " + expected]),
+        ("prefix echo", ["/bin/sh", "-c", "echo hi; " + expected]),
+        ("suffix", ["/bin/sh", "-c", expected + "; echo pwned"]),
+        ("semicolon appended", ["/bin/sh", "-c", expected + ";"]),
+        ("semicolon inside", ["/bin/sh", "-c", expected.replace(" || true", "; || true")]),
+        ("newline", ["/bin/sh", "-c", expected + "\necho pwned"]),
+        ("cmd subst suffix", ["/bin/sh", "-c", expected + " $(echo pwned)"]),
+        ("cmd subst path", ["/bin/sh", "-c", expected.replace(quoted_path, "$(echo pwned)")]),
+        ("backticks", ["/bin/sh", "-c", expected + " `echo pwned`"]),
+        ("missing || true", ["/bin/sh", "-c", expected[: -len(" || true")]]),
+        ("extra || true", ["/bin/sh", "-c", expected + " || true"]),
+        ("usr bin sh", ["/usr/bin/sh", "-c", expected]),
+        ("bash", ["/bin/bash", "-c", expected]),
+    ]
+    denied = "subprocess denied"
+    for label, argv in cases:
+        with pytest.raises(PermissionError, match=denied):
+            subprocess.run(argv, check=False)
+        with pytest.raises(PermissionError, match=denied):
+            subprocess.Popen(argv)
+        assert installed.is_file(), label
+
+
+def test_live_hook_and_grok_path_cwd_retarget_denied(monkeypatch, tmp_path) -> None:
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    _installed, expected = _install_isolation_hook(iso)
+    hook_argv = ["/bin/sh", "-c", expected]
+    grok_argv = ["grok", "version"]
+    denied = "subprocess denied"
+
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(hook_argv, env={"PATH": "/usr/bin:/bin"}, check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_argv, env={"PATH": "/usr/bin:/bin"}, check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.Popen(grok_argv, env={"PATH": "/usr/bin:/bin"})
+
+    unreviewed = tmp_path / "unreviewed-cwd"
+    unreviewed.mkdir()
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(hook_argv, cwd=str(unreviewed), check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(grok_argv, cwd=str(unreviewed), check=False)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.Popen(hook_argv, cwd=str(unreviewed))
+
+    monkeypatch.chdir(iso.bin_dir)
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.run(
+            ["./grok", "version"],
+            cwd=tempfile.gettempdir(),
+            check=False,
+        )
+    with pytest.raises(PermissionError, match=denied):
+        subprocess.Popen(["./grok", "version"])
