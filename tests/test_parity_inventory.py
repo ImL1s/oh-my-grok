@@ -74,7 +74,7 @@ def test_closed_issues_67_68_cannot_be_open_p0_owners() -> None:
 
     inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
     evidence = load_and_validate_issue_state_evidence(ROOT / ISSUE_STATE_EVIDENCE_RELATIVE)
-    assert {"#67", "#68", "#78"} <= set(evidence["closure_sensitive"])
+    assert evidence["closure_sensitive"] == ["#67", "#68", "#78"]
     assert evidence["issues"]["#67"]["observed_state"] == "closed"
     assert evidence["issues"]["#68"]["observed_state"] == "closed"
     assert evidence["issues"]["#78"]["observed_state"] == "open"

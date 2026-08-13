@@ -16,6 +16,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   publish `provider_spawned`. A termination signal delivered as soon as the
   receipt becomes observable can no longer bypass forwarding and orphan the
   provider process group.
+- **Issue-state `closure_sensitive` HIGH:** production receipts must use
+  the exact canonical list `["#67", "#68", "#78"]` (order + set; drop /
+  add / duplicate / reorder fail closed). Arbitrary nonempty `#N` lists
+  are no longer accepted. Digest, source identity, and open-P0 reopen
+  semantics unchanged. Refs #158.
 - **Issue-state identity HIGH:** `load_and_validate_issue_state_evidence`
   rejects boolean `schema_version`, non-canonical
   `github.com/ImL1s/oh-my-grok` source identity, `#N` keys whose

@@ -1,9 +1,11 @@
 # Pinned issue-state evidence
 
 `v1.json` is **bounded release-time** observation of GitHub issue state
-for closure-sensitive claims (`#67`, `#68`, `#78`). It is **not**
-perpetual live GitHub truth: `omg parity check --strict` never calls the
-network; it only hashes and interprets this committed receipt.
+for closure-sensitive claims. Production `closure_sensitive` must be
+exactly `["#67", "#68", "#78"]` in that order (set + order; drop / add /
+duplicate / reorder fail closed). It is **not** perpetual live GitHub
+truth: `omg parity check --strict` never calls the network; it only
+hashes and interprets this committed receipt.
 
 ## Honesty
 

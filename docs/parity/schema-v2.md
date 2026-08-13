@@ -54,9 +54,10 @@ Release gate (`check_parity_release_claims`) requires the host snapshot to match
 Pinned offline receipt: [`issue-state/v1.json`](issue-state/v1.json)
 (`store_kind=parity-issue-state-evidence`, exact non-bool `schema_version` 1,
 canonical `github.com/ImL1s/oh-my-grok` source, `#N` keys bound to integer
-`N` and `https://github.com/ImL1s/oh-my-grok/issues/N`). `--strict`
-with `repo_root` binds Open-P0 owners to this digest-bound observation —
-no network. See [`issue-state/README.md`](issue-state/README.md).
+`N` and `https://github.com/ImL1s/oh-my-grok/issues/N`). Production
+`closure_sensitive` must be exactly `["#67", "#68", "#78"]` in that order.
+`--strict` with `repo_root` binds Open-P0 owners to this digest-bound
+observation — no network. See [`issue-state/README.md`](issue-state/README.md).
 
 This is **bounded release-time** evidence, not live GitHub. Observed pin:
 `#67` / `#68` closed/completed; `#78` **open/reopened**, close pending

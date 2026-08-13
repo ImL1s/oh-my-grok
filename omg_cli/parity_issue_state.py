@@ -32,12 +32,15 @@ CANONICAL_ISSUE_STATE_HOST = "github.com"
 CANONICAL_ISSUE_STATE_OWNER = "ImL1s"
 CANONICAL_ISSUE_STATE_NAME = "oh-my-grok"
 CANONICAL_ISSUE_STATE_HTML_URL = "https://github.com/ImL1s/oh-my-grok"
+# Production receipts must serialize this exact ordered set — not any nonempty #N list.
+CANONICAL_CLOSURE_SENSITIVE = ("#67", "#68", "#78")
 _ISSUE_KEY_RE = re.compile(r"^#([1-9][0-9]*)$")
 FRESHNESS_SEMANTICS = frozenset({"release_pin", "ttl"})
 CLOSED_STATES = frozenset({"closed"})
 OPEN_STATES = frozenset({"open"})
 
 __all__ = [
+    "CANONICAL_CLOSURE_SENSITIVE",
     "CANONICAL_ISSUE_STATE_HOST",
     "CANONICAL_ISSUE_STATE_HTML_URL",
     "CANONICAL_ISSUE_STATE_NAME",
@@ -161,12 +164,12 @@ def load_and_validate_issue_state_evidence(
         raise ContractValidationError("issue-state content_digest tampered")
 
     sensitive = raw.get("closure_sensitive")
-    if not isinstance(sensitive, list) or not sensitive:
-        raise ContractValidationError("issue-state closure_sensitive must be non-empty")
-    if not all(
-        isinstance(item, str) and _ISSUE_KEY_RE.fullmatch(item) for item in sensitive
-    ):
-        raise ContractValidationError("issue-state closure_sensitive must be #N ids")
+    expected_sensitive = list(CANONICAL_CLOSURE_SENSITIVE)
+    if not isinstance(sensitive, list) or sensitive != expected_sensitive:
+        raise ContractValidationError(
+            "issue-state closure_sensitive must be the exact canonical "
+            f"list {expected_sensitive}"
+        )
 
     issues = require_object(raw.get("issues"), label="issue-state.issues")
     for issue_id, raw_row in issues.items():

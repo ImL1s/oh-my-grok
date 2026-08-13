@@ -361,6 +361,7 @@ def test_issue_state_happy_path_production_receipt() -> None:
     )
     assert evidence["schema_version"] == 1
     assert evidence["source"]["html_url"] == CANONICAL_ISSUE_STATE_HTML_URL
+    assert evidence["closure_sensitive"] == ["#67", "#68", "#78"]
     assert evidence["issues"]["#67"]["number"] == 67
     assert (
         evidence["issues"]["#67"]["url"]
@@ -441,6 +442,50 @@ def test_issue_state_bool_number_rejected(tmp_path: Path) -> None:
 
     path = _mutated_issue_state(tmp_path, mutate)
     with pytest.raises(ContractValidationError, match=r"#67\.number"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_drop_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_add_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68", "#78", "#79"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_duplicate_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68", "#78", "#67"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_reorder_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#78", "#67", "#68"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
         load_and_validate_issue_state_evidence(path)
 
 
