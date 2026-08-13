@@ -3,7 +3,12 @@
 Owns the JSON-RPC wire for ``grok agent stdio`` (argv-only, shell=False).
 Does **not** set verified/passes, replay transcripts, or call session/close.
 Conversation-content ``session/update`` notifications fail closed (no-replay).
-Resume identity is checked before any receipt; peer stderr is drained.
+
+``session/resume`` request params are ``sessionId`` + ``cwd`` only. The
+result allowlist is ``modes`` / ``models`` / ``configOptions`` / ``_meta``
+(empty ``{}`` is valid). Identity is the JSON-RPC response id plus
+request-derived hashes — not result echo. Peer stderr is drained.
+Validate then drop the result (never persist/log ``_meta`` or raw result).
 """
 
 from __future__ import annotations
@@ -252,44 +257,68 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def validate_resume_result(result: Any, expected_session_id: str) -> None:
-    """Fail-closed identity check on ``session/resume`` result.
+# Official ResumeSessionResponse top-level allowlist (ACP 0.11.4 / latest).
+# Empty {} is valid. sessionId / resumed / replay bags are unknown keys.
+_RESUME_RESULT_ALLOWED_KEYS = frozenset(
+    {"modes", "models", "configOptions", "_meta"}
+)
 
-    Raises ``E_ACP_RESUME`` when the result is not a JSON object or ``resumed``
-    is not JSON boolean true. Raises ``E_ACP_IDENTITY`` when the session id
-    key is missing, not a string, or does not equal the requested UUID.
-    Allowed identity keys are exclusive-or: ``sessionId`` **or** the single
-    alias ``session_id`` only. Both present is an identity failure even when
-    the values are equal.
+
+def validate_resume_result(result: Any) -> None:
+    """Fail-closed top-level allowlist on ``session/resume`` result.
+
+    Official ``ResumeSessionResponse`` may contain only ``modes``
+    (object or null, SessionModeState container), ``models`` (object or
+    null), ``configOptions`` (array or null), and ``_meta`` (object or
+    null). Empty ``{}`` is valid. The result does not echo ``sessionId``
+    or ``resumed``; handshake identity is the JSON-RPC response id plus
+    request-derived hashes.
+
+    Raises ``E_ACP_RESUME`` when the result is not a JSON object, an
+    unknown top-level key is present, or an allowed key has the wrong
+    container type. Does not walk nested fields (unknown top-level keys
+    already reject replay bags). Diagnostics name field names only
+    (never values, secrets, session ids, or ``_meta`` contents).
     """
     if not isinstance(result, dict):
         raise AcpError(
             "ACP resume result must be a JSON object", code="E_ACP_RESUME"
         )
-    has_camel = "sessionId" in result
-    has_snake = "session_id" in result
-    if not has_camel and not has_snake:
-        raise AcpError(
-            "ACP resume result missing session identity", code="E_ACP_IDENTITY"
-        )
-    if has_camel and has_snake:
-        raise AcpError(
-            "ACP resume result must not include both sessionId and session_id",
-            code="E_ACP_IDENTITY",
-        )
-    sid = result["sessionId"] if has_camel else result["session_id"]
-    if not isinstance(sid, str) or sid != expected_session_id:
-        raise AcpError(
-            "ACP resume session identity mismatch", code="E_ACP_IDENTITY"
-        )
-    if "resumed" not in result:
-        raise AcpError(
-            "ACP resume result missing resumed", code="E_ACP_RESUME"
-        )
-    if result["resumed"] is not True:
-        raise AcpError(
-            "ACP resume result resumed is not true", code="E_ACP_RESUME"
-        )
+    for key in result:
+        if key not in _RESUME_RESULT_ALLOWED_KEYS:
+            label = key if isinstance(key, str) else type(key).__name__
+            raise AcpError(
+                f"ACP resume result unknown field {label}",
+                code="E_ACP_RESUME",
+            )
+    if "modes" in result:
+        modes = result["modes"]
+        if modes is not None and not isinstance(modes, dict):
+            raise AcpError(
+                "ACP resume result modes must be an object or null",
+                code="E_ACP_RESUME",
+            )
+    if "models" in result:
+        models = result["models"]
+        if models is not None and not isinstance(models, dict):
+            raise AcpError(
+                "ACP resume result models must be an object or null",
+                code="E_ACP_RESUME",
+            )
+    if "configOptions" in result:
+        config_options = result["configOptions"]
+        if config_options is not None and not isinstance(config_options, list):
+            raise AcpError(
+                "ACP resume result configOptions must be an array or null",
+                code="E_ACP_RESUME",
+            )
+    if "_meta" in result:
+        meta = result["_meta"]
+        if meta is not None and not isinstance(meta, dict):
+            raise AcpError(
+                "ACP resume result _meta must be an object or null",
+                code="E_ACP_RESUME",
+            )
 
 
 def _start_stderr_drain(proc: subprocess.Popen[bytes]) -> threading.Thread:
@@ -538,8 +567,9 @@ def _read_line(
     byte_budget: list[int],
     rx_buf: bytearray,
     max_total_bytes: int = DEFAULT_DRAIN_MAX_BYTES,
+    cancel_event: threading.Event | None = None,
 ) -> bytes:
-    """Read one NL-terminated frame; fail on timeout/EOF/overflow.
+    """Read one NL-terminated frame; fail on timeout/EOF/overflow/cancel.
 
     *max_bytes* is the **per-line** cap only. The cumulative ceiling is
     committed ``byte_budget`` plus currently buffered leftover bytes
@@ -559,9 +589,16 @@ def _read_line(
     append. ``byte_budget`` is incremented only when a complete NL frame is
     extracted so leftover is not double-counted when that frame later
     completes.
+
+    *cancel_event* is sampled every ``_CANCEL_POLL_INTERVAL_S``. A complete
+    frame already in *rx_buf* is returned even if cancel is set. Leftover
+    overflow beats cancel. ``chunk == b""`` is proven EOF regardless of
+    ``poll()``; ``chunk is None`` is not EOF (no bytes now).
     """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
+    import select
+
     while True:
         extracted = _extract_complete_frame(
             rx_buf, byte_budget, max_line_bytes=max_bytes
@@ -569,7 +606,7 @@ def _read_line(
         if extracted is not None:
             return extracted
 
-        # Fail closed on leftover over-limit incomplete frames before poll/timeout.
+        # Leftover-only overflow beats cancel and timeout.
         _raise_if_buffered_limits(
             byte_budget,
             rx_buf,
@@ -577,35 +614,23 @@ def _read_line(
             max_total_bytes=max_total_bytes,
         )
 
-        if time.monotonic() > deadline:
-            raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
-        if proc.poll() is not None and not rx_buf:
-            raise AcpError("ACP process exited before response", code="E_ACP_EOF")
-        try:
-            import select
+        if cancel_event is not None and cancel_event.is_set():
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
 
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
+
+        try:
             ready, _, _ = select.select(
-                [proc.stdout], [], [], _CANCEL_POLL_INTERVAL_S
+                [proc.stdout],
+                [],
+                [],
+                min(remaining, _CANCEL_POLL_INTERVAL_S),
             )
             if not ready:
-                if proc.poll() is not None:
-                    _raise_if_buffered_limits(
-                        byte_budget,
-                        rx_buf,
-                        max_line_bytes=max_bytes,
-                        max_total_bytes=max_total_bytes,
-                        include_complete_frames=True,
-                    )
-                    raise AcpError(
-                        "ACP process exited before complete line", code="E_ACP_EOF"
-                    )
-                continue
-            # Read available bytes (pipe may return short); retain partials in rx_buf.
-            chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
-        except (OSError, ValueError) as exc:
-            raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
-        if chunk is None or chunk == b"":
-            if proc.poll() is not None:
+                # Not-ready is never EOF (only b"" is). Overflow, then cancel,
+                # then deadline — same order as absorb's poll-exit path.
                 _raise_if_buffered_limits(
                     byte_budget,
                     rx_buf,
@@ -613,12 +638,49 @@ def _read_line(
                     max_total_bytes=max_total_bytes,
                     include_complete_frames=True,
                 )
-                if rx_buf:
+                if cancel_event is not None and cancel_event.is_set():
                     raise AcpError(
-                        "ACP EOF with incomplete frame", code="E_ACP_EOF"
+                        "ACP handshake cancelled", code="E_ACP_CANCELLED"
                     )
-                raise AcpError("ACP EOF while reading line", code="E_ACP_EOF")
-            time.sleep(0.01)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
+                continue
+            if cancel_event is not None and cancel_event.is_set():
+                raise AcpError(
+                    "ACP handshake cancelled", code="E_ACP_CANCELLED"
+                )
+            chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
+        except (OSError, ValueError) as exc:
+            raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
+        if chunk == b"":
+            _raise_if_buffered_limits(
+                byte_budget,
+                rx_buf,
+                max_line_bytes=max_bytes,
+                max_total_bytes=max_total_bytes,
+                include_complete_frames=True,
+            )
+            if rx_buf:
+                raise AcpError(
+                    "ACP EOF with incomplete frame", code="E_ACP_EOF"
+                )
+            raise AcpError("ACP EOF while reading line", code="E_ACP_EOF")
+        if chunk is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AcpError(
+                    "ACP handshake cancelled", code="E_ACP_CANCELLED"
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _raise_if_buffered_limits(
+                    byte_budget,
+                    rx_buf,
+                    max_line_bytes=max_bytes,
+                    max_total_bytes=max_total_bytes,
+                    include_complete_frames=True,
+                )
+                raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
             continue
         rx_buf.extend(chunk)
         # Incomplete-frame cap only: many complete small lines may share a
@@ -744,8 +806,6 @@ class AcpStdioSession:
                 "params": {
                     "sessionId": self.session_id,
                     "cwd": self.cwd,
-                    "noReplay": True,
-                    "restoreCode": False,
                 },
             },
         )
@@ -755,7 +815,7 @@ class AcpStdioSession:
             cancel_event=cancel_event,
             require_object=True,
         )
-        validate_resume_result(resume_result, self.session_id)
+        validate_resume_result(resume_result)
         derived_sid_hash, derived_cwd_hash = bind_constructor_identity(
             self.session_id,
             self.session_id_hash,
@@ -984,10 +1044,11 @@ class AcpStdioSession:
         allow_timeout: bool,
     ) -> dict[str, Any] | None:
         while True:
+            # Leftover-only overflow first (same order as absorb): already-
+            # buffered over-limit suffix beats cancel and timeout.
+            self._raise_if_rx_over_limits()
             if cancel_event is not None and cancel_event.is_set():
                 raise AcpError("ACP cancelled", code="E_ACP_CANCELLED")
-            # Leftover-only: extract-first when time remains (valid + NL + oversized).
-            self._raise_if_rx_over_limits()
             now = time.monotonic()
             if now > deadline:
                 # ALL frames beat timeout so a complete oversized leftover
@@ -1004,6 +1065,7 @@ class AcpStdioSession:
                     byte_budget=self._byte_budget,
                     rx_buf=self._rx_buf,
                     max_total_bytes=self.max_total_bytes,
+                    cancel_event=cancel_event,
                 )
             except AcpError as exc:
                 if allow_timeout and exc.code == "E_ACP_TIMEOUT":

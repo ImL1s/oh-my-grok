@@ -84,10 +84,8 @@ def _peer_response_frame(*, rpc_id: int, result: dict) -> bytes:
     )
 
 
-def _first_leftover_after_resume(session_id: str) -> tuple[bytes, int]:
-    resume_frame = _peer_response_frame(
-        rpc_id=2, result={"sessionId": session_id, "resumed": True}
-    )
+def _first_leftover_after_resume(_session_id: str) -> tuple[bytes, int]:
+    resume_frame = _peer_response_frame(rpc_id=2, result={})
     first_leftover = _STDOUT_READ_CHUNK - len(resume_frame)
     assert first_leftover > 0
     assert first_leftover < DEFAULT_MAX_LINE_BYTES
@@ -95,7 +93,7 @@ def _first_leftover_after_resume(session_id: str) -> tuple[bytes, int]:
 
 
 def _padded_resume_frame(
-    session_id: str, *, rpc_id: int = 2, target_len: int = _STDOUT_READ_CHUNK
+    _session_id: str, *, rpc_id: int = 2, target_len: int = _STDOUT_READ_CHUNK
 ) -> bytes:
     """Match fixture compact resume padding (exact NL-terminated length)."""
 
@@ -105,11 +103,8 @@ def _padded_resume_frame(
                 {
                     "jsonrpc": "2.0",
                     "id": rpc_id,
-                    "result": {
-                        "sessionId": session_id,
-                        "resumed": True,
-                        "pad": pad,
-                    },
+                    "result": {},
+                    "pad": pad,
                 },
                 separators=(",", ":"),
             )
@@ -160,9 +155,7 @@ def _handshake_pipe_session(session_id: str, extra: bytes = b""):
         rpc_id=1,
         result={"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
     )
-    resume = _peer_response_frame(
-        rpc_id=2, result={"sessionId": session_id, "resumed": True}
-    )
+    resume = _peer_response_frame(rpc_id=2, result={})
     w_file.write(init + resume + extra)
     w_file.flush()
     w_file.close()
@@ -345,6 +338,93 @@ def test_acp_resume_false_does_not_write_receipt(tmp_path: Path) -> None:
             sess.handshake(timeout_s=5.0)
         assert ei.value.code == "E_ACP_RESUME"
         assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_acp_resume_nonempty_messages_does_not_write_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("resume_nonempty_messages", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert "RESUME_SECRET" not in str(ei.value)
+    finally:
+        sess.close()
+
+
+def test_acp_resume_nested_replay_does_not_write_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("resume_nested_replay", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert "RESUME_SECRET" not in str(ei.value)
+    finally:
+        sess.close()
+
+
+def test_acp_resume_contradictory_restore_does_not_write_receipt(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("resume_contradictory_restore", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert "RESUME_SECRET" not in str(ei.value)
+    finally:
+        sess.close()
+
+
+def test_acp_resume_unknown_field_does_not_write_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("resume_unknown_field", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert "RESUME_SECRET" not in str(ei.value)
+    finally:
+        sess.close()
+
+
+def test_acp_resume_empty_result_writes_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("success", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        receipt = sess.handshake(timeout_s=5.0)
+        assert receipt.resume_matched is True
+        assert receipt.no_replay_observed is True
+        assert receipt.restore_code_requested is False
+        assert sess._ready is True
+    finally:
+        sess.close()
+
+
+def test_acp_resume_populated_result_writes_receipt(tmp_path: Path) -> None:
+    proc, argv = _spawn("resume_populated", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        receipt = sess.handshake(timeout_s=5.0)
+        assert receipt.resume_matched is True
+        assert receipt.no_replay_observed is True
+        assert receipt.restore_code_requested is False
+        body = json.dumps(receipt.to_dict())
+        assert "RESUME_SECRET" not in body
+        assert "_meta" not in body
     finally:
         sess.close()
 
@@ -355,8 +435,9 @@ def test_acp_resume_session_id_mismatch_does_not_match(tmp_path: Path) -> None:
     try:
         with pytest.raises(AcpError) as ei:
             sess.handshake(timeout_s=5.0)
-        assert ei.value.code == "E_ACP_IDENTITY"
+        assert ei.value.code == "E_ACP_RESUME"
         assert sess._receipt is None
+        assert sess._ready is False
     finally:
         sess.close()
 
@@ -439,6 +520,7 @@ def test_acp_resume_missing_resumed_does_not_write_receipt(tmp_path: Path) -> No
             sess.handshake(timeout_s=5.0)
         assert ei.value.code == "E_ACP_RESUME"
         assert sess._receipt is None
+        assert sess._ready is False
     finally:
         sess.close()
 
@@ -447,9 +529,11 @@ def test_acp_resume_session_id_alias_matches(tmp_path: Path) -> None:
     proc, argv = _spawn("session_id_alias", tmp_path)
     sess = _session(proc, argv, tmp_path, quiet=0.05)
     try:
-        receipt = sess.handshake(timeout_s=5.0)
-        assert receipt.resume_matched is True
-        assert receipt.session_id_hash == sess.session_id_hash
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
     finally:
         sess.close()
 
@@ -460,8 +544,58 @@ def test_acp_resume_dual_identity_keys_rejected(tmp_path: Path) -> None:
     try:
         with pytest.raises(AcpError) as ei:
             sess.handshake(timeout_s=5.0)
-        assert ei.value.code == "E_ACP_IDENTITY"
+        assert ei.value.code == "E_ACP_RESUME"
         assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_acp_resume_request_params_are_session_id_and_cwd_only() -> None:
+    sid = str(uuid.uuid4())
+    sess, r_file = _handshake_pipe_session(sid)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_EOF"
+        raw = sess.proc.stdin.getvalue().decode("utf-8")
+        frames = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        resume_req = next(m for m in frames if m.get("method") == "session/resume")
+        assert resume_req["params"] == {"sessionId": sid, "cwd": sess.cwd}
+        assert set(resume_req["params"]) == {"sessionId", "cwd"}
+        assert "noReplay" not in resume_req["params"]
+        assert "restoreCode" not in resume_req["params"]
+        assert "mcpServers" not in resume_req["params"]
+        assert "additionalDirectories" not in resume_req["params"]
+        assert "_meta" not in resume_req["params"]
+    finally:
+        sess.close()
+        r_file.close()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "resume_modes_wrong_type",
+        "resume_models_wrong_type",
+        "resume_config_options_wrong_type",
+        "resume_meta_wrong_type",
+        "resume_unknown_pad",
+        "resume_empty_messages",
+        "resume_explicit_noreplay",
+    ],
+)
+def test_acp_resume_wrong_type_or_unknown_result_does_not_write_receipt(
+    tmp_path: Path, scenario: str
+) -> None:
+    proc, argv = _spawn(scenario, tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.05)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_RESUME"
+        assert sess._receipt is None
+        assert sess._ready is False
     finally:
         sess.close()
 
@@ -704,58 +838,128 @@ def test_build_receipt_from_dict_missing_resume_matched_is_not_true() -> None:
     assert rec_truthy.resume_matched is False
 
 
-def test_validate_resume_result_typed_errors() -> None:
-    sid = str(uuid.uuid4())
-    validate_resume_result({"sessionId": sid, "resumed": True}, sid)
-    validate_resume_result({"session_id": sid, "resumed": True}, sid)
-    with pytest.raises(AcpError) as dual_equal:
-        validate_resume_result(
-            {"sessionId": sid, "session_id": sid, "resumed": True}, sid
-        )
-    assert dual_equal.value.code == "E_ACP_IDENTITY"
-    with pytest.raises(AcpError) as dual_unequal:
-        validate_resume_result(
-            {
-                "sessionId": sid,
-                "session_id": "00000000-0000-0000-0000-000000000000",
-                "resumed": True,
-            },
-            sid,
-        )
-    assert dual_unequal.value.code == "E_ACP_IDENTITY"
-    with pytest.raises(AcpError) as missing:
-        validate_resume_result({"sessionId": sid}, sid)
-    assert missing.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as false_flag:
-        validate_resume_result({"sessionId": sid, "resumed": False}, sid)
-    assert false_flag.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as truthy:
-        validate_resume_result({"sessionId": sid, "resumed": "true"}, sid)
-    assert truthy.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as mismatch:
-        validate_resume_result(
-            {"sessionId": "00000000-0000-0000-0000-000000000000", "resumed": True},
-            sid,
-        )
-    assert mismatch.value.code == "E_ACP_IDENTITY"
+def _populated_resume_result() -> dict:
+    return {
+        "modes": {
+            "currentModeId": "default",
+            "availableModes": [{"id": "default", "name": "Default"}],
+        },
+        "models": {},
+        "configOptions": [],
+        "_meta": {},
+    }
+
+
+def test_validate_resume_result_empty_object_succeeds() -> None:
+    validate_resume_result({})
+
+
+def test_validate_resume_result_fully_populated_allowed_object_succeeds() -> None:
+    validate_resume_result(_populated_resume_result())
+
+
+def test_validate_resume_result_allowed_nulls_succeed() -> None:
+    validate_resume_result(
+        {
+            "modes": None,
+            "models": None,
+            "configOptions": None,
+            "_meta": None,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "field"),
+    [
+        ({"modes": "x"}, "modes"),
+        ({"models": []}, "models"),
+        ({"configOptions": {}}, "configOptions"),
+        ({"_meta": "x"}, "_meta"),
+        ({"modes": 1}, "modes"),
+        ({"models": "x"}, "models"),
+        ({"configOptions": "x"}, "configOptions"),
+        ({"_meta": []}, "_meta"),
+    ],
+)
+def test_validate_resume_result_allowed_key_wrong_type(
+    result: dict, field: str
+) -> None:
+    with pytest.raises(AcpError) as ei:
+        validate_resume_result(result)
+    assert ei.value.code == "E_ACP_RESUME"
+    assert field in str(ei.value)
+    assert "x" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "sessionId",
+        "session_id",
+        "resumed",
+        "noReplay",
+        "no_replay",
+        "restoreCode",
+        "restore_code",
+        "messages",
+        "history",
+        "transcript",
+        "conversation",
+        "replay",
+        "chunks",
+        "pad",
+        "content",
+    ],
+)
+def test_validate_resume_result_unknown_key_fails(key: str) -> None:
+    with pytest.raises(AcpError) as ei:
+        validate_resume_result({key: None})
+    assert ei.value.code == "E_ACP_RESUME"
+    assert key in str(ei.value)
+
+
+def test_validate_resume_result_rejects_non_object() -> None:
     with pytest.raises(AcpError) as not_obj:
-        validate_resume_result(None, sid)
+        validate_resume_result(None)
     assert not_obj.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as null_flag:
-        validate_resume_result({"sessionId": sid, "resumed": None}, sid)
-    assert null_flag.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as num_flag:
-        validate_resume_result({"sessionId": sid, "resumed": 1}, sid)
-    assert num_flag.value.code == "E_ACP_RESUME"
-    with pytest.raises(AcpError) as null_sid:
-        validate_resume_result({"sessionId": None, "resumed": True}, sid)
-    assert null_sid.value.code == "E_ACP_IDENTITY"
-    with pytest.raises(AcpError) as num_sid:
-        validate_resume_result({"sessionId": 1, "resumed": True}, sid)
-    assert num_sid.value.code == "E_ACP_IDENTITY"
     with pytest.raises(AcpError) as list_result:
-        validate_resume_result([], sid)
+        validate_resume_result([])
     assert list_result.value.code == "E_ACP_RESUME"
+
+
+def test_validate_resume_result_secrets_never_in_diagnostics() -> None:
+    sid = str(uuid.uuid4())
+    secret = "RESUME_SECRET_REPLAY"
+    cases = (
+        {"sessionId": sid, "messages": [{"text": secret}]},
+        {"history": {"content": secret}},
+        {"transcript": secret},
+        {"pad": secret},
+        {"messages": [{"text": secret}]},
+        {"_meta": secret},
+    )
+    for result in cases:
+        with pytest.raises(AcpError) as ei:
+            validate_resume_result(result)
+        assert ei.value.code == "E_ACP_RESUME", result
+        assert secret not in str(ei.value)
+        assert "RESUME_SECRET" not in str(ei.value)
+        assert sid not in str(ei.value)
+
+
+def test_validate_resume_result_rejects_unknown_fields() -> None:
+    secret = "RESUME_SECRET_UNKNOWN"
+    with pytest.raises(AcpError) as pad:
+        validate_resume_result({"pad": "p" * 8})
+    assert pad.value.code == "E_ACP_RESUME"
+    assert "pad" in str(pad.value)
+    assert "pppppppp" not in str(pad.value)
+    with pytest.raises(AcpError) as bag:
+        validate_resume_result({"futureReplayBag": {"transcript": secret}})
+    assert bag.value.code == "E_ACP_RESUME"
+    assert secret not in str(bag.value)
+    assert "futureReplayBag" in str(bag.value)
 
 
 def test_read_line_coalesced_valid_plus_oversize_suffix_overflows_before_timeout() -> None:
@@ -980,7 +1184,9 @@ def test_read_line_exactly_at_total_limit_succeeds() -> None:
     try:
         w_file.write(line_a + suffix)
         w_file.flush()
-        w_file.close()
+        # Keep the write end open: F17 treats b"" as proven EOF regardless of
+        # poll(), so closing the pipe would turn this leftover wait into
+        # E_ACP_EOF instead of the intended at-limit TIMEOUT (not OVERFLOW).
         first = _read_line(
             proc,
             max_bytes=max_bytes,
@@ -1077,10 +1283,7 @@ def test_handshake_committed_plus_buffered_suffix_writes_no_receipt(
         rpc_id=1,
         result={"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
     )
-    resume_frame = _peer_response_frame(
-        rpc_id=2,
-        result={"sessionId": sid, "resumed": True},
-    )
+    resume_frame = _peer_response_frame(rpc_id=2, result={})
     completed = len(init_frame) + len(resume_frame)
     max_total = completed + suffix_len - 1
     assert completed <= max_total
@@ -2535,6 +2738,298 @@ def test_handshake_partial_absorb_cancel_writes_no_receipt(
             sess.handshake(timeout_s=15.0, cancel_event=cancel)
         elapsed = time.monotonic() - t0
         assert ei.value.code == "E_ACP_CANCELLED"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_read_line_cancel_during_hung_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A: empty select; cancel on first positive timeout — not TIMEOUT."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray()
+    budget = [0]
+    cancel = threading.Event()
+    timeouts: list[float | None] = []
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        timeouts.append(timeout)
+        if timeout is not None and timeout > 0:
+            cancel.set()
+        return ([], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=DEFAULT_MAX_LINE_BYTES,
+                deadline=time.monotonic() + 15.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+                cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        positive = [t for t in timeouts if t is not None and t > 0]
+        assert positive
+        assert all(t <= _CANCEL_POLL_INTERVAL_S + 1e-9 for t in positive)
+        assert elapsed < 1.0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_read_line_cancel_during_partial_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B: incomplete leftover, no NL; empty select then cancel."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    cancel = threading.Event()
+    timeouts: list[float | None] = []
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        timeouts.append(timeout)
+        if timeout is not None and timeout > 0:
+            cancel.set()
+        return ([], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=DEFAULT_MAX_LINE_BYTES,
+                deadline=time.monotonic() + 15.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+                cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert ei.value.code != "E_ACP_EOF"
+        assert bytes(rx_buf) == b"abc"
+        positive = [t for t in timeouts if t is not None and t > 0]
+        assert positive
+        assert all(t <= _CANCEL_POLL_INTERVAL_S + 1e-9 for t in positive)
+        assert elapsed < 1.0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_read_line_already_buffered_overflow_beats_cancel() -> None:
+    """C: oversize leftover + cancel already set → OVERFLOW, not CANCELLED."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * 300)
+    budget = [0]
+    cancel = threading.Event()
+    cancel.set()
+    try:
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=256,
+                deadline=time.monotonic() + 15.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+                cancel_event=cancel,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert ei.value.code != "E_ACP_CANCELLED"
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_read_line_empty_chunk_is_eof_even_if_poll_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D: select ready; read empty bytes; poll() is None → E_ACP_EOF."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray()
+    budget = [0]
+    assert proc.poll() is None
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        return ([proc.stdout], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    monkeypatch.setattr(r_file, "read", lambda _n: b"")
+    try:
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=DEFAULT_MAX_LINE_BYTES,
+                deadline=time.monotonic() + 15.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+            )
+        assert ei.value.code == "E_ACP_EOF"
+        assert "while reading line" in str(ei.value)
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert proc.poll() is None
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_read_line_chunk_none_is_not_eof_then_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E: select ready; read None; then cancel → CANCELLED, not EOF."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    cancel = threading.Event()
+    calls = {"n": 0}
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            cancel.set()
+        return ([proc.stdout], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    monkeypatch.setattr(r_file, "read", lambda _n: None)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _read_line(
+                proc,
+                max_bytes=DEFAULT_MAX_LINE_BYTES,
+                deadline=time.monotonic() + 15.0,
+                byte_budget=budget,
+                rx_buf=rx_buf,
+                cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert bytes(rx_buf) == b"abc"
+        assert budget[0] == 0
+        assert elapsed < 1.0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_handshake_cancel_during_initialize_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F: hang peer; first positive select timeout sets cancel → CANCELLED."""
+    proc, argv = _spawn("hang", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    cancel = threading.Event()
+    real_select = select.select
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        if timeout is not None and timeout > 0:
+            cancel.set()
+            return ([], [], [])
+        return real_select(r, w, x, timeout)
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=15.0, cancel_event=cancel)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_cancel_during_resume_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G: hang_after_init; cancel on first positive select after initialize."""
+    proc, argv = _spawn("hang_after_init", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    orig_await = sess._await_result
+    past_init = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 1:
+            past_init["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    cancel = threading.Event()
+    real_select = select.select
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        if past_init["on"] and timeout is not None and timeout > 0:
+            cancel.set()
+            return ([], [], [])
+        return real_select(r, w, x, timeout)
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=15.0, cancel_event=cancel)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_cancel_during_quiet_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H: success + quiet_window_s>0; cancel on select after resume."""
+    proc, argv = _spawn("success", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.3)
+    orig_await = sess._await_result
+    past_resume = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 2:
+            past_resume["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    cancel = threading.Event()
+    real_select = select.select
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        if past_resume["on"] and timeout is not None and 0 < timeout <= 1.0:
+            cancel.set()
+            return ([], [], [])
+        return real_select(r, w, x, timeout)
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=15.0, cancel_event=cancel)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
         assert sess._receipt is None
         assert sess._ready is False
         assert elapsed < 2.0

@@ -3,34 +3,47 @@
 
 Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
 
-  success          — initialize + resume + optional chrome; stay alive
+  success          — initialize + resume result {} + optional chrome; stay alive
+  resume_populated — fully populated allowed keys (modes SessionModeState, models {}, configOptions [], _meta {})
   replay           — conversation update before resume response
   late_replay      — conversation update during quiet window after resume
   chrome           — non-conversation chrome before/after resume
   hang             — never respond to initialize
+  hang_after_init  — initialize OK, then sleep forever (never read/respond to resume)
   overflow         — emit oversized line
   wrong_id         — respond with mismatched JSON-RPC id
   rpc_error        — resume returns RPC error
   malformed        — emit non-JSON frame
   exit_after_resume — exit immediately after resume (transient false success)
-  resume_false     — resume result resumed=false (no receipt)
-  resume_plus_oversize_suffix — valid resume result + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_false     — unknown top-level resumed (no receipt)
+  resume_nonempty_messages — unknown top-level messages (no receipt)
+  resume_nested_replay — unknown top-level history (no receipt)
+  resume_contradictory_restore — unknown top-level restoreCode/noReplay (no receipt)
+  resume_unknown_field — unknown top-level futureReplayBag (no receipt)
+  resume_empty_messages — unknown top-level messages (no receipt)
+  resume_explicit_noreplay — unknown top-level noReplay/restoreCode (no receipt)
+  resume_modes_wrong_type — modes is a string (no receipt)
+  resume_models_wrong_type — models is an array (no receipt)
+  resume_config_options_wrong_type — configOptions is an object (no receipt)
+  resume_meta_wrong_type — _meta is a string (no receipt)
+  resume_unknown_pad — unknown top-level pad inside result (no receipt)
+  resume_plus_oversize_suffix — valid resume result {} + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   resume_plus_oversize_terminated_frame — same as resume_plus_oversize_suffix but suffix is fully NL-terminated: resume_json + NL + x*n + NL (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   resume_plus_oversize_suffix_then_exit — resume_plus_oversize_suffix then exit (no stay-alive)
   resume_plus_oversize_terminated_frame_then_exit — resume_plus_oversize_terminated_frame then exit
-  resume_plus_under_limit_frames — valid resume result + two complete 200-byte chrome frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
-  resume_plus_chrome_plus_suffix — valid resume result + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
-  resume_plus_replay_coalesced — valid resume result + forbidden agent_message_chunk in one write
+  resume_plus_under_limit_frames — valid resume result {} + two complete 200-byte chrome frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
+  resume_plus_chrome_plus_suffix — valid resume result {} + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
+  resume_plus_replay_coalesced — valid resume result {} + forbidden agent_message_chunk in one write
   resume_plus_replay_coalesced_then_exit — resume_plus_replay_coalesced then exit
-  resume_plus_malformed_coalesced — valid resume result + non-JSON complete frame in one write
-  resume_plus_unknown_coalesced — valid resume result + unknown session/update in one write
-  resume_exact_chunk_plus_oversize_suffix — resume JSON padded to exactly 4096 bytes + unterminated suffix (OMG_ACP_FAKE_SUFFIX_BYTES)
-  resume_plus_under_limit_suffix_then_exit — resume + small unterminated suffix then exit
-  resume_plus_chrome_then_exit — resume + complete current_mode_update chrome then exit
-  session_id_mismatch — resume result sessionId ≠ requested UUID
-  resume_missing_flag — resume result omits resumed
-  session_id_alias — resume result uses session_id alias only
-  session_id_dual  — resume result includes both sessionId and session_id (equal)
+  resume_plus_malformed_coalesced — valid resume result {} + non-JSON complete frame in one write
+  resume_plus_unknown_coalesced — valid resume result {} + unknown session/update in one write
+  resume_exact_chunk_plus_oversize_suffix — resume JSON-RPC envelope padded to exactly 4096 bytes (result {}) + unterminated suffix (OMG_ACP_FAKE_SUFFIX_BYTES)
+  resume_plus_under_limit_suffix_then_exit — resume {} + small unterminated suffix then exit
+  resume_plus_chrome_then_exit — resume {} + complete current_mode_update chrome then exit
+  session_id_mismatch — unknown top-level sessionId (no receipt)
+  resume_missing_flag — unknown top-level sessionId only (no receipt)
+  session_id_alias — unknown top-level session_id (no receipt)
+  session_id_dual  — unknown top-level sessionId and session_id (no receipt)
   stderr_flood     — flood stderr before handshake (PIPE deadlock probe)
   many_small_chrome — many chrome frames before resume result
 """
@@ -108,8 +121,11 @@ def _close_stdout() -> None:
         return
 
 
-def _padded_resume_frame(rpc_id: object, session_id: str, target_len: int) -> bytes:
-    """Compact resume result whose full NL-terminated frame is *target_len*."""
+def _padded_resume_frame(rpc_id: object, _session_id: str, target_len: int) -> bytes:
+    """Compact resume JSON-RPC envelope whose NL-terminated frame is *target_len*.
+
+    Pad lives next to jsonrpc/id/result. Result is official empty ``{}``.
+    """
 
     def _encode(pad: str) -> bytes:
         return (
@@ -117,11 +133,8 @@ def _padded_resume_frame(rpc_id: object, session_id: str, target_len: int) -> by
                 {
                     "jsonrpc": "2.0",
                     "id": rpc_id,
-                    "result": {
-                        "sessionId": session_id,
-                        "resumed": True,
-                        "pad": pad,
-                    },
+                    "result": {},
+                    "pad": pad,
                 },
                 separators=(",", ":"),
             )
@@ -208,6 +221,10 @@ def main() -> int:
     if scenario == "chrome":
         _notify_update("current_mode_update", mode="default")
 
+    if scenario == "hang_after_init":
+        while True:
+            time.sleep(1.0)
+
     resume = _read_msg()
     if resume is None:
         return 1
@@ -265,7 +282,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -286,7 +303,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -306,7 +323,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -328,7 +345,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -345,7 +362,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -380,7 +397,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -403,7 +420,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -430,7 +447,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -457,7 +474,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -475,7 +492,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -497,7 +514,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -527,7 +544,7 @@ def main() -> int:
                 {
                     "jsonrpc": "2.0",
                     "id": resume["id"],
-                    "result": {"sessionId": sid, "resumed": True},
+                    "result": {},
                 }
             ).encode("utf-8")
             + b"\n"
@@ -565,6 +582,94 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if scenario == "resume_nonempty_messages":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": sid,
+                    "resumed": True,
+                    "messages": [{"text": "RESUME_SECRET_REPLAY"}],
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_nested_replay":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": sid,
+                    "resumed": True,
+                    "history": {"content": "RESUME_SECRET_NESTED"},
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_contradictory_restore":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": sid,
+                    "resumed": True,
+                    "restoreCode": True,
+                    "noReplay": False,
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_unknown_field":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": sid,
+                    "resumed": True,
+                    "futureReplayBag": {"transcript": "RESUME_SECRET_UNKNOWN"},
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_empty_messages":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {"sessionId": sid, "resumed": True, "messages": []},
+            }
+        )
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_explicit_noreplay":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "id": resume["id"],
+                "result": {
+                    "sessionId": sid,
+                    "resumed": True,
+                    "noReplay": True,
+                    "restoreCode": False,
+                },
+            }
+        )
+        time.sleep(60)
+        return 0
+
     if scenario == "many_small_chrome":
         try:
             count = int(os.environ.get("OMG_ACP_FAKE_CHROME_COUNT") or "80")
@@ -576,11 +681,31 @@ def main() -> int:
     if delay:
         time.sleep(delay)
     if scenario == "session_id_alias":
-        resume_result: dict = {"session_id": sid, "resumed": True}
+        resume_result: dict = {"session_id": sid}
     elif scenario == "session_id_dual":
-        resume_result = {"sessionId": sid, "session_id": sid, "resumed": True}
+        resume_result = {"sessionId": sid, "session_id": sid}
+    elif scenario == "resume_populated":
+        resume_result = {
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [{"id": "default", "name": "Default"}],
+            },
+            "models": {},
+            "configOptions": [],
+            "_meta": {},
+        }
+    elif scenario == "resume_modes_wrong_type":
+        resume_result = {"modes": "x"}
+    elif scenario == "resume_models_wrong_type":
+        resume_result = {"models": []}
+    elif scenario == "resume_config_options_wrong_type":
+        resume_result = {"configOptions": {}}
+    elif scenario == "resume_meta_wrong_type":
+        resume_result = {"_meta": "x"}
+    elif scenario == "resume_unknown_pad":
+        resume_result = {"pad": "xxxx"}
     else:
-        resume_result = {"sessionId": sid, "resumed": True}
+        resume_result = {}
     _write(
         {
             "jsonrpc": "2.0",
