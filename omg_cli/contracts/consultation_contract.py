@@ -49,6 +49,9 @@ CONSULTATION_STATUSES = frozenset(
     }
 )
 COUNCIL_STATUSES = CONSULTATION_STATUSES | {"mixed"}
+COUNCIL_FAILURE_STATUSES = frozenset(
+    {"failed", "blocked", "unsupported", "timed_out", "cancelled"}
+)
 CONFLICT_POLICIES = ("preserve_dissent",)
 
 ARTIFACT_DESCRIPTOR_KEYS = ("kind", "relative_path", "sha256", "byte_length")
@@ -325,6 +328,54 @@ def _require_exit_class(value: Any, *, label: str) -> str | None:
     if value is None:
         return None
     return _require_enum(value, label=label, allowed=EXIT_CLASSES)
+
+
+def validate_council_count_invariants(
+    *,
+    lane_count: int,
+    success_count: int,
+    minimum_successes: int,
+    status: str,
+) -> None:
+    """Fail-closed council count/status table shared by receipt and view.
+
+    lane_count is the exact digest count. Terminal statuses partition
+    0..lane_count: succeeded iff all lanes; mixed iff threshold met but
+    not all (implies success_count > 0 because minimum_successes >= 1);
+    failed/blocked/unsupported/timed_out/cancelled only below threshold.
+    queued/running may be any success_count in 0..lane_count.
+    """
+    if not (1 <= lane_count <= _MAX_COUNCIL_LANES):
+        raise ContractValidationError("lane_count must be 1..8")
+    if not (0 <= success_count <= lane_count):
+        raise ContractValidationError(
+            "success_count must be 0..lane_count"
+        )
+    if not (1 <= minimum_successes <= lane_count):
+        raise ContractValidationError(
+            "minimum_successes must be 1..lane_count"
+        )
+    if status in NONTERMINAL_STATUSES:
+        return
+    if status == "succeeded":
+        if success_count != lane_count:
+            raise ContractValidationError(
+                "succeeded requires success_count == lane_count"
+            )
+        return
+    if status == "mixed":
+        if not (minimum_successes <= success_count < lane_count):
+            raise ContractValidationError(
+                "mixed requires threshold success without all lanes succeeding"
+            )
+        return
+    if status in COUNCIL_FAILURE_STATUSES:
+        if success_count >= minimum_successes:
+            raise ContractValidationError(
+                f"{status} requires success_count < minimum_successes"
+            )
+        return
+    raise ContractValidationError(f"unknown council status {status!r}")
 
 
 def _enforce_terminal_rules(
@@ -909,6 +960,12 @@ def parse_council_receipt_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         "auto_apply": flags["auto_apply"],
         "worker_eligible": flags["worker_eligible"],
     }
+    validate_council_count_invariants(
+        lane_count=len(parsed["lane_receipt_digests"]),
+        success_count=parsed["success_count"],
+        minimum_successes=parsed["minimum_successes"],
+        status=parsed["status"],
+    )
     return parsed
 
 
@@ -921,9 +978,6 @@ def parse_council_view_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         secret_scan=True,
     )
     flags = _require_false_flags(payload)
-    lane_count = require_integer(payload["lane_count"], label="lane_count", minimum=1)
-    if lane_count > _MAX_COUNCIL_LANES:
-        raise ContractValidationError("lane_count must be <= 8")
     parsed = {
         "schema_version": 1,
         "council_id": require_safe_id(payload["council_id"], label="council_id"),
@@ -936,7 +990,9 @@ def parse_council_view_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         "minimum_successes": require_integer(
             payload["minimum_successes"], label="minimum_successes", minimum=1
         ),
-        "lane_count": lane_count,
+        "lane_count": require_integer(
+            payload["lane_count"], label="lane_count", minimum=0
+        ),
         "receipt_digest": require_sha256(
             payload["receipt_digest"], label="receipt_digest"
         ),
@@ -945,6 +1001,12 @@ def parse_council_view_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         "auto_apply": flags["auto_apply"],
         "worker_eligible": flags["worker_eligible"],
     }
+    validate_council_count_invariants(
+        lane_count=parsed["lane_count"],
+        success_count=parsed["success_count"],
+        minimum_successes=parsed["minimum_successes"],
+        status=parsed["status"],
+    )
     return parsed
 
 
@@ -981,6 +1043,7 @@ __all__ = [
     "CONSULTATION_REQUEST_V1_KEYS",
     "CONSULTATION_STATUSES",
     "CONSULTATION_VIEW_V1_KEYS",
+    "COUNCIL_FAILURE_STATUSES",
     "COUNCIL_RECEIPT_V1_KEYS",
     "COUNCIL_REQUEST_V1_KEYS",
     "COUNCIL_STATUSES",
@@ -1004,6 +1067,7 @@ __all__ = [
     "parse_council_receipt_v1",
     "parse_council_request_v1",
     "parse_council_view_v1",
+    "validate_council_count_invariants",
     "parse_typed_reason",
     "parse_workspace_descriptor",
 ]

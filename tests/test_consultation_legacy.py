@@ -15,6 +15,8 @@ from omg_cli.contracts.consultation_contract import (
     CONSULTATION_RECEIPT_V1_KEYS,
     CONSULTATION_REQUEST_V1_KEYS,
     CONSULTATION_VIEW_V1_KEYS,
+    COUNCIL_FAILURE_STATUSES,
+    COUNCIL_STATUSES,
     consultation_receipt_digest,
     consultation_request_digest,
     consultation_view_from_receipt,
@@ -24,6 +26,8 @@ from omg_cli.contracts.consultation_contract import (
     parse_consultation_view_v1,
     parse_council_receipt_v1,
     parse_council_request_v1,
+    parse_council_view_v1,
+    validate_council_count_invariants,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
@@ -183,6 +187,10 @@ def _valid_council_request(**overrides: object) -> dict:
     return raw
 
 
+def _lane_digests(count: int) -> list[str]:
+    return [f"{index:064x}" for index in range(count)]
+
+
 def _valid_council_receipt(**overrides: object) -> dict:
     raw: dict = {
         "schema_version": 1,
@@ -200,6 +208,34 @@ def _valid_council_receipt(**overrides: object) -> dict:
     }
     raw.update(overrides)
     return raw
+
+
+def _valid_council_view(**overrides: object) -> dict:
+    raw: dict = {
+        "schema_version": 1,
+        "council_id": "council-1",
+        "status": "mixed",
+        "success_count": 1,
+        "minimum_successes": 1,
+        "lane_count": 2,
+        "receipt_digest": DIGEST_A,
+        "reasons": [],
+        "authoritative": False,
+        "auto_apply": False,
+        "worker_eligible": False,
+    }
+    raw.update(overrides)
+    return raw
+
+
+def _allowed_terminal_statuses(
+    *, success_count: int, minimum_successes: int, lane_count: int
+) -> set[str]:
+    if success_count == lane_count:
+        return {"succeeded"}
+    if minimum_successes <= success_count < lane_count:
+        return {"mixed"}
+    return set(COUNCIL_FAILURE_STATUSES)
 
 
 def test_happy_path_request_attempt_receipt_view_flags_false() -> None:
@@ -243,6 +279,7 @@ def test_request_digest_is_deterministic_and_changes_with_harness_id() -> None:
         (parse_consultation_receipt_v1, _valid_receipt),
         (parse_council_request_v1, _valid_council_request),
         (parse_council_receipt_v1, _valid_council_receipt),
+        (parse_council_view_v1, _valid_council_view),
     ],
 )
 def test_future_schema_version_fails_closed(parser, factory) -> None:
@@ -428,6 +465,172 @@ def test_council_receipt_none_synthesis_requires_null_digest() -> None:
         parse_council_receipt_v1(
             _valid_council_receipt(synthesis_receipt_digest=DIGEST_D)
         )
+
+
+def test_council_receipt_lane_count_is_exact_digest_count() -> None:
+    parsed = parse_council_receipt_v1(
+        _valid_council_receipt(lane_receipt_digests=_lane_digests(3), success_count=2)
+    )
+    assert len(parsed["lane_receipt_digests"]) == 3
+    view = parse_council_view_v1(
+        _valid_council_view(lane_count=3, success_count=2, minimum_successes=2)
+    )
+    assert view["lane_count"] == 3
+    assert view["success_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "success_count,minimum_successes,lane_count",
+    [(-1, 1, 2), (3, 1, 2), (1, 0, 2), (1, 3, 2), (0, 1, 0), (0, 1, 9)],
+)
+def test_council_count_bounds_rejected_by_helper(
+    success_count: int, minimum_successes: int, lane_count: int
+) -> None:
+    with pytest.raises(ContractValidationError):
+        validate_council_count_invariants(
+            lane_count=lane_count,
+            success_count=success_count,
+            minimum_successes=minimum_successes,
+            status="queued",
+        )
+
+
+def test_council_parsers_reject_negative_success_and_zero_minimum() -> None:
+    with pytest.raises(ContractValidationError, match="success_count"):
+        parse_council_receipt_v1(_valid_council_receipt(success_count=-1))
+    with pytest.raises(ContractValidationError, match="success_count"):
+        parse_council_view_v1(_valid_council_view(success_count=-1))
+    with pytest.raises(ContractValidationError, match="minimum_successes"):
+        parse_council_receipt_v1(_valid_council_receipt(minimum_successes=0))
+    with pytest.raises(ContractValidationError, match="minimum_successes"):
+        parse_council_view_v1(_valid_council_view(minimum_successes=0))
+    with pytest.raises(ContractValidationError, match="lane_count"):
+        parse_council_view_v1(_valid_council_view(lane_count=0, status="queued"))
+    with pytest.raises(ContractValidationError, match="lane_count"):
+        parse_council_view_v1(_valid_council_view(lane_count=9, status="queued"))
+
+
+def test_council_view_and_receipt_share_count_helper() -> None:
+    with pytest.raises(ContractValidationError, match="success_count"):
+        parse_council_receipt_v1(
+            _valid_council_receipt(
+                lane_receipt_digests=_lane_digests(2),
+                success_count=3,
+                minimum_successes=1,
+                status="queued",
+            )
+        )
+    with pytest.raises(ContractValidationError, match="success_count"):
+        parse_council_view_v1(
+            _valid_council_view(
+                lane_count=2, success_count=3, minimum_successes=1, status="queued"
+            )
+        )
+    with pytest.raises(ContractValidationError, match="minimum_successes"):
+        parse_council_receipt_v1(
+            _valid_council_receipt(
+                lane_receipt_digests=_lane_digests(2),
+                success_count=0,
+                minimum_successes=3,
+                status="queued",
+            )
+        )
+    with pytest.raises(ContractValidationError, match="minimum_successes"):
+        parse_council_view_v1(
+            _valid_council_view(
+                lane_count=2, success_count=0, minimum_successes=3, status="queued"
+            )
+        )
+
+
+def _council_matrix_cases() -> list[tuple[int, int, int, str]]:
+    cases: list[tuple[int, int, int, str]] = []
+    for lane_count, minimum_successes in ((3, 2), (1, 1)):
+        for success_count in range(lane_count + 1):
+            for status in sorted(COUNCIL_STATUSES):
+                cases.append(
+                    (lane_count, minimum_successes, success_count, status)
+                )
+    return cases
+
+
+@pytest.mark.parametrize(
+    "lane_count,minimum_successes,success_count,status",
+    _council_matrix_cases(),
+)
+def test_council_terminal_truth_table(
+    lane_count: int,
+    minimum_successes: int,
+    success_count: int,
+    status: str,
+) -> None:
+    allowed_terminal = _allowed_terminal_statuses(
+        success_count=success_count,
+        minimum_successes=minimum_successes,
+        lane_count=lane_count,
+    )
+    should_accept = status in {"queued", "running"} or status in allowed_terminal
+    receipt = _valid_council_receipt(
+        lane_receipt_digests=_lane_digests(lane_count),
+        success_count=success_count,
+        minimum_successes=minimum_successes,
+        status=status,
+    )
+    view = _valid_council_view(
+        lane_count=lane_count,
+        success_count=success_count,
+        minimum_successes=minimum_successes,
+        status=status,
+    )
+    if should_accept:
+        validate_council_count_invariants(
+            lane_count=lane_count,
+            success_count=success_count,
+            minimum_successes=minimum_successes,
+            status=status,
+        )
+        assert parse_council_receipt_v1(receipt)["status"] == status
+        assert parse_council_view_v1(view)["status"] == status
+        return
+    with pytest.raises(ContractValidationError):
+        validate_council_count_invariants(
+            lane_count=lane_count,
+            success_count=success_count,
+            minimum_successes=minimum_successes,
+            status=status,
+        )
+    with pytest.raises(ContractValidationError):
+        parse_council_receipt_v1(receipt)
+    with pytest.raises(ContractValidationError):
+        parse_council_view_v1(view)
+
+
+def test_council_mixed_impossible_when_lane_and_minimum_are_one() -> None:
+    with pytest.raises(ContractValidationError, match="mixed"):
+        parse_council_receipt_v1(
+            _valid_council_receipt(
+                lane_receipt_digests=_lane_digests(1),
+                success_count=1,
+                minimum_successes=1,
+                status="mixed",
+            )
+        )
+    with pytest.raises(ContractValidationError, match="mixed"):
+        parse_council_view_v1(
+            _valid_council_view(
+                lane_count=1, success_count=0, minimum_successes=1, status="mixed"
+            )
+        )
+    parsed = parse_council_receipt_v1(
+        _valid_council_receipt(
+            lane_receipt_digests=_lane_digests(1),
+            success_count=1,
+            minimum_successes=1,
+            status="succeeded",
+        )
+    )
+    assert parsed["status"] == "succeeded"
+    assert len(parsed["lane_receipt_digests"]) == 1
 
 
 @pytest.mark.parametrize(
