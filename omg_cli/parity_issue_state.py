@@ -7,6 +7,7 @@ the only place that knows ``#67`` / ``#68`` / ``#78`` are closure-sensitive.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,21 @@ from omg_cli.parity_completeness import canonical_json_digest
 ISSUE_STATE_EVIDENCE_RELATIVE = "docs/parity/issue-state/v1.json"
 ISSUE_STATE_STORE_KIND = "parity-issue-state-evidence"
 ISSUE_STATE_SCHEMA_VERSION = 1
+# Existing canonical representation already used by docs/parity/issue-state/v1.json.
+CANONICAL_ISSUE_STATE_HOST = "github.com"
+CANONICAL_ISSUE_STATE_OWNER = "ImL1s"
+CANONICAL_ISSUE_STATE_NAME = "oh-my-grok"
+CANONICAL_ISSUE_STATE_HTML_URL = "https://github.com/ImL1s/oh-my-grok"
+_ISSUE_KEY_RE = re.compile(r"^#([1-9][0-9]*)$")
 FRESHNESS_SEMANTICS = frozenset({"release_pin", "ttl"})
 CLOSED_STATES = frozenset({"closed"})
 OPEN_STATES = frozenset({"open"})
 
 __all__ = [
+    "CANONICAL_ISSUE_STATE_HOST",
+    "CANONICAL_ISSUE_STATE_HTML_URL",
+    "CANONICAL_ISSUE_STATE_NAME",
+    "CANONICAL_ISSUE_STATE_OWNER",
     "ISSUE_STATE_EVIDENCE_RELATIVE",
     "ISSUE_STATE_SCHEMA_VERSION",
     "ISSUE_STATE_STORE_KIND",
@@ -74,16 +85,44 @@ def load_and_validate_issue_state_evidence(
         raise ContractValidationError(
             f"unknown issue-state store_kind: {raw.get('store_kind')!r}"
         )
-    if raw.get("schema_version") != ISSUE_STATE_SCHEMA_VERSION:
+    schema_version = raw.get("schema_version")
+    # bool is a subclass of int; True == 1 must not authorize.
+    if isinstance(schema_version, bool) or schema_version != ISSUE_STATE_SCHEMA_VERSION:
         raise ContractValidationError(
-            f"unknown issue-state schema_version: {raw.get('schema_version')!r}"
+            f"unknown issue-state schema_version: {schema_version!r}"
         )
     if raw.get("repository_id") != "OMG":
         raise ContractValidationError("issue-state repository_id must be OMG")
 
     source = require_object(raw.get("source"), label="issue-state.source")
-    for key in ("host", "owner", "name", "html_url"):
-        require_nonempty_string(source.get(key), label=f"issue-state.source.{key}")
+    host = require_nonempty_string(source.get("host"), label="issue-state.source.host")
+    owner = require_nonempty_string(
+        source.get("owner"), label="issue-state.source.owner"
+    )
+    name = require_nonempty_string(source.get("name"), label="issue-state.source.name")
+    html_url = require_nonempty_string(
+        source.get("html_url"), label="issue-state.source.html_url"
+    )
+    if host != CANONICAL_ISSUE_STATE_HOST:
+        raise ContractValidationError(
+            f"issue-state source.host must be {CANONICAL_ISSUE_STATE_HOST!r}, "
+            f"got {host!r}"
+        )
+    if owner != CANONICAL_ISSUE_STATE_OWNER:
+        raise ContractValidationError(
+            f"issue-state source.owner must be {CANONICAL_ISSUE_STATE_OWNER!r}, "
+            f"got {owner!r}"
+        )
+    if name != CANONICAL_ISSUE_STATE_NAME:
+        raise ContractValidationError(
+            f"issue-state source.name must be {CANONICAL_ISSUE_STATE_NAME!r}, "
+            f"got {name!r}"
+        )
+    if html_url != CANONICAL_ISSUE_STATE_HTML_URL:
+        raise ContractValidationError(
+            f"issue-state source.html_url must be {CANONICAL_ISSUE_STATE_HTML_URL!r}, "
+            f"got {html_url!r}"
+        )
     require_git_oid(
         source.get("observed_git_commit"),
         label="issue-state.source.observed_git_commit",
@@ -124,10 +163,15 @@ def load_and_validate_issue_state_evidence(
     sensitive = raw.get("closure_sensitive")
     if not isinstance(sensitive, list) or not sensitive:
         raise ContractValidationError("issue-state closure_sensitive must be non-empty")
-    if not all(isinstance(item, str) and item.startswith("#") for item in sensitive):
+    if not all(
+        isinstance(item, str) and _ISSUE_KEY_RE.fullmatch(item) for item in sensitive
+    ):
         raise ContractValidationError("issue-state closure_sensitive must be #N ids")
 
     issues = require_object(raw.get("issues"), label="issue-state.issues")
+    for issue_id, raw_row in issues.items():
+        row = require_object(raw_row, label=f"issue-state.issues.{issue_id}")
+        _validate_issue_identity(issue_id, row)
     for issue_id in sensitive:
         if issue_id not in issues:
             raise ContractValidationError(
@@ -138,8 +182,35 @@ def load_and_validate_issue_state_evidence(
     return raw
 
 
+def _canonical_issue_number(issue_id: str) -> int:
+    match = _ISSUE_KEY_RE.fullmatch(issue_id)
+    if match is None:
+        raise ContractValidationError(
+            f"issue-state issues key is not canonical #N: {issue_id!r}"
+        )
+    return int(match.group(1))
+
+
+def _validate_issue_identity(issue_id: str, row: dict[str, Any]) -> int:
+    expected_number = _canonical_issue_number(issue_id)
+    number = require_integer(
+        row.get("number"), label=f"{issue_id}.number", minimum=1
+    )
+    if number != expected_number:
+        raise ContractValidationError(
+            f"{issue_id} number mismatch: expected {expected_number}, got {number!r}"
+        )
+    expected_url = f"{CANONICAL_ISSUE_STATE_HTML_URL}/issues/{expected_number}"
+    url = require_nonempty_string(row.get("url"), label=f"{issue_id}.url")
+    if url != expected_url:
+        raise ContractValidationError(
+            f"{issue_id} url must be {expected_url!r}, got {url!r}"
+        )
+    return expected_number
+
+
 def _validate_issue_row(issue_id: str, row: dict[str, Any]) -> None:
-    require_nonempty_string(row.get("url"), label=f"{issue_id}.url")
+    _validate_issue_identity(issue_id, row)
     require_nonempty_string(row.get("issue_node_id"), label=f"{issue_id}.issue_node_id")
     state = require_nonempty_string(
         row.get("observed_state"), label=f"{issue_id}.observed_state"

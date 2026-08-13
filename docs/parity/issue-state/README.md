@@ -28,3 +28,9 @@ fixtures); production `--strict` uses the release pin, not a TTL clock.
 (canonical JSON: `sort_keys=True`, `separators=(",", ":")`,
 `ensure_ascii=False`). Tampering fails closed. The validator never
 contacts GitHub.
+
+Source identity is exact: `host=github.com`, `owner=ImL1s`,
+`name=oh-my-grok`, `html_url=https://github.com/ImL1s/oh-my-grok`.
+`schema_version` must be the non-bool integer `1`. Every `issues` key
+`#N` must carry exact integer `number` `N` and URL
+`https://github.com/ImL1s/oh-my-grok/issues/N`.

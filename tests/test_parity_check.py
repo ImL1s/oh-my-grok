@@ -333,6 +333,117 @@ def test_issue_state_ttl_stale_fixture(tmp_path: Path) -> None:
         )
 
 
+def _mutated_issue_state(tmp_path: Path, mutator) -> Path:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+    )
+
+    payload = json.loads(
+        (ROOT / ISSUE_STATE_EVIDENCE_RELATIVE).read_text(encoding="utf-8")
+    )
+    mutator(payload)
+    payload["content_digest"] = _issue_state_digest(payload)
+    path = tmp_path / "issue-state.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_issue_state_happy_path_production_receipt() -> None:
+    from omg_cli.parity_issue_state import (
+        CANONICAL_ISSUE_STATE_HTML_URL,
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        load_and_validate_issue_state_evidence,
+    )
+
+    evidence = load_and_validate_issue_state_evidence(
+        ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    )
+    assert evidence["schema_version"] == 1
+    assert evidence["source"]["html_url"] == CANONICAL_ISSUE_STATE_HTML_URL
+    assert evidence["issues"]["#67"]["number"] == 67
+    assert (
+        evidence["issues"]["#67"]["url"]
+        == f"{CANONICAL_ISSUE_STATE_HTML_URL}/issues/67"
+    )
+
+
+def test_issue_state_bool_schema_version_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    path = _mutated_issue_state(tmp_path, lambda p: p.__setitem__("schema_version", True))
+    with pytest.raises(ContractValidationError, match="schema_version"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_source_host_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["source"]["host"] = "evil.example"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="source.host"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_source_repo_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["source"]["name"] = "not-oh-my-grok"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="source.name"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_key_number_mismatch_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["number"] = 68
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="number mismatch"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_wrong_url_host_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["url"] = "https://evil.example/ImL1s/oh-my-grok/issues/67"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67.*url"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_wrong_url_path_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["url"] = (
+            "https://github.com/ImL1s/oh-my-grok/pull/67"
+        )
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67.*url"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_bool_number_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["number"] = True
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67\.number"):
+        load_and_validate_issue_state_evidence(path)
+
+
 def test_strict_gate_rejects_reopening_closure_sensitive_open_p0() -> None:
     inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
     broken = copy.deepcopy(inventory)

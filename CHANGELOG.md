@@ -16,6 +16,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   publish `provider_spawned`. A termination signal delivered as soon as the
   receipt becomes observable can no longer bypass forwarding and orphan the
   provider process group.
+- **Issue-state identity HIGH:** `load_and_validate_issue_state_evidence`
+  rejects boolean `schema_version`, non-canonical
+  `github.com/ImL1s/oh-my-grok` source identity, `#N` keys whose
+  `number` is not the exact non-bool integer `N`, and issue URLs that
+  are not `https://github.com/ImL1s/oh-my-grok/issues/N`. Digest and
+  temporal validation stay fail closed. Refs #158.
 - **Host-review historical to_ref HIGH:** pin-transition no longer
   swallows `assert_host_generated_docs_consistent`, globs arbitrary
   `GROK_BUILD-from-to-*.json` receipts, or authorizes a
