@@ -1236,16 +1236,26 @@ def status_for_identity(
                 }
             )
         st["worktrees"] = worktrees
-        # Full-status workers annotation (#102 / #69 PR4) — not part of locked schema.
-        st["workers"] = [
-            {
-                "task_id": w.get("task_id"),
-                "logical_worker_index": w.get("logical_worker_index"),
-                "attempt": w.get("attempt"),
-                "worker": w.get("worker"),
-            }
-            for w in worktrees
-        ]
+        # Full-status workers annotation (#102 / #69 PR4 / #147 I/O) —
+        # not part of locked schema. ``io`` is fail-closed projection only.
+        workers_out: list[dict[str, Any]] = []
+        for w in worktrees:
+            worker_slice = w.get("worker") if isinstance(w.get("worker"), Mapping) else {}
+            io_block = None
+            if isinstance(worker_slice, Mapping):
+                raw_io = worker_slice.get("io")
+                if isinstance(raw_io, Mapping):
+                    io_block = dict(raw_io)
+            workers_out.append(
+                {
+                    "task_id": w.get("task_id"),
+                    "logical_worker_index": w.get("logical_worker_index"),
+                    "attempt": w.get("attempt"),
+                    "worker": w.get("worker"),
+                    "io": io_block,
+                }
+            )
+        st["workers"] = workers_out
     except TeamError:
         st.setdefault("worktrees", [])
         st.setdefault("workers", [])

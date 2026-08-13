@@ -167,6 +167,12 @@ def test_presentation_dry_run_stamps_route_and_is_read_only(
     assert not member["worktree"]["relative_path"].startswith("/")
     assert member["current_attempt"]["start"] == "committed"
     assert member["current_attempt"]["execution"]["topology"] == "pane"
+    # #147: presentation projects fail-closed I/O (schema v1 additive).
+    assert member["io"]["io_mode"] == "headless_stream"
+    assert member["io"]["provider_tty_owner"] == "supervisor"
+    assert member["io"]["input_ready"] is False
+    assert member["io"]["operator_input_supported"] is False
+    assert member["io"]["interaction_evidence"] is None
     blob = json.dumps(state)
     assert "owner_token" not in blob
     assert "claim_token" not in blob
@@ -230,10 +236,75 @@ def test_presentation_default_status_unchanged(
         "workspace_mode",
         "tasks",
     }
+    # #147: frozen locked task keys must not gain I/O fields.
+    from omg_cli.team.plane import STATUS_TASK_KEYS, STATUS_TOP_KEYS
+
+    assert STATUS_TOP_KEYS == (
+        "run_id",
+        "session",
+        "dry_run",
+        "workspace_mode",
+        "tasks",
+    )
+    assert STATUS_TASK_KEYS == (
+        "task_id",
+        "window_index",
+        "worktree",
+        "status",
+        "alive",
+    )
+    for t in locked["tasks"]:
+        assert set(t.keys()) == set(STATUS_TASK_KEYS)
+        assert "io_mode" not in t
+        assert "operator_input_supported" not in t
     mcp = dispatch_tool("team_status.read", {"run_id": run_id}, root=tmp_path)
     assert mcp["ok"] is True
     assert "projection" not in mcp
     assert set(mcp["team"].keys()) <= set(locked.keys()) | {"tasks"}
+
+
+def test_aggregate_status_projects_io_and_human_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """status_for_identity / format_status_table show I/O; locked view stays pure."""
+    from omg_cli.team.launch import worker_status_view
+    from omg_cli.team.plane import format_status_table
+    from omg_cli.team.runtime import status_for_identity
+
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = _start_dry(tmp_path)
+    run_id = str(meta["run_id"])
+    # worker_status_view projects normalize I/O.
+    task = load_team_meta(tmp_path, run_id)["tasks"][0]
+    view = worker_status_view(task)
+    assert view["io"]["io_mode"] == "headless_stream"
+    assert view["io"]["operator_input_supported"] is False
+    # startup_status=running must not flip input_ready.
+    task_running = {
+        **task,
+        "status": "running",
+        "io_mode": "headless_stream",
+        "provider_tty_owner": "supervisor",
+        "input_ready": False,
+        "operator_input_supported": False,
+    }
+    assert worker_status_view(task_running)["io"]["input_ready"] is False
+
+    st = status_for_identity(tmp_path, run_id)
+    assert st["workers"]
+    assert st["workers"][0]["io"]["operator_input_supported"] is False
+    assert st["worktrees"][0]["worker"]["io"]["io_mode"] == "headless_stream"
+    locked = status_locked_view(st)
+    assert "workers" not in locked
+    assert "io_mode" not in (locked["tasks"][0] if locked["tasks"] else {})
+
+    table = format_status_table(st)
+    assert "io_mode" in table
+    assert "headless_stream" in table
+    assert "op_in" in table or "op_input" in table
+    # Human table must not imply interactivity from dry_run/running alone.
+    assert "operator_input_supported" not in table or "op_input=no" in table or "  no  " in table
 
 
 def test_presentation_fake_job_and_replacement(

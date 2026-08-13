@@ -44,6 +44,13 @@
         "status": "dry_run",
         "terminal_failure": null
       },
+      "io": {
+        "input_ready": false,
+        "interaction_evidence": null,
+        "io_mode": "headless_stream",
+        "operator_input_supported": false,
+        "provider_tty_owner": "supervisor"
+      },
       "logical_worker_id": "t1",
       "member_id": "t1",
       "role": "executor",

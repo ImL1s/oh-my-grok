@@ -35,6 +35,13 @@ omg team api replace-worker --input '{
 omg team status --run RUN --presentation --json
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 
+# Worker I/O capability (#147 PR1 — fail-closed; not interactive parity):
+# New supervisor panes stamp io_mode=headless_stream, provider_tty_owner=supervisor,
+# input_ready=false, operator_input_supported=false. Job topology → background_job.
+# Legacy/missing fields normalize to unproven/unsupported. operator input/key
+# refuse before tmux send; --operator-override does not bypass capability.
+# Prefer mailbox/task API. Interactive TTY ownership is a later PR.
+
 # Catalog v4 atomic task-batch DAG admission (leader-only; no MCP mutation):
 omg team api bulk-create-tasks --input BATCH.json --json
 omg team api catalog   # schema v4 by default; v1–v3 goldens remain frozen

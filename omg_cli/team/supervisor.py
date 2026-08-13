@@ -930,7 +930,15 @@ def write_provider_descriptor(
     Optional ``identity_basenames`` / ``provider_strategy`` / ``startup_strategy``
     are additive (#67-D). Schema stays at v1 so in-flight Team resume keeps
     loading prior descriptors (no launch-receipt semantic change).
+
+    #147 PR1: also stamps fail-closed I/O capability fields for supervisor-owned
+    headless panes. ``needs_pty`` never promotes ``operator_input_supported``.
     """
+    from omg_cli.team.io_capability import (
+        stamp_io_capability,
+        supervisor_pane_io_defaults,
+    )
+
     target = Path(path)
     ensure_managed_dir(target.parent)
     argv_list = [str(x) for x in argv]
@@ -944,6 +952,8 @@ def write_provider_descriptor(
         "prompt_delivery": str(prompt_delivery or "prompt-file"),
         "needs_pty": bool(needs_pty),
     }
+    # CLI-authoritative I/O stamp (additive; readers fail-closed without it).
+    stamp_io_capability(payload, supervisor_pane_io_defaults())
     if prompt_file is not None:
         payload["prompt_file"] = str(prompt_file)
     if cwd is not None:

@@ -696,6 +696,9 @@ def test_pane_and_job_dry_run_parity_except_execution(
                     "argv",
                     "argv_path",
                     "worktree",
+                    # Topology-specific I/O stamps (#147); shared refuse flags stay.
+                    "io_mode",
+                    "provider_tty_owner",
                 }
             }
             tasks_out.append(row)
@@ -747,7 +750,17 @@ def test_unknown_job_is_unproven(tmp_path: Path) -> None:
 
 def test_worker_status_view_legacy_pane() -> None:
     view = worker_status_view({"task_id": "t1", "pane_id": "%42"})
-    assert view == {"topology": "pane", "pane_id": "%42"}
+    assert view == {
+        "topology": "pane",
+        "pane_id": "%42",
+        "io": {
+            "io_mode": "unproven",
+            "provider_tty_owner": "unknown",
+            "input_ready": False,
+            "operator_input_supported": False,
+            "interaction_evidence": None,
+        },
+    }
 
 
 def test_cli_worker_topology_choices() -> None:

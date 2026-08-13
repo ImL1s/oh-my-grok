@@ -9,6 +9,38 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+
+### Added
+- **#147 PR1 Team worker I/O capability (fail-closed):** CLI-authoritative
+  `io_mode` / `provider_tty_owner` / `input_ready` / `operator_input_supported`
+  / `interaction_evidence` independent of pane/job topology. New supervisor
+  panes stamp `headless_stream` + `supervisor` + unsupported/not-ready;
+  job topology stamps `background_job`. Legacy/missing rows normalize to
+  unproven/unsupported. `omg team input` / `key` refuse with stable
+  `E_OPERATOR_INPUT_UNSUPPORTED` / `E_OPERATOR_KEY_UNSUPPORTED` /
+  `E_OPERATOR_INPUT_NOT_READY` **before** any tmux send; `--operator-override`
+  bypasses only CLI TTY policy. Success shape uses
+  `submitted_to_exact_tty` / `acknowledged_by_provider` (no `delivered:true`
+  overclaim). Aggregate status / presentation / human table project I/O
+  honesty without changing frozen `status_locked_view` keys. Real-tmux
+  tests assert headless refuse (local echo never proves provider
+  consumption). **Does not** close #147: no direct-exec interactive Grok,
+  no multi-provider interactive parity, no `interactive_tty` ownership
+  (PR2+). Issue synonym note: plan public codes are `E_OPERATOR_*` (not
+  `E_TEAM_INPUT_UNSUPPORTED`). Refs #147.
+
+### Fixed
+- **#146 first-party `omg team` routing:** PreToolUse soft-gate no longer
+  classifies first-party `omg team …` as an external agent CLI. Executable
+  heads are basename-normalized across bare, absolute/relative path,
+  `env`/`command`/`exec`/`nice`/`nohup` wrappers, and `sh|bash|zsh -c/-lc`
+  recursion so path-prefixed forms match bare forms. Foreign
+  `omc team` / `claude`/`codex`/`omx`/`agy`/`cursor-agent`/`kimi` stay
+  denied. Nested Team launch in a worker process env is refused with
+  `E_TEAM_NESTED_LAUNCH` (hook defense-in-depth + runtime before side
+  effects); identity-bound `omg team api` reaches runtime validation.
+  Command-text env assignments never authorize. Standalone hook regenerated.
+
 ### Added
 - **#75 PR-A Visual Contract V1:** pure library `omg_cli.contracts.visual_contract` — copy-safe comparison schema, scores, digests; status only `scored`/`blocked`; never emits `approved`/`passes`/`verified` or image bytes. No screenshot capture, agent loop, or `.omg/state` writer. Docs: `docs/visual-contract-v1.md`. Hermetic: `tests/test_visual_contract.py`. Refs #75 (does not close).
 - **#74 PR1 canonical state-root contract:** pure resolver

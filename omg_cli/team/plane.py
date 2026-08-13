@@ -3547,6 +3547,16 @@ def start_team(
                         owner_token=token,
                     ),
                 }
+                # #147 PR1: CLI-authoritative I/O capability on new task rows.
+                # Independent of needs_pty / provider name / startup status.
+                from omg_cli.team.io_capability import (
+                    io_defaults_for_worker_topology,
+                    stamp_io_capability,
+                )
+
+                stamp_io_capability(
+                    rec, io_defaults_for_worker_topology(worker_topo)
+                )
                 from omg_cli.team.presentation import stamp_route_on_task
 
                 stamp_route_on_task(
@@ -5981,6 +5991,10 @@ def format_status_table(status: Mapping[str, Any]) -> str:
             f"{status.get('startup_expected')} "
             f"status={status.get('startup_status')}"
         )
+        # #147 honesty: startup_status is execution readiness, not interactivity.
+        lines.append(
+            "interactive:    no (startup_status≠input_ready; see per-worker io=)"
+        )
     mailbox = status.get("mailbox")
     if isinstance(mailbox, Mapping):
         msgs = mailbox.get("messages") or []
@@ -6001,25 +6015,69 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         for row in worktrees:
             if not isinstance(row, Mapping):
                 continue
+            io_s = _format_worker_io_compact(row)
             lines.append(
-                f"  - {row.get('task_id')}: {row.get('worktree')} [{row.get('status')}]"
+                f"  - {row.get('task_id')}: {row.get('worktree')} "
+                f"[{row.get('status')}]{io_s}"
             )
+    # Prefer aggregate workers[] for I/O when present (status_for_identity).
+    io_by_task: dict[str, Mapping[str, Any]] = {}
+    for w in status.get("workers") or []:
+        if not isinstance(w, Mapping):
+            continue
+        tid = w.get("task_id")
+        if not isinstance(tid, str) or not tid:
+            continue
+        io_block = w.get("io")
+        if not isinstance(io_block, Mapping):
+            worker = w.get("worker")
+            if isinstance(worker, Mapping) and isinstance(worker.get("io"), Mapping):
+                io_block = worker["io"]
+        if isinstance(io_block, Mapping):
+            io_by_task[tid] = io_block
     lines.extend(
         [
             "",
-            f"{'task_id':<20} {'win':>4} {'alive':<6} {'status':<12} worktree",
-            "-" * 72,
+            f"{'task_id':<16} {'win':>3} {'alive':<5} {'status':<10} "
+            f"{'io_mode':<16} {'op_in':<5} {'ready':<5} worktree",
+            "-" * 88,
         ]
     )
     for t in status.get("tasks") or []:
+        if not isinstance(t, Mapping):
+            continue
+        tid = str(t.get("task_id") or "")
+        io = io_by_task.get(tid) or {}
+        io_mode = str(io.get("io_mode") or "unproven")
+        op_in = "yes" if io.get("operator_input_supported") is True else "no"
+        ready = "yes" if io.get("input_ready") is True else "no"
         lines.append(
-            f"{str(t.get('task_id') or ''):<20} "
-            f"{int(t.get('window_index') or 0):>4} "
-            f"{str(bool(t.get('alive'))):<6} "
-            f"{str(t.get('status') or ''):<12} "
+            f"{tid:<16} "
+            f"{int(t.get('window_index') or 0):>3} "
+            f"{str(bool(t.get('alive'))):<5} "
+            f"{str(t.get('status') or ''):<10} "
+            f"{io_mode:<16} "
+            f"{op_in:<5} "
+            f"{ready:<5} "
             f"{t.get('worktree') or ''}"
         )
     return "\n".join(lines)
+
+
+def _format_worker_io_compact(row: Mapping[str, Any]) -> str:
+    """Compact `` io=… op_input=… ready=…`` for worktree lines."""
+    io: Mapping[str, Any] | None = None
+    worker = row.get("worker")
+    if isinstance(worker, Mapping) and isinstance(worker.get("io"), Mapping):
+        io = worker["io"]
+    elif isinstance(row.get("io"), Mapping):
+        io = row["io"]  # type: ignore[assignment]
+    if io is None:
+        return ""
+    mode = io.get("io_mode") or "unproven"
+    op = "yes" if io.get("operator_input_supported") is True else "no"
+    ready = "yes" if io.get("input_ready") is True else "no"
+    return f" io={mode} op_input={op} ready={ready}"
 
 
 # ---------------------------------------------------------------------------

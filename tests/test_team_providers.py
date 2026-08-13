@@ -14,6 +14,10 @@ import pytest
 from omg_cli.ask.providers import normalize_provider
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.contracts.tracker_contract import make_role_receipt
+from omg_cli.team.io_capability import (
+    IO_MODE_HEADLESS_STREAM,
+    TTY_OWNER_SUPERVISOR,
+)
 from omg_cli.team.providers import (
     EXECUTOR_PROVIDERS,
     EXECUTOR_SPECS,
@@ -25,6 +29,7 @@ from omg_cli.team.providers import (
     build_executor_argv,
     build_executor_argv_signature_has_free_form_param,
     build_grok_native_spawn,
+    executor_io_defaults,
     normalize_executor_provider,
 )
 from omg_cli.team.roles import UnknownRoleError, role_posture
@@ -58,6 +63,23 @@ def test_agy_needs_pty_on_invocation() -> None:
     )
     assert inv.needs_pty is True
     assert inv.provider == "agy"
+
+
+def test_executor_io_defaults_headless_for_all_providers() -> None:
+    """#147 PR1: never promote operator_input_supported from needs_pty/name."""
+    for name in sorted(EXECUTOR_PROVIDERS):
+        cap = executor_io_defaults(name)
+        assert cap.io_mode == IO_MODE_HEADLESS_STREAM
+        assert cap.provider_tty_owner == TTY_OWNER_SUPERVISOR
+        assert cap.input_ready is False
+        assert cap.operator_input_supported is False
+        assert cap.interaction_evidence is None
+    # agy needs_pty=True must still be headless/unsupported for operator input.
+    assert EXECUTOR_SPECS["agy"].needs_pty is True
+    assert executor_io_defaults("agy").operator_input_supported is False
+    # Unknown / empty still fail closed the same way in PR1.
+    assert executor_io_defaults(None).operator_input_supported is False
+    assert executor_io_defaults("not-a-provider").io_mode == IO_MODE_HEADLESS_STREAM
 
 
 # ---------------------------------------------------------------------------

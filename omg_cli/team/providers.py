@@ -121,7 +121,12 @@ class TeamProviderMissing(FileNotFoundError):
 
 @dataclass(frozen=True, slots=True)
 class ExecutorSpec:
-    """Static metadata for one executor provider."""
+    """Static metadata for one executor provider.
+
+    ``needs_pty`` is a supervisor compatibility flag only (#67-D / agy). It is
+    **not** operator interactivity: PR1 I/O defaults are always headless
+    (see :func:`executor_io_defaults`).
+    """
 
     name: str
     binary: str
@@ -514,6 +519,24 @@ def build_executor_argv_signature_has_free_form_param() -> bool:
     return bool(forbidden & set(sig.parameters))
 
 
+def executor_io_defaults(provider: str | None = None):
+    """Static PR1 I/O defaults for every executor provider.
+
+    Always headless_stream / supervisor / unsupported — **never** derived from
+    ``needs_pty``, provider name, or binary. ``provider`` is accepted for API
+    symmetry and future matrix cells (PR4); unknown names still fail closed
+    the same way as known ones in PR1.
+
+    Returns:
+        :class:`omg_cli.team.io_capability.WorkerIoCapability`
+    """
+    from omg_cli.team.io_capability import supervisor_pane_io_defaults
+
+    # Intentional: ignore provider/needs_pty. Document agy specially via tests.
+    _ = provider
+    return supervisor_pane_io_defaults()
+
+
 # ---------------------------------------------------------------------------
 # Authoritative W3 Grok-native provider
 # ---------------------------------------------------------------------------
@@ -639,6 +662,7 @@ __all__ = [
     "build_executor_argv",
     "build_executor_argv_signature_has_free_form_param",
     "build_grok_native_spawn",
+    "executor_io_defaults",
     "GrokNativeSpawn",
     "normalize_executor_provider",
     "resolve_executor_binary",

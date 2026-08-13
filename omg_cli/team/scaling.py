@@ -729,6 +729,13 @@ def _build_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
+    # #147 PR1: scale-up pane workers are supervisor-owned headless.
+    from omg_cli.team.io_capability import (
+        stamp_io_capability,
+        supervisor_pane_io_defaults,
+    )
+
+    stamp_io_capability(record, supervisor_pane_io_defaults())
     from omg_cli.team.presentation import stamp_route_on_task
 
     stamp_route_on_task(
@@ -987,6 +994,13 @@ def _reuse_prepared_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
+    # #147 PR1: scale-up pane workers are supervisor-owned headless.
+    from omg_cli.team.io_capability import (
+        stamp_io_capability,
+        supervisor_pane_io_defaults,
+    )
+
+    stamp_io_capability(record, supervisor_pane_io_defaults())
     from omg_cli.team.presentation import stamp_route_on_task
 
     stamp_route_on_task(

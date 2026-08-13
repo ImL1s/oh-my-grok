@@ -13,6 +13,14 @@ import pytest
 
 from omg_cli.main import build_parser
 from omg_cli.team import operator, plane, tmux
+from omg_cli.team.io_capability import (
+    E_OPERATOR_INPUT_NOT_READY,
+    E_OPERATOR_INPUT_UNSUPPORTED,
+    E_OPERATOR_KEY_UNSUPPORTED,
+    IO_MODE_HEADLESS_STREAM,
+    IO_MODE_INTERACTIVE_TTY,
+    TTY_OWNER_SUPERVISOR,
+)
 from omg_cli.team.operator import (
     OperatorError,
     STATUS_GONE,
@@ -29,6 +37,27 @@ from omg_cli.team.operator import (
     watch_worker,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, team_meta_path
+
+
+def _stamp_interactive_io(root: Path, live: dict[str, Any]) -> dict[str, Any]:
+    """PR1+: enable operator send path for identity/TTY/TOCTOU unit tests.
+
+    Production supervisor panes stay headless/unsupported; tests that exercise
+    ExactPaneProof/send after the capability gate must opt in explicitly.
+    """
+    live = dict(live)
+    tasks = [dict(t) for t in live["tasks"]]
+    for i, task in enumerate(tasks):
+        tasks[i] = {
+            **task,
+            "io_mode": IO_MODE_INTERACTIVE_TTY,
+            "provider_tty_owner": "provider",
+            "operator_input_supported": True,
+            "input_ready": True,
+        }
+    live["tasks"] = tasks
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    return live
 
 
 TASKS_ONE = [
@@ -466,7 +495,7 @@ def test_key_and_input_audit_no_raw_text(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
-    live = live_team["live"]
+    live = _stamp_interactive_io(root, live_team["live"])
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
 
@@ -491,6 +520,9 @@ def test_key_and_input_audit_no_raw_text(
         as_json=False,
     )
     assert out["submitted"] is True
+    assert out["submitted_to_exact_tty"] is True
+    assert out["acknowledged_by_provider"] is False
+    assert "delivered" not in out
     assert out["text_sha256"] == hashlib.sha256(secret.encode()).hexdigest()
     assert out["text_length"] == len(secret.encode())
 
@@ -499,6 +531,7 @@ def test_key_and_input_audit_no_raw_text(
     assert secret not in body
     assert "Enter" in body
     assert "text_sha256" in body
+    assert "io_mode" in body
     # send-keys effects present
     assert any(cmd[:1] == ["send-keys"] for cmd in effects)
 
@@ -507,7 +540,7 @@ def test_key_requires_tty_or_operator_override(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
-    live = live_team["live"]
+    live = _stamp_interactive_io(root, live_team["live"])
     _install_live_tmux(monkeypatch, live)
     with pytest.raises(OperatorError) as exc:
         key_worker(
@@ -519,7 +552,7 @@ def test_key_requires_tty_or_operator_override(
             operator_override=False,
         )
     assert exc.value.code == "E_OPERATOR_KEY_POLICY"
-    # Override path still delivers.
+    # Override path still submits to exact TTY (not provider ACK).
     out = key_worker(
         root,
         live_team["run_id"],
@@ -528,7 +561,9 @@ def test_key_requires_tty_or_operator_override(
         is_tty=False,
         operator_override=True,
     )
-    assert out["delivered"] is True
+    assert out["submitted_to_exact_tty"] is True
+    assert out["acknowledged_by_provider"] is False
+    assert "delivered" not in out
     assert out["key"] == "Tab"
 
 
@@ -557,7 +592,7 @@ def test_input_rejects_controls_and_oversize(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
-    live = live_team["live"]
+    live = _stamp_interactive_io(root, live_team["live"])
     _install_live_tmux(monkeypatch, live)
     with pytest.raises(OperatorError):
         input_worker(
@@ -583,7 +618,7 @@ def test_toctou_blocks_input_when_identity_flips(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
-    live = live_team["live"]
+    live = _stamp_interactive_io(root, live_team["live"])
     _install_live_tmux(monkeypatch, live)
     proof = resolve_live_worker(root, live_team["run_id"], "w1")
     assert probe_exact_worker(proof) == STATUS_LIVE
@@ -614,7 +649,7 @@ def test_submit_reprobes_before_enter(
 ) -> None:
     """--submit must re-prove identity before Enter; flip after literal blocks it."""
     root = live_team["root"]
-    live = live_team["live"]
+    live = _stamp_interactive_io(root, live_team["live"])
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
 
@@ -636,7 +671,7 @@ def test_submit_reprobes_before_enter(
             is_tty=True,
         )
     assert exc.value.code == "E_OPERATOR_TOCTOU"
-    # Literal delivered; Enter must not have been sent.
+    # Literal submitted to exact TTY; Enter must not have been sent.
     send_cmds = [cmd for cmd in effects if cmd and cmd[0] == "send-keys"]
     assert any("-l" in cmd for cmd in send_cmds)
     assert not any(cmd[-1] == "Enter" and "-l" not in cmd for cmd in send_cmds)
@@ -827,6 +862,8 @@ def test_foreign_owner_nonce_fails_closed_for_capture_key_input(
     root = live_team["root"]
     owner = "e" * 32
     live = _bind_owner_nonce_on_worker(root, live_team["live"], owner_nonce=owner)
+    # Capability must pass so identity mismatch remains the refusal reason.
+    live = _stamp_interactive_io(root, live)
     monkeypatch.setattr(
         plane,
         "_load_team_identity_chain",
@@ -1049,3 +1086,155 @@ def test_cli_worker_read_only_reaches_operator_list_panes(
     code = cmd_team(args)
     assert code == 0
     assert called and called[0][0] == tmp_path
+
+# #147 PR1 — capability refuse (integration with live_team fixtures)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_input_refuses_and_does_not_send(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing I/O fields → unsupported; send_literal never called."""
+    root = live_team["root"]
+    live = live_team["live"]
+    effects: list[list[str]] = []
+    _install_live_tmux(monkeypatch, live, effects=effects)
+    send_literal = MagicMock()
+    monkeypatch.setattr(operator, "send_literal", send_literal)
+    with pytest.raises(OperatorError) as exc:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "hello",
+            operator_override=True,
+            is_tty=True,
+        )
+    assert exc.value.code == E_OPERATOR_INPUT_UNSUPPORTED
+    send_literal.assert_not_called()
+    assert not any(cmd and cmd[0] == "send-keys" for cmd in effects)
+
+
+def test_headless_key_refuses_and_does_not_send(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    live = dict(live)
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "io_mode": IO_MODE_HEADLESS_STREAM,
+            "provider_tty_owner": TTY_OWNER_SUPERVISOR,
+            "operator_input_supported": False,
+            "input_ready": False,
+        }
+    ]
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    effects: list[list[str]] = []
+    _install_live_tmux(monkeypatch, live, effects=effects)
+    send_key = MagicMock()
+    monkeypatch.setattr(operator, "send_key", send_key)
+    with pytest.raises(OperatorError) as exc:
+        key_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "Enter",
+            operator_override=True,
+            is_tty=False,
+        )
+    assert exc.value.code == E_OPERATOR_KEY_UNSUPPORTED
+    send_key.assert_not_called()
+    assert not any(cmd and cmd[0] == "send-keys" for cmd in effects)
+
+
+def test_operator_override_cannot_bypass_capability(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    _install_live_tmux(monkeypatch, live)
+    send_literal = MagicMock()
+    send_key = MagicMock()
+    monkeypatch.setattr(operator, "send_literal", send_literal)
+    monkeypatch.setattr(operator, "send_key", send_key)
+    with pytest.raises(OperatorError) as e1:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "x",
+            operator_override=True,
+            is_tty=False,
+        )
+    assert e1.value.code == E_OPERATOR_INPUT_UNSUPPORTED
+    with pytest.raises(OperatorError) as e2:
+        key_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "Tab",
+            operator_override=True,
+            is_tty=False,
+        )
+    assert e2.value.code == E_OPERATOR_KEY_UNSUPPORTED
+    send_literal.assert_not_called()
+    send_key.assert_not_called()
+
+
+def test_supported_not_ready_refuses_before_send(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    live = dict(live)
+    live["tasks"] = [
+        {
+            **live["tasks"][0],
+            "io_mode": IO_MODE_INTERACTIVE_TTY,
+            "provider_tty_owner": "provider",
+            "operator_input_supported": True,
+            "input_ready": False,
+        }
+    ]
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    _install_live_tmux(monkeypatch, live)
+    send_literal = MagicMock()
+    monkeypatch.setattr(operator, "send_literal", send_literal)
+    with pytest.raises(OperatorError) as exc:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "hi",
+            operator_override=True,
+            is_tty=True,
+        )
+    assert exc.value.code == E_OPERATOR_INPUT_NOT_READY
+    send_literal.assert_not_called()
+
+
+def test_json_noop_before_capability_and_side_effects(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--json still short-circuits before capability load side effects matter."""
+    root = live_team["root"]
+    live = live_team["live"]
+    _install_live_tmux(monkeypatch, live)
+    send_literal = MagicMock()
+    monkeypatch.setattr(operator, "send_literal", send_literal)
+    with pytest.raises(OperatorError) as e1:
+        key_worker(root, live_team["run_id"], "w1", "Enter", as_json=True)
+    assert e1.value.code == "E_OPERATOR_JSON_NOOP"
+    with pytest.raises(OperatorError) as e2:
+        input_worker(
+            root,
+            live_team["run_id"],
+            "w1",
+            "hi",
+            as_json=True,
+            operator_override=True,
+        )
+    assert e2.value.code == "E_OPERATOR_JSON_NOOP"
+    send_literal.assert_not_called()
