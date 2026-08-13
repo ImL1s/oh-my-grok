@@ -11,7 +11,9 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1948,6 +1950,74 @@ def test_handshake_zero_quiet_window_coalesced_replay_writes_no_receipt(
         assert ei.value.code == "E_ACP_REPLAY"
         assert sess._receipt is None
         assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_coalesced_replay_beats_cancel_after_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Buffered replay evidence wins over cancellation at the receipt boundary."""
+    proc, argv = _spawn("resume_plus_replay_coalesced", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    cancel = threading.Event()
+    orig_await = sess._await_result
+
+    def _await_then_cancel(
+        expect_id: Any,
+        *,
+        deadline: float,
+        cancel_event: threading.Event | None,
+        require_object: bool = False,
+    ) -> dict[str, Any]:
+        result = orig_await(
+            expect_id,
+            deadline=deadline,
+            cancel_event=cancel_event,
+            require_object=require_object,
+        )
+        if expect_id == 2:
+            cancel.set()
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_then_cancel)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0, cancel_event=cancel)
+        assert ei.value.code == "E_ACP_REPLAY"
+        assert ei.value.code != "E_ACP_CANCELLED"
+        assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_handshake_cancel_during_pre_receipt_chrome_writes_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation observed by a buffered-frame handler blocks readiness."""
+    proc, argv = _spawn("resume_plus_under_limit_frames", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    cancel = threading.Event()
+    orig_handle = sess._handle_notification_or_reject
+    handled_phases: list[str] = []
+
+    def _handle_then_cancel(msg: Mapping[str, Any], *, phase: str) -> None:
+        orig_handle(msg, phase=phase)
+        handled_phases.append(phase)
+        if phase == "pre-receipt":
+            cancel.set()
+
+    monkeypatch.setattr(sess, "_handle_notification_or_reject", _handle_then_cancel)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0, cancel_event=cancel)
+        assert ei.value.code == "E_ACP_CANCELLED"
+        # Drain all complete frames that were observed in the same read before
+        # honoring cancellation; neither chrome frame may become a receipt.
+        assert handled_phases == ["pre-receipt", "pre-receipt"]
+        assert sess._receipt is None
+        assert sess._ready is False
     finally:
         sess.close()
 

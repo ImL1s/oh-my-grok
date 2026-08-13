@@ -778,7 +778,13 @@ class AcpStdioSession:
         timeout_s: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
         cancel_event: threading.Event | None = None,
     ) -> AcpResumeReceipt:
-        """initialize → session/resume → quiet window; fail closed on replay."""
+        """initialize → session/resume → quiet window; fail closed on replay.
+
+        Pre-read protocol, overflow, and EOF evidence keeps precedence over
+        cancellation.  Cancellation is checked before any future/blocking
+        read and again at the final receipt boundary; timeout is considered
+        only after already-buffered protocol evidence.
+        """
         deadline = time.monotonic() + max(0.1, float(timeout_s))
         init_id = 1
         resume_id = 2
@@ -823,11 +829,23 @@ class AcpStdioSession:
             self.cwd_hash,
         )
 
+        # The resume response may share one read with complete notifications.
+        # Classify every already-buffered frame before cancellation so a
+        # coalesced replay/malformed/protocol violation cannot be masked.
+        cancel_observed = self._drain_complete_buffered_frames(
+            phase="pre-receipt", cancel_event=cancel_event
+        )
+        if cancel_observed:
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
+
         # Quiet window: reject late conversation replay before ready.
         quiet_deadline = time.monotonic() + max(0.0, float(self.quiet_window_s))
         while time.monotonic() < quiet_deadline:
-            if cancel_event is not None and cancel_event.is_set():
-                raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
+            # A previous read may have coalesced more than one complete frame.
+            # Drain those observed frames before honoring cancellation.
+            cancel_observed = self._drain_complete_buffered_frames(
+                phase="quiet", cancel_event=cancel_event
+            )
             if self.proc.poll() is not None:
                 # Overflow beats EOF so an exited peer with an already
                 # buffered oversized complete/incomplete frame cannot
@@ -836,6 +854,8 @@ class AcpStdioSession:
                 raise AcpError(
                     "ACP process exited during quiet window", code="E_ACP_EOF"
                 )
+            if cancel_observed:
+                raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
             remaining = quiet_deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -850,6 +870,15 @@ class AcpStdioSession:
             if msg is None:
                 continue
             self._handle_notification_or_reject(msg, phase="quiet")
+
+        # A handler can observe cancellation after one frame in a coalesced
+        # read. Finish classifying all frames from that read before deciding
+        # whether any future pipe read is allowed.
+        cancel_observed = self._drain_complete_buffered_frames(
+            phase="pre-receipt", cancel_event=cancel_event
+        )
+        if cancel_observed:
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
 
         # Absorb + overflow BEFORE poll→EOF. An exited peer may have
         # already written an oversized complete or incomplete leftover;
@@ -866,13 +895,20 @@ class AcpStdioSession:
         # complete notification in one os.write; leftover complete
         # frames must be parsed before any receipt. F9 first, then
         # EOF — replay/malformed/unknown beat a poll-racy E_ACP_EOF.
-        self._drain_complete_buffered_frames(phase="pre-receipt")
+        cancel_observed = self._drain_complete_buffered_frames(
+            phase="pre-receipt", cancel_event=cancel_event
+        )
 
         if self.proc.poll() is not None or stdout_eof:
             raise AcpError(
                 "ACP process exited before readiness (transient handshake)",
                 code="E_ACP_EOF",
             )
+
+        if cancel_observed or (
+            cancel_event is not None and cancel_event.is_set()
+        ):
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
 
         receipt = AcpResumeReceipt(
             job_id=self.job_id,
@@ -887,6 +923,11 @@ class AcpStdioSession:
         )
         # Materialize sha
         body = receipt.to_dict()
+        # Receipt construction is local only.  Recheck immediately before
+        # publishing durable session readiness so an observed cancellation
+        # cannot leave a receipt or _ready behind.
+        if cancel_event is not None and cancel_event.is_set():
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
         self._receipt = AcpResumeReceipt(
             job_id=receipt.job_id,
             attempt=receipt.attempt,
@@ -900,6 +941,10 @@ class AcpStdioSession:
             receipt_sha256=body["receipt_sha256"],
         )
         self._ready = True
+        if cancel_event is not None and cancel_event.is_set():
+            self._ready = False
+            self._receipt = None
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
         return self._receipt
 
     def drain_until_cancel(
@@ -1008,7 +1053,12 @@ class AcpStdioSession:
             cancel_event=cancel_event,
         )
 
-    def _drain_complete_buffered_frames(self, *, phase: str) -> None:
+    def _drain_complete_buffered_frames(
+        self,
+        *,
+        phase: str,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
         """Parse every complete NL frame already in ``_rx_buf``.
 
         Does not wait on the pipe. Incomplete suffix stays buffered.
@@ -1017,8 +1067,13 @@ class AcpStdioSession:
         still re-checks the per-line cap. Forbidden conversation
         updates raise ``E_ACP_REPLAY``; malformed JSON raises
         ``E_ACP_MALFORMED``; unknown / unexpected frames raise
-        ``E_ACP_PROTOCOL``.
+        ``E_ACP_PROTOCOL``. Cancellation is checked only after all complete
+        frames already in the buffer have been classified, including when a
+        notification handler observes cancellation while discarding chrome.
+        Returns whether cancellation was observed after the buffer was drained,
+        leaving callers to preserve any already-observed EOF precedence.
         """
+        self._raise_if_rx_over_limits(include_complete_frames=True)
         while True:
             line = _extract_complete_frame(
                 self._rx_buf,
@@ -1026,7 +1081,7 @@ class AcpStdioSession:
                 max_line_bytes=self.max_line_bytes,
             )
             if line is None:
-                return
+                return cancel_event is not None and cancel_event.is_set()
             msg = _parse_rpc(line)
             if "method" in msg and "id" not in msg:
                 self._handle_notification_or_reject(msg, phase=phase)
