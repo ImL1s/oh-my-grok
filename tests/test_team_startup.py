@@ -40,6 +40,7 @@ from omg_cli.team.startup import (
 )
 from omg_cli.team.supervisor import (
     load_provider_descriptor,
+    publish_supervisor_authority,
     run_supervisor,
     write_provider_descriptor,
 )
@@ -112,6 +113,7 @@ def _bind_env(
     *,
     worker_id: str = "w1",
     run_id: str = "run-sup",
+    owner_token: str = "owner-token-test",
 ) -> None:
     (tmp_path / ".omg").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".omg" / "state").mkdir(parents=True, exist_ok=True)
@@ -120,7 +122,27 @@ def _bind_env(
     monkeypatch.setenv("OMG_TEAM_ID", "team")
     monkeypatch.setenv("OMG_TEAM_LEADER_ROOT", str(tmp_path))
     monkeypatch.setenv("OMG_TEAM_STATE_ROOT", str(tmp_path / ".omg" / "state"))
+    monkeypatch.setenv("OMG_TEAM_OWNER_TOKEN", owner_token)
     monkeypatch.setenv("OMG_TEAM_SUPERVISOR_READY_S", "5")
+
+
+def _prepublish(
+    tmp_path: Path,
+    *,
+    desc: Path,
+    worker_id: str = "w1",
+    run_id: str = "run-sup",
+    owner_token: str = "owner-token-test",
+) -> Path:
+    """CLI prepublish required for ``omg team supervisor`` when team.json absent."""
+    return publish_supervisor_authority(
+        leader_root=tmp_path,
+        run_id=run_id,
+        team_id="team",
+        worker_id=worker_id,
+        owner_token=owner_token,
+        descriptor_path=desc,
+    )
 
 
 def test_legacy_v1_receipt_cannot_make_running(tmp_path: Path) -> None:
@@ -331,6 +353,7 @@ def test_post_stable_zero_env_still_catches_delayed_auth(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-post0")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -586,6 +609,7 @@ def test_delayed_auth_after_process_stable_is_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-delayed-auth")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -674,6 +698,7 @@ def test_delayed_auth_after_tui_idle_is_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id=run_id)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -832,6 +857,7 @@ def test_supervisor_ready_path(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-sup")
     # Run supervisor in a child so we can still assert receipts while it holds.
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
@@ -904,6 +930,7 @@ def test_supervisor_immediate_exit_fails_closed(
         provider="fixture",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-exit")
     rc = run_supervisor(descriptor_path=desc, ready_timeout_s=2.0, poll_s=0.05)
     assert rc == 0  # child exit 0
     record = read_startup_record(
@@ -990,6 +1017,7 @@ def test_supervisor_auth_blocked(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-auth")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1052,6 +1080,7 @@ def test_supervisor_signal_forwards_and_reaps(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-sig")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1173,6 +1202,7 @@ def test_labeled_grok_python_sleep_not_running_via_process_stable(
         provider="grok",
         argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-fake-grok-sleep")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1246,6 +1276,7 @@ def test_unknown_strategy_silent_hang_times_out(
         provider="unknown-cli",
         argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-unknown-hang")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1313,6 +1344,7 @@ def test_provider_ready_then_dies_before_wait_returns(
         provider="fake-ready",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-die-after-ready")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1450,6 +1482,7 @@ def test_process_stable_with_interpreter_script_launcher(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-interp-stable")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1560,6 +1593,7 @@ def test_process_stable_with_matching_binary_identity(
         provider="grok",
         argv=[str(fake_grok), "30"],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-real-identity")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1630,6 +1664,7 @@ def test_needs_pty_records_real_child_not_wrapper(
         argv=[str(fake_agy), "30"],
         needs_pty=True,
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-pty-child")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
@@ -1736,6 +1771,7 @@ def test_supervisor_tees_provider_stdout(
         provider="grok",
         argv=[sys.executable, str(script)],
     )
+    _prepublish(tmp_path, desc=desc, run_id="run-tee")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""

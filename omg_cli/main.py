@@ -314,6 +314,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(raw)
     args.raw_argv = list(raw)
+    # Immediately after parse (normalize already ran). Skip when command is
+    # missing/empty so the existing no-command help path is unchanged.
+    if getattr(args, "command", None) == "team":
+        from omg_cli.team.plane import (
+            TeamGateError,
+            preflight_team_worker_parsed_argv,
+        )
+
+        try:
+            team_action = getattr(args, "team_action", None)
+            preflight_team_worker_parsed_argv(
+                team_action if team_action is None else str(team_action),
+                command="team",
+                composition_action=(
+                    getattr(args, "hyperplan_action", None)
+                    or getattr(args, "security_research_action", None)
+                ),
+            )
+        except TeamGateError as exc:
+            print(f"omg team: {exc}", file=sys.stderr)
+            return 2
     apply_safe_yolo_flags(parser, args)
     apply_output_flags(parser, args)
     # Bridge: legacy dest names used by team/ask handlers

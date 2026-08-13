@@ -469,7 +469,7 @@ def parse_lane_task_result_v1(raw: Any) -> dict[str, Any]:
 
 
 def _require_leader_only_env(env: Mapping[str, str] | None = None) -> None:
-    """Refuse composition admit/collect from worker or incomplete worker env.
+    """Refuse leader-owned composition publication/decision from worker env.
 
     Mirrors ``execute_team_api`` leader-only refusal for ops with
     ``worker_allowed=False`` (e.g. ``bulk-create-tasks``): non-team spawn
@@ -486,7 +486,8 @@ def _require_leader_only_env(env: Mapping[str, str] | None = None) -> None:
     identity = team_worker_identity(env)
     if identity is not None:
         raise CompositionTaskDriverError(
-            f"worker {identity!r} cannot admit/collect composition tasks "
+            f"worker {identity!r} cannot run leader-owned composition "
+            "publication/decision "
             "(leader-only; mirrors bulk-create-tasks worker_allowed=False)",
             code="E_TEAM_COMPOSITION_TASK_GATE",
             details={

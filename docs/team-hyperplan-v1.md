@@ -21,7 +21,11 @@ omg team hyperplan claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--j
 omg team hyperplan submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
 ```
 
-`plan` performs **zero** filesystem mutation. `materialize` atomically writes
+`plan` performs **zero** filesystem mutation. `materialize`,
+`validate-decision`, `produce-decision`, `admit-tasks`, and `collect-tasks`
+are **leader-only** and fail closed for a worker process or nested first-party
+launch **before persist**; `claim-lane` / `submit-lane-result` remain
+**worker-only**. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/hyperplan-v1.json`

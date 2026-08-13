@@ -692,6 +692,14 @@ def test_scale_up_preserves_same_window_and_leader(
         live_ids = {p.pane_id for p in topo_now.panes if p.window_id == team_window}
         assert new_pane in live_ids, diag
         assert len(live_ids) == 4, diag
+        live_new = next(p for p in topo_now.panes if p.pane_id == new_pane)
+        assert live_new.pane_dead is False, diag
+        assert isinstance(live_new.pane_pid, int) and live_new.pane_pid > 0, diag
+        wait_until(
+            lambda: "TEAM_PROVIDER_READY_OK" in leader.capture_pane(new_pane),
+            timeout_s=15.0,
+            label="scaled pane provider ready",
+        )
 
         live = next(p for p in topo_now.panes if p.pane_id == before.pane_id)
         assert live.pane_pid == before.pane_pid

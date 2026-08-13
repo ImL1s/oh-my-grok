@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -443,3 +445,482 @@ def test_dry_run_reuse_run_compensate_preserves_active(
     active = load_active_run(tmp_path)
     assert active is not None
     assert str(active.get("run_id")) == rid
+
+
+# ---------------------------------------------------------------------------
+# PR #156: --run reuse preserves published owner_token
+# ---------------------------------------------------------------------------
+
+
+def test_run_reuse_preserves_published_owner_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Materialize then relaunch with --run must not mint a conflicting token."""
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import team_meta_path
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "materialize first",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        owner_token="published-owner-token-aaa",
+    )
+    rid = str(first["run_id"])
+    assert first["owner_token"] == "published-owner-token-aaa"
+    meta_path = team_meta_path(tmp_path, rid)
+    disk = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert disk["owner_token"] == "published-owner-token-aaa"
+    assert disk.get("writer") == CLI_WRITER
+
+    # Relaunch / materialize-to-live path: omit caller token → reuse published.
+    second = start_team(
+        "reuse without token",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+    )
+    assert second["owner_token"] == "published-owner-token-aaa"
+    disk2 = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert disk2["owner_token"] == "published-owner-token-aaa"
+
+    # Explicit matching token also ok.
+    third = start_team(
+        "reuse matching token",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+        owner_token="published-owner-token-aaa",
+    )
+    assert third["owner_token"] == "published-owner-token-aaa"
+
+
+def test_run_reuse_conflicting_caller_token_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Explicit conflicting owner_token must fail before pane/state mutation."""
+    from omg_cli.team.plane import team_meta_path
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        owner_token="published-token-bbb",
+    )
+    rid = str(first["run_id"])
+    meta_path = team_meta_path(tmp_path, rid)
+    prior = meta_path.read_bytes()
+
+    # Boom if we ever reach tmux / materialize past token resolve.
+    monkeypatch.setattr(
+        plane,
+        "materialize_supervisor_pane_command",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("must not materialize")),
+    )
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+
+    with pytest.raises(TeamError, match="E_TEAM_OWNER_TOKEN_CONFLICT"):
+        start_team(
+            "conflict",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            owner_token="attacker-fresh-token",
+            topology="windows",
+        )
+
+    # Unrelated published authority must remain intact.
+    assert meta_path.read_bytes() == prior
+    assert (
+        json.loads(prior.decode("utf-8"))["owner_token"] == "published-token-bbb"
+    )
+
+
+def test_resolve_owner_token_for_start_unit(tmp_path: Path) -> None:
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import (
+        resolve_owner_token_for_start,
+        team_meta_path,
+        _atomic_write_json,
+    )
+
+    (tmp_path / ".omg" / "state" / "runs" / "r1" / "team").mkdir(parents=True)
+    # No team.json → fresh or caller.
+    t1 = resolve_owner_token_for_start(tmp_path, run_id=None, owner_token=None)
+    assert len(t1) == 32
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id=None, owner_token="abc")
+        == "abc"
+    )
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id="r1", owner_token="xyz")
+        == "xyz"
+    )
+
+    _atomic_write_json(
+        team_meta_path(tmp_path, "r1"),
+        {
+            "writer": CLI_WRITER,
+            "run_id": "r1",
+            "team_id": "team",
+            "owner_token": "published-zzz",
+            "schema_version": 1,
+        },
+    )
+    assert (
+        resolve_owner_token_for_start(tmp_path, run_id="r1", owner_token=None)
+        == "published-zzz"
+    )
+    assert (
+        resolve_owner_token_for_start(
+            tmp_path, run_id="r1", owner_token="published-zzz"
+        )
+        == "published-zzz"
+    )
+    with pytest.raises(TeamError, match="E_TEAM_OWNER_TOKEN_CONFLICT"):
+        resolve_owner_token_for_start(
+            tmp_path, run_id="r1", owner_token="wrong"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PR #156 F2: --run reuse rolls back descriptor + prepublish authority
+# ---------------------------------------------------------------------------
+
+_PROVIDERS_ALL = frozenset({"grok", "codex", "agy", "cursor", "gemini"})
+
+
+def _team_dir(root: Path, run_id: str) -> Path:
+    from omg_cli.team.plane import team_dir
+
+    return team_dir(root, run_id)
+
+
+def _auth_path(root: Path, run_id: str, worker_id: str) -> Path:
+    from omg_cli.team.supervisor import supervisor_prepublish_path
+
+    return supervisor_prepublish_path(root, run_id, worker_id)
+
+
+def _mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def _assert_no_uncommitted_authority(root: Path, run_id: str) -> None:
+    auth_dir = _team_dir(root, run_id) / "supervisor-authority"
+    if not auth_dir.exists():
+        return
+    leftover = [p for p in auth_dir.iterdir() if p.is_file() or p.is_symlink()]
+    assert leftover == [], f"uncommitted authority left: {leftover}"
+
+
+def _force_tmux_boom(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
+    def boom(*_a, **_k):
+        raise plane.TeamError(message)
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(plane, "_create_tmux_session", boom)
+    monkeypatch.setattr(plane, "_tmux_run", MagicMock())
+
+
+def test_new_start_failure_removes_descriptor_and_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """New live start that fails after materialize must not leave artifacts."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    _force_tmux_boom(monkeypatch, "forced tmux failure after materialize")
+
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
+        start_team(
+            "new fail",
+            TASKS,
+            root=tmp_path,
+            dry_run=False,
+            topology="windows",
+        )
+
+    assert load_active_run(tmp_path) is None
+    runs = list((tmp_path / ".omg" / "state" / "runs").glob("*"))
+    assert runs, "failed new start should leave run dir for forensics"
+    for run_dir in runs:
+        tdir = run_dir / "team"
+        assert not tdir.exists(), f"new-start team dir survived rollback: {tdir}"
+
+    retry = start_team("new retry", TASKS, root=tmp_path, dry_run=True)
+    assert retry["dry_run"] is True
+    assert retry["run_id"] != runs[0].name
+
+
+def test_reuse_rollback_restores_descriptor_and_removes_new_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reuse overwrite of descriptor + new authority must roll back exactly."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed reuse",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        topology="windows",
+    )
+    rid = str(first["run_id"])
+    tdir = _team_dir(tmp_path, rid)
+    desc = tdir / "t1.provider.json"
+    argv = tdir / "t1.argv.json"
+    prior_desc = desc.read_bytes()
+    prior_argv = argv.read_bytes()
+    os.chmod(desc, 0o640)
+    os.chmod(argv, 0o640)
+    assert _mode(desc) == 0o640
+    assert not _auth_path(tmp_path, rid, "t1").exists()
+
+    _force_tmux_boom(monkeypatch, "forced tmux failure on reuse")
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
+        start_team(
+            "reuse fail",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            topology="windows",
+            force=True,
+        )
+
+    assert desc.is_file()
+    assert desc.read_bytes() == prior_desc
+    assert _mode(desc) == 0o640
+    assert argv.read_bytes() == prior_argv
+    assert _mode(argv) == 0o640
+    assert not _auth_path(tmp_path, rid, "t1").is_file()
+    _assert_no_uncommitted_authority(tmp_path, rid)
+
+    # Exact retry: same --run dry_run must succeed on restored artifacts.
+    retry = start_team(
+        "reuse retry",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+        force=True,
+    )
+    assert retry["run_id"] == rid
+    assert retry["dry_run"] is True
+
+
+def test_reuse_rollback_restores_preexisting_authority_bytes_and_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pre-existing prepublish authority is restored byte-and-mode exact."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed auth",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        topology="windows",
+    )
+    rid = str(first["run_id"])
+    desc = _team_dir(tmp_path, rid) / "t1.provider.json"
+    prior_desc = desc.read_bytes()
+    os.chmod(desc, 0o640)
+
+    auth = _auth_path(tmp_path, rid, "t1")
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    prior_auth = b'{"kind":"prior-prepublish-marker","worker":"t1"}\n'
+    auth.write_bytes(prior_auth)
+    os.chmod(auth, 0o400)
+    assert _mode(auth) == 0o400
+
+    _force_tmux_boom(monkeypatch, "forced tmux failure after publish")
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
+        start_team(
+            "reuse overwrite auth",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            topology="windows",
+            force=True,
+        )
+
+    assert desc.read_bytes() == prior_desc
+    assert _mode(desc) == 0o640
+    assert auth.is_file()
+    assert auth.read_bytes() == prior_auth
+    assert _mode(auth) == 0o400
+
+
+def test_reuse_rollback_unlinks_newly_created_descriptor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A descriptor created only by the failed reuse is removed."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed missing desc",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        topology="windows",
+    )
+    rid = str(first["run_id"])
+    tdir = _team_dir(tmp_path, rid)
+    created = tdir / "t2.provider.json"
+    keep = tdir / "t1.provider.json"
+    prior_keep = keep.read_bytes()
+    created.unlink()
+    assert not created.exists()
+
+    _force_tmux_boom(monkeypatch, "forced tmux failure new descriptor")
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
+        start_team(
+            "reuse creates desc",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            topology="windows",
+            force=True,
+        )
+
+    assert keep.read_bytes() == prior_keep
+    assert not created.exists()
+    assert not _auth_path(tmp_path, rid, "t2").is_file()
+
+
+def test_reuse_rollback_multi_cli_and_fixture_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """D3 multi-CLI and fixture reuse must apply the same rollback contract."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed multi",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        routing={"executor": {"provider": "codex"}},
+        available_providers=_PROVIDERS_ALL,
+        check_binary=False,
+    )
+    rid = str(first["run_id"])
+    desc = _team_dir(tmp_path, rid) / "t1.provider.json"
+    prior_desc = desc.read_bytes()
+    os.chmod(desc, 0o640)
+
+    _force_tmux_boom(monkeypatch, "forced multi-cli reuse failure")
+    with pytest.raises(TeamError, match="transaction failed|forced multi-cli"):
+        start_team(
+            "reuse multi",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            routing={"executor": {"provider": "codex"}},
+            available_providers=_PROVIDERS_ALL,
+            check_binary=False,
+            force=True,
+        )
+    assert desc.read_bytes() == prior_desc
+    assert _mode(desc) == 0o640
+    _assert_no_uncommitted_authority(tmp_path, rid)
+
+    fixture_first = start_team(
+        "seed fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        executor="fixture",
+        force=True,
+    )
+    fid = str(fixture_first["run_id"])
+    fdesc = _team_dir(tmp_path, fid) / "t1.provider.json"
+    prior_fdesc = fdesc.read_bytes()
+    os.chmod(fdesc, 0o640)
+
+    _force_tmux_boom(monkeypatch, "forced fixture reuse failure")
+    with pytest.raises(TeamError, match="transaction failed|forced fixture"):
+        start_team(
+            "reuse fixture",
+            TASKS,
+            root=tmp_path,
+            run_id=fid,
+            dry_run=False,
+            executor="fixture",
+            force=True,
+        )
+    assert fdesc.read_bytes() == prior_fdesc
+    assert _mode(fdesc) == 0o640
+    _assert_no_uncommitted_authority(tmp_path, fid)
+
+
+def test_reuse_rollback_exact_retry_after_second_forced_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two failed live reuses in a row still restore the original artifacts."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team("seed twice", TASKS, root=tmp_path, dry_run=True)
+    rid = str(first["run_id"])
+    desc = _team_dir(tmp_path, rid) / "t1.provider.json"
+    prior_desc = desc.read_bytes()
+    os.chmod(desc, 0o640)
+    auth = _auth_path(tmp_path, rid, "t1")
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    prior_auth = b'{"kind":"stable-prepublish","n":2}\n'
+    auth.write_bytes(prior_auth)
+    os.chmod(auth, 0o400)
+
+    _force_tmux_boom(monkeypatch, "forced first reuse fail")
+    with pytest.raises(TeamError, match="transaction failed|forced first"):
+        start_team(
+            "fail 1",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            force=True,
+        )
+    _force_tmux_boom(monkeypatch, "forced second reuse fail")
+    with pytest.raises(TeamError, match="transaction failed|forced second"):
+        start_team(
+            "fail 2",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            force=True,
+        )
+
+    assert desc.read_bytes() == prior_desc
+    assert _mode(desc) == 0o640
+    assert auth.read_bytes() == prior_auth
+    assert _mode(auth) == 0o400
+
+    retry = start_team(
+        "after two fails",
+        TASKS,
+        root=tmp_path,
+        run_id=rid,
+        dry_run=True,
+        force=True,
+    )
+    assert retry["run_id"] == rid

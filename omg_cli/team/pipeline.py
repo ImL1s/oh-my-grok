@@ -40,8 +40,8 @@ from omg_cli.team.plane import (
     TeamGateError,
     collect_team,
     experimental_enabled,
-    in_spawned_worker_context,
     mutate_team_meta,
+    refuse_nested_team_launch,
     start_team,
     team_meta_path,
     team_status,
@@ -498,11 +498,7 @@ def start_team_pipeline(
             "team pipeline disabled "
             f"(OMG_DISABLE_TMUX_TEAM=1 or {EXPERIMENTAL_ENV}=0)"
         )
-    if in_spawned_worker_context():
-        raise TeamGateError(
-            "refusing team pipeline inside a spawned-worker context "
-            "(depth-1; nested team not allowed)"
-        )
+    refuse_nested_team_launch(action="run")
     task_list = [dict(t) for t in tasks if isinstance(t, Mapping)]
     if not task_list:
         raise TeamPipelineError("tasks list is empty")
@@ -987,10 +983,7 @@ def run_team_pipeline(
             "team pipeline disabled "
             f"(OMG_DISABLE_TMUX_TEAM=1 or {EXPERIMENTAL_ENV}=0)"
         )
-    if in_spawned_worker_context():
-        raise TeamGateError(
-            "refusing team pipeline inside a spawned-worker context"
-        )
+    refuse_nested_team_launch(action="run")
 
     if ralph:
         return _run_team_pipeline_ralph(

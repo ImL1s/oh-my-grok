@@ -498,11 +498,21 @@ def read_managed_regular_bytes(
     path: Path | str,
     *,
     max_bytes: int = MAX_MANAGED_READ_BYTES,
+    required_mode: int | None = None,
 ) -> bytes:
-    """Read one bounded regular, single-link file through a pinned parent fd."""
+    """Read one bounded regular, single-link file through a pinned parent fd.
+
+    When ``required_mode`` is set, the same opened inode must have that
+    exact permission mode both before and after the read. Callers must
+    not reopen the path to learn mode or digest.
+    """
     _require_confinement_platform()
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
         raise ValueError("max_bytes must be a non-negative integer")
+    if required_mode is not None and (
+        isinstance(required_mode, bool) or not isinstance(required_mode, int)
+    ):
+        raise ValueError("required_mode must be an integer or None")
     source = Path(path).absolute()
     name = _validate_component(source.name)
     parent_fd = open_existing_managed_dir_fd(source.parent)
@@ -524,6 +534,14 @@ def read_managed_regular_bytes(
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise ContractPathError(
                     f"managed file must be a single-link regular file: {name}"
+                )
+            if (
+                required_mode is not None
+                and stat.S_IMODE(before.st_mode) != required_mode
+            ):
+                raise ContractPathError(
+                    f"managed file mode must be {required_mode:04o}, "
+                    f"got {stat.S_IMODE(before.st_mode):04o}"
                 )
             if before.st_size > max_bytes:
                 raise ContractPathError(
@@ -551,6 +569,14 @@ def read_managed_regular_bytes(
                 after.st_ctime_ns,
             ) or after.st_size != len(body):
                 raise ContractPathError(f"managed file changed while reading: {name}")
+            if (
+                required_mode is not None
+                and stat.S_IMODE(after.st_mode) != required_mode
+            ):
+                raise ContractPathError(
+                    f"managed file mode must be {required_mode:04o}, "
+                    f"got {stat.S_IMODE(after.st_mode):04o}"
+                )
         return body
     finally:
         os.close(parent_fd)

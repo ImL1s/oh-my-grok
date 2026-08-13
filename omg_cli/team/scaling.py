@@ -38,7 +38,6 @@ from omg_cli.team.plane import (
     EXPERIMENTAL_ENV,
     IDENTITY_RECEIPT_SCHEMA_VERSION,
     SCHEMA_VERSION,
-    TEAM_WORKER_ENV,
     TeamError,
     TeamGateError,
     _identity_rows,
@@ -60,9 +59,9 @@ from omg_cli.team.plane import (
     _worker_pane_liveness,
     build_team_task_prompt,
     experimental_enabled,
-    in_spawned_worker_context,
     load_team_meta,
     mutate_team_meta,
+    refuse_nested_team_launch,
     team_dir,
     team_launch_receipt_path,
     team_meta_path,
@@ -275,11 +274,7 @@ def _assert_team_gates(*, env: Mapping[str, str] | None = None) -> None:
             f"(unset OMG_DISABLE_TMUX_TEAM; {EXPERIMENTAL_ENV}=0 disables). "
             "(experimental tmux team plane; integration isolation only)"
         )
-    if in_spawned_worker_context(env):
-        raise TeamGateError(
-            "omg team scale/resume refused: already inside a spawned-worker "
-            f"context (depth-1; {TEAM_WORKER_ENV} or related markers set)"
-        )
+    refuse_nested_team_launch(env, action="scale/resume")
 
 
 def _resolve_run_id(root: Path, run_id: str | None) -> str:
@@ -451,6 +446,73 @@ def _ensure_scale_ownership_manifest(
         raise TeamError(str(exc)) from exc
 
 
+def _publish_scale_supervisor_authorities(
+    root: Path,
+    run_id: str,
+    *,
+    team_id: str,
+    owner_token: str,
+    generation: int,
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    """Publish generation/attempt-bound authority before live pane spawn.
+
+    team.json does not list the new worker yet; supervisor admission
+    prefers a surviving prepublish record when owner_token is set.
+    """
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        clear_attempt_supervisor_prepublish_authorities,
+        publish_supervisor_authority,
+    )
+
+    token = str(owner_token or "").strip()
+    if not token:
+        raise TeamError(
+            "scale-up refused: owner_token required to publish "
+            "supervisor authority before pane spawn"
+        )
+    published: list[tuple[str, int]] = []
+    try:
+        for rec in records:
+            tid = str(rec["task_id"])
+            attempt = int(rec.get("attempt") or 1)
+            desc_path = team_dir(root, run_id) / f"{tid}.provider.json"
+            if not desc_path.is_file():
+                raise TeamError(
+                    f"scale-up supervisor descriptor missing task={tid}"
+                )
+            try:
+                publish_supervisor_authority(
+                    leader_root=root,
+                    run_id=run_id,
+                    team_id=str(team_id or "team"),
+                    worker_id=tid,
+                    owner_token=token,
+                    descriptor_path=desc_path,
+                    generation=int(generation),
+                    attempt=attempt,
+                )
+            except SupervisorError as exc:
+                raise TeamError(str(exc)) from exc
+            published.append((tid, attempt))
+    except TeamError as exc:
+        if not published:
+            raise
+        rollback_errors = clear_attempt_supervisor_prepublish_authorities(
+            root,
+            run_id,
+            generation=int(generation),
+            attempts=published,
+        )
+        detail = str(exc)
+        if rollback_errors:
+            detail += "; authority rollback incomplete: " + "; ".join(
+                rollback_errors
+            )
+        raise TeamError(detail) from exc
+
+
 def _build_pane_record(
     *,
     root: Path,
@@ -467,6 +529,11 @@ def _build_pane_record(
     safe: bool,
     extra: Sequence[str] | None,
     executor: str | None = None,
+    team_id: str = "team",
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> dict[str, Any]:
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -479,6 +546,16 @@ def _build_pane_record(
     wt = worktree_dir(root, run_id, tid)
     role = _task_role(task)
     tdir = team_dir(root, run_id)
+    authority_kw = {
+        "leader_root": root,
+        "run_id": run_id,
+        "team_id": str(team_id or "team"),
+        "worker_id": tid,
+        "owner_token": owner_token,
+        "authority_generation": authority_generation,
+        "authority_attempt": authority_attempt,
+        "publish_authority": publish_authority,
+    }
     tdir.mkdir(parents=True, exist_ok=True)
     artifact_paths: list[Path] = []
     executor_norm = (executor or "").strip().lower() or None
@@ -539,6 +616,7 @@ def _build_pane_record(
             identity_basenames=inv.identity_basenames or None,
             provider_strategy=inv.provider_strategy or None,
             startup_strategy=inv.startup_strategy or None,
+            **authority_kw,
         )
     elif executor_norm == "fixture":
         # Inherit launch executor=fixture so hermetic teams do not spawn grok
@@ -548,7 +626,10 @@ def _build_pane_record(
         from omg_cli.team.plane import build_fixture_pane_command
 
         desc_path = tdir / f"{tid}.provider.json"
-        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+        pane_cmd = build_fixture_pane_command(
+            descriptor_path=desc_path,
+            **authority_kw,
+        )
         provider = "fixture"
         posture = "read-write"
         needs_pty = False
@@ -599,6 +680,7 @@ def _build_pane_record(
             prompt_file=last_prompt_path,
             needs_pty=False,
             cwd=wt,
+            **authority_kw,
         )
         artifact_paths.extend([last_prompt_path, prompt_path])
 
@@ -656,6 +738,9 @@ def _build_pane_record(
         role=role,
         posture=posture,
     )
+    from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+    stamp_task_descriptor_digest(record, desc_path)
     return record
 
 
@@ -674,6 +759,11 @@ def _reuse_prepared_pane_record(
     safe: bool,
     extra: Sequence[str] | None,
     executor: str | None = None,
+    team_id: str = "team",
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> dict[str, Any] | None:
     """Strictly reuse a complete deterministic prompt/argv preparation set."""
     from omg_cli.contracts.path_keys import (
@@ -686,6 +776,16 @@ def _reuse_prepared_pane_record(
     owned = list(task.get("owned_files") or [])
     role = _task_role(task)
     worktree = worktree_dir(root, run_id, task_id)
+    authority_kw = {
+        "leader_root": root,
+        "run_id": run_id,
+        "team_id": str(team_id or "team"),
+        "worker_id": task_id,
+        "owner_token": owner_token,
+        "authority_generation": authority_generation,
+        "authority_attempt": authority_attempt,
+        "publish_authority": publish_authority,
+    }
     argv_path = team_dir(root, run_id) / f"{task_id}.argv.json"
     prompt_dir = worktree / ".omg" / "team-prompt"
     task_prompt_path = prompt_dir / f"{task_id}.prompt.md"
@@ -740,6 +840,7 @@ def _reuse_prepared_pane_record(
             identity_basenames=inv.identity_basenames or None,
             provider_strategy=inv.provider_strategy or None,
             startup_strategy=inv.startup_strategy or None,
+            **authority_kw,
         )
     elif executor_norm == "fixture":
         import sys
@@ -767,7 +868,10 @@ def _reuse_prepared_pane_record(
         )
         expected_argv = [sys.executable, str(fixture)]
         desc_path = team_dir(root, run_id) / f"{task_id}.provider.json"
-        pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+        pane_cmd = build_fixture_pane_command(
+            descriptor_path=desc_path,
+            **authority_kw,
+        )
     else:
         provider = "grok"
         posture = "read-write"
@@ -813,6 +917,7 @@ def _reuse_prepared_pane_record(
             prompt_file=last_prompt_path,
             needs_pty=False,
             cwd=worktree,
+            **authority_kw,
         )
 
     expected_bodies = {
@@ -891,6 +996,9 @@ def _reuse_prepared_pane_record(
         role=role,
         posture=posture,
     )
+    from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+    stamp_task_descriptor_digest(record, desc_path)
     return record
 
 
@@ -3903,6 +4011,8 @@ def _scale_up(
     windows_created = False
     receipt_bound = pending_scale is not None
     receipt_attempted = False
+    authorities_published: list[tuple[str, int]] = []
+    authority_generation = pending_generation
     scale_wal: dict[str, Any] | None = None
     scale_wal_sha256: str | None = None
     try:
@@ -3990,7 +4100,7 @@ def _scale_up(
                 else None
             )
             for i, spec in enumerate(new_task_specs):
-                pane_kwargs = dict(
+                pane_kwargs: dict[str, Any] = dict(
                     root=root,
                     run_id=run_id,
                     goal=goal,
@@ -4005,6 +4115,15 @@ def _scale_up(
                     safe=safe,
                     extra=extra,
                     executor=executor,
+                    team_id=str(meta.get("team_id") or "team"),
+                    owner_token=(
+                        str(meta["owner_token"])
+                        if meta.get("owner_token")
+                        else None
+                    ),
+                    authority_generation=pending_generation,
+                    authority_attempt=1,
+                    publish_authority=not effective_dry,
                 )
                 rec = None
                 if not effective_dry:
@@ -4033,6 +4152,23 @@ def _scale_up(
             if not effective_dry:
                 assert scale_wal is not None
                 _apply_scale_wal_plan(new_records, scale_wal)
+                _publish_scale_supervisor_authorities(
+                    root,
+                    run_id,
+                    team_id=str(meta.get("team_id") or "team"),
+                    owner_token=(
+                        str(meta["owner_token"])
+                        if meta.get("owner_token")
+                        else ""
+                    ),
+                    generation=pending_generation,
+                    records=new_records,
+                )
+                authorities_published = [
+                    (str(rec["task_id"]), int(rec.get("attempt") or 1))
+                    for rec in new_records
+                ]
+                authority_generation = pending_generation
 
             if not effective_dry:
                 assert authority is not None
@@ -4147,11 +4283,29 @@ def _scale_up(
             if windows_created and not receipt_bound
             else []
         )
+        authority_rollback_errors: list[str] = []
+        if authorities_published and not receipt_bound:
+            from omg_cli.team.supervisor import (
+                clear_attempt_supervisor_prepublish_authorities,
+            )
+
+            authority_rollback_errors = (
+                clear_attempt_supervisor_prepublish_authorities(
+                    root,
+                    run_id,
+                    generation=authority_generation,
+                    attempts=authorities_published,
+                )
+            )
         detail = str(exc)
         if receipt_bound:
             detail += "; receipt-bound windows preserved for retry"
         if rollback_errors:
             detail += "; rollback incomplete: " + "; ".join(rollback_errors)
+        if authority_rollback_errors:
+            detail += "; authority rollback incomplete: " + "; ".join(
+                authority_rollback_errors
+            )
         if isinstance(exc, TeamError):
             raise TeamError(detail) from exc
         raise TeamError(f"scale-up tmux launch failed: {detail}") from exc
@@ -4323,6 +4477,12 @@ def _scale_up(
             if isinstance(exc, TeamError):
                 raise TeamError(detail) from exc
             raise TeamError(f"scale-up meta commit failed: {detail}") from exc
+
+    from omg_cli.team.supervisor import clear_supervisor_prepublish_authorities
+
+    # team.json now lists the worker; prepublish is no longer required.
+    # Skip on not_committed / unknown (those paths raise above).
+    clear_supervisor_prepublish_authorities(root, run_id)
 
     try:
         write_status(

@@ -26,9 +26,11 @@ from omg_cli.team.compositions.hyperplan import (
     compile_hyperplan_decision_v1,
     compile_hyperplan_v1,
     hyperplan_decision_path,
+    hyperplan_manifest_path,
     hyperplan_result_bundle_path,
     materialize_hyperplan_v1,
     produce_hyperplan_decision_v1,
+    validate_hyperplan_decision_v1,
 )
 from omg_cli.team.compositions.security_research import (
     SECURITY_RESEARCH_RESULT_BUNDLE_KIND,
@@ -39,8 +41,10 @@ from omg_cli.team.compositions.security_research import (
     compile_security_research_v1,
     materialize_security_research_v1,
     produce_security_research_report_v1,
+    security_research_manifest_path,
     security_research_report_path,
     security_research_result_bundle_path,
+    validate_security_research_report_v1,
 )
 from omg_cli.team.compositions.task_driver import (
     CompositionTaskDriverError,
@@ -1272,6 +1276,68 @@ def test_worker_env_cannot_admit_or_collect_composition_tasks(
             tmp_path / "sr-gate", run_sr, TEAM, env=_worker_env(run_sr)
         )
     assert sr_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+
+
+def test_worker_env_cannot_materialize_produce_or_validate_composition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leader-only persist: workers must not write composition artifacts."""
+    run_id = _seed(tmp_path, monkeypatch)
+    worker_env = _worker_env(run_id)
+    leader_env = {EXPERIMENTAL_ENV: "1"}
+
+    with pytest.raises(HyperplanError, match="leader-only") as mat_exc:
+        materialize_hyperplan_v1(tmp_path, run_id, _hp_spec(), env=worker_env)
+    assert mat_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not hyperplan_manifest_path(tmp_path, run_id).exists()
+
+    mat = materialize_hyperplan_v1(
+        tmp_path, run_id, _hp_spec(), env=leader_env
+    )
+    assert mat["ok"] is True
+    assert hyperplan_manifest_path(tmp_path, run_id).is_file()
+
+    with pytest.raises(HyperplanError, match="leader-only") as prod_exc:
+        produce_hyperplan_decision_v1(tmp_path, run_id, {}, env=worker_env)
+    assert prod_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not hyperplan_decision_path(tmp_path, run_id).exists()
+    assert not hyperplan_result_bundle_path(tmp_path, run_id).exists()
+
+    with pytest.raises(HyperplanError, match="leader-only") as val_exc:
+        validate_hyperplan_decision_v1(
+            tmp_path, run_id, {}, persist=True, env=worker_env
+        )
+    assert val_exc.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not hyperplan_decision_path(tmp_path, run_id).exists()
+
+    run_sr = _seed(tmp_path / "sr-pub", monkeypatch)
+    sr_worker = _worker_env(run_sr)
+    with pytest.raises(SecurityResearchError, match="leader-only") as sr_mat:
+        materialize_security_research_v1(
+            tmp_path / "sr-pub", run_sr, _sr_spec(), env=sr_worker
+        )
+    assert sr_mat.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not security_research_manifest_path(tmp_path / "sr-pub", run_sr).exists()
+
+    materialize_security_research_v1(
+        tmp_path / "sr-pub", run_sr, _sr_spec(), env=leader_env
+    )
+    with pytest.raises(SecurityResearchError, match="leader-only") as sr_prod:
+        produce_security_research_report_v1(
+            tmp_path / "sr-pub", run_sr, {}, env=sr_worker
+        )
+    assert sr_prod.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not security_research_report_path(tmp_path / "sr-pub", run_sr).exists()
+    assert not security_research_result_bundle_path(
+        tmp_path / "sr-pub", run_sr
+    ).exists()
+
+    with pytest.raises(SecurityResearchError, match="leader-only") as sr_val:
+        validate_security_research_report_v1(
+            tmp_path / "sr-pub", run_sr, {}, persist=True, env=sr_worker
+        )
+    assert sr_val.value.code == "E_TEAM_COMPOSITION_TASK_GATE"
+    assert not security_research_report_path(tmp_path / "sr-pub", run_sr).exists()
 
 
 def test_leader_env_still_admits_and_collects(

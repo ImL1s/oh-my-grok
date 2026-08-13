@@ -20,8 +20,34 @@ _CMD_POS = r"(?:^|[;&|(`\n\r]|\|\||&&)"
 _ENV_ASSIGNS = r"(?:(?:[A-Za-z_][\w]*=\S*\s+)*)"
 # Wrappers that still leave the denied bin in command position after them.
 # Path-prefixed env/exec allowed: /usr/bin/env claude, /bin/exec codex.
+# After each wrapper, reuse leading-style env assigns so forms like
+# ``env OMG_TEAM_WORKER=0 omg team launch`` still resolve the real head
+# (not the assignment token).
+# Option arity is NOT in this regex (ReDoS): token walk peels env -i /
+# command -p / nice -n N. Keep this pattern a single bounded wrapper name.
 _WRAPPER_BIN = r"(?:(?:\S*/)?(?:env|command|xargs|nice|nohup|sudo|time|exec))"
-_WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*)*"
+_WRAPPERS = rf"(?:{_WRAPPER_BIN}\s+(?:--\s+)*{_ENV_ASSIGNS})*"
+_HEAD_TAIL_TEAM_LIMIT = 14
+_WRAPPER_NAMES = frozenset(
+    {"env", "command", "xargs", "nice", "nohup", "sudo", "time", "exec"}
+)
+_ENV_WRAPPER_FLAGS = frozenset({"-", "-i", "--ignore-environment"})
+_ENV_WRAPPER_VALUE_OPTS = frozenset({"-u", "--unset", "-C", "--chdir"})
+_ENV_WRAPPER_VALUE_EQ = "--unset="
+_ENV_WRAPPER_CHDIR_EQ = "--chdir="
+_NICE_WRAPPER_VALUE_OPTS = frozenset({"-n", "--adjustment"})
+_NICE_WRAPPER_VALUE_EQ = "--adjustment="
+_NICE_ADJ_TOKEN = re.compile(r"^[+-]?\d+$")
+_SUDO_WRAPPER_VALUE_OPTS = frozenset({"-u", "--user"})
+_SUDO_WRAPPER_VALUE_EQ = "--user="
+_XARGS_WRAPPER_VALUE_OPTS = frozenset({"-n", "--max-args"})
+_XARGS_WRAPPER_VALUE_EQ = "--max-args="
+_EXEC_WRAPPER_VALUE_OPTS = frozenset({"-a"})
+_ENV_ASSIGN_TOKEN = re.compile(r"^[A-Za-z_][\w]*=")
+# Bounded env -S / --split-string (BSD + GNU). One expansion per env wrapper.
+_ENV_SPLIT_CHAR_CAP = 512
+_ENV_SPLIT_TOKEN_CAP = 16
+_ENV_SPLIT_COMBINED_SHORT = re.compile(r"^-[iv]+S$")
 _PATH_PREFIX = r"(?:\S*/)?"
 _SHELL_WORD = r"""(?:\\.|[^\s;&|()'"`\\]+|'[^']*'|"(?:\\.|[^"\\])*")+"""
 _CONTROL_COMMAND_WORD = r"(?:if|elif|while|until|then|else|do|coproc|!)"
@@ -34,23 +60,107 @@ _COMMAND_LEAD = (
     rf"|\{{\s+"
     rf"|{_FUNCTION_GROUP_LEAD})*"
 )
+# Leading redirections before the executable (``>out cmd``, ``2>/dev/null env …``).
+# Adjacent FD digits of any shell-valid length, or bash 4+ named FD ``{ident}``
+# (ident max 64). Spaced ``2 >out`` / ``{fd} >out`` is not leading.
+# Longest operator first: ``<<<`` before ``<<``, ``<>`` before ``<``/``>``.
+_REDIR_FD_PREFIX = r"(?:\d*|\{[A-Za-z_][A-Za-z0-9_]{0,63}\})"
+_LEADING_REDIR_UNIT = (
+    rf"{_REDIR_FD_PREFIX}(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])"
+    r"(?:\\.|[^\s;&|()'\"`\\]+|'[^']*'|\"(?:\\.|[^\"\\])*\")*"
+)
+_LEADING_REDIRS = rf"(?:{_LEADING_REDIR_UNIT}\s+)*"
 _DENIED_BIN_NAMES = frozenset(
     {"claude", "codex", "omx", "agy", "cursor-agent", "kimi"}
 )
+# Foreign orchestration CLIs (not first-party ``omg``). Basename only —
+# path-prefixed / wrapped heads resolve via :func:`_executable_basename`.
+_FOREIGN_ORCHESTRATOR_BINS = frozenset({"omc"})
+# First-party Team binary basename. Soft-gate does NOT own its authorization;
+# OMG Team runtime does (actor, operation, identity, nested-launch admission).
+_FIRST_PARTY_TEAM_BIN = "omg"
+# Nested launch / lifecycle verbs denied as defense-in-depth when the *process*
+# environment is a worker (never from command-text env assignments).
+# Keep in lockstep with ``omg_cli.team.cli`` lifecycle + ``shutdown`` alias;
+# tests/test_deny.py::test_team_op_vocab_matches_cli_grammar guards drift.
+# ``supervisor`` stays here for host-shell DiD; legal pane supervisors are
+# launched by tmux (not PreToolUse) and admitted by identity-bound runtime.
+_TEAM_NESTED_LAUNCH_OPS = frozenset(
+    {
+        "launch",
+        "start",
+        "run",
+        "scale",
+        "resume",
+        "supervisor",
+        "stop",
+        "shutdown",  # OMX alias → stop (normalize_team_argv)
+        "collect",
+    }
+)
+# Non-launch reserved ops that must still reach Team runtime under worker env
+# (identity-bound api / read-only / operator; runtime may still refuse some).
+# Mirror ``omg_cli.team.cli.RESERVED_ACTIONS`` minus nested-launch set.
+_TEAM_NON_LAUNCH_OPS = frozenset(
+    {
+        "api",
+        "status",
+        "panes",
+        "capture",
+        "focus",
+        "key",
+        "input",
+        "watch",
+        "view",
+        "worker-ready",
+        "hyperplan",
+        "security-research",
+        "help",
+        "-h",
+        "--help",
+    }
+)
+# Leader-owned hyperplan / security-research publication and decision.
+# Duplicated (stdlib-only standalone embed). Drift locked by F8 tests.
+_TEAM_LEADER_COMPOSITION_OPS = frozenset({
+    "materialize",
+    "validate-decision",
+    "validate-report",
+    "produce-decision",
+    "produce-report",
+    "admit-tasks",
+    "collect-tasks",
+})
+# Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
+# Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked
+# by tests/test_deny.py::test_deny_leading_globals_match_cli_normalize.
+_TEAM_LEADING_FLAG_OPTS = frozenset({"--json", "--safe", "--yolo"})
+_TEAM_LEADING_VALUE_OPTS = frozenset({"--project-root"})
+_TEAM_LEADING_VALUE_EQ_PREFIX = "--project-root="
+# Shorthand ``omg team N[:role] "goal"`` — first token after ``team`` is N or N:role.
+_TEAM_SHORTHAND_WORKERS = re.compile(r"^\d+(?::[A-Za-z0-9_-]+)?$")
+# Process-env markers for worker depth-1 (must match team.plane WORKER_ENV_MARKERS).
+_WORKER_ENV_MARKERS = (
+    "OMG_TEAM_WORKER",
+    "OMG_PROCESS_FANOUT_WORKER",
+    "OMG_SPAWNED_WORKER",
+)
 
 _DENY_AT_CMD_POS = re.compile(
-    rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_LEADING_REDIRS}"
+    rf"{_ENV_ASSIGNS}{_WRAPPERS}{_PATH_PREFIX}{_DENY_BINS}\b",
     re.IGNORECASE,
 )
 _DECODED_COMMAND_HEAD = re.compile(
     rf"{_CMD_POS}\s*"
     rf"{_COMMAND_LEAD}"
+    rf"{_LEADING_REDIRS}"
     rf"{_ENV_ASSIGNS}{_WRAPPERS}"
     rf"(?P<word>{_SHELL_WORD})",
     re.IGNORECASE,
 )
 _DYNAMIC_COMMAND_PREFIX = re.compile(
-    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_ENV_ASSIGNS}{_WRAPPERS}",
+    rf"{_CMD_POS}\s*{_COMMAND_LEAD}{_LEADING_REDIRS}{_ENV_ASSIGNS}{_WRAPPERS}",
     re.IGNORECASE,
 )
 _CASE_HEAD = re.compile(
@@ -73,9 +183,6 @@ _CONDITIONAL_OPEN_AT_END = re.compile(
 _ARRAY_ASSIGNMENT_AT_END = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]*\])?\+?=\Z"
 )
-_OMC_TEAM = re.compile(rf"{_CMD_POS}\s*omc\s+team\b", re.IGNORECASE)
-_OMG_TEAM = re.compile(rf"{_CMD_POS}\s*omg\s+team\b", re.IGNORECASE)
-
 # eval claude ... (command-position eval of a deny bin)
 _EVAL = re.compile(
     rf"{_CMD_POS}\s*{_ENV_ASSIGNS}{_WRAPPERS}(?:\S*/)?eval\s+(?:['\"]?){_PATH_PREFIX}{_DENY_BINS}\b",
@@ -1305,12 +1412,40 @@ def _decode_shell_words(raw_body: str) -> list[str]:
     return words
 
 
+def _executable_basename(raw_word: str) -> str | None:
+    """Normalize a command-head word to its executable basename.
+
+    Resolves bare names, absolute/relative path prefixes, and quoted forms the
+    bounded decoder already understands. Returns ``None`` when the word is not
+    a concrete executable token.
+
+    Also strips shell redirections glued to the head (``omc>out``,
+    ``omg</dev/null``, ``{fd}>/dev/null``): real shells tokenize those as
+    executable + redir, but ``_SHELL_WORD`` keeps ``<``/``>`` inside the match.
+    Linear quote-aware boundary insert + first-token basename; trailing redir
+    noise is ignored.
+    """
+
+    if not raw_word:
+        return None
+    # Split glued redirs (and any other unquoted shell ops) before shlex so
+    # basename is the executable, not ``omc>out`` / path ending in ``null``.
+    normalized = _insert_unquoted_shell_boundaries(raw_word)
+    words = _decode_shell_words(normalized)
+    if not words:
+        return None
+    first = words[0]
+    if not first or first in _SHELL_COMMAND_SEPARATORS or first in ("(", ")"):
+        return None
+    if _is_shell_redirect_token(first):
+        return None
+    base = first.rsplit("/", 1)[-1].lower()
+    return base or None
+
+
 def _decoded_shell_word_is_denied(raw_word: str) -> bool:
-    words = _decode_shell_words(raw_word)
-    if len(words) != 1:
-        return False
-    executable = words[0].rsplit("/", 1)[-1].lower()
-    return executable in _DENIED_BIN_NAMES
+    executable = _executable_basename(raw_word)
+    return executable in _DENIED_BIN_NAMES if executable else False
 
 
 def _starts_shell_expansion(char: str) -> bool:
@@ -1415,12 +1550,959 @@ def _has_denied_decoded_command_head(command: str) -> bool:
 
     search_position = 0
     while match := _DECODED_COMMAND_HEAD.search(command, search_position):
-        if (
-            _shell_context_is_executable(command, match.start()) is True
-            and _decoded_shell_word_is_denied(match.group("word"))
-        ):
-            return True
+        if _shell_context_is_executable(command, match.start()) is True:
+            raw_word = match.group("word")
+            if _decoded_shell_word_is_denied(raw_word):
+                return True
+            base = _executable_basename(raw_word)
+            if _should_peel_wrapper_head(raw_word, base):
+                words = _semantic_words_from_head_match(command, match, limit=8)
+                remaining = _peel_wrapper_chain(words)
+                if remaining and _decoded_shell_word_is_denied(remaining[0]):
+                    return True
         search_position = match.start() + 1
+    return False
+
+
+# Bound how much trailing text we decode after a matched executable head when
+# classifying ``omc team`` / ``omg team`` — avoids O(n²) shlex on huge scripts.
+_HEAD_TAIL_DECODE_LIMIT = 512
+# Max raw tokens examined after boundary insert while dropping redirects. The
+# char-bounded fragment is already small; this is a secondary safety cap so a
+# pathological token soup cannot stall the hook. Must stay large enough that
+# several FD redirects (``0</dev/null 1>out 2>&1`` → ~9 raw words) never starve
+# the semantic ``team`` / op tokens (Codex review3 multi-redir Critical).
+_HEAD_TAIL_RAW_SCAN_CAP = 64
+
+# Pure command separators / pipeline control — stop argv collection for the
+# current head (do not glue the next shell command into this argv).
+# ``\n``/``\r`` are listed for documentation; unquoted newlines are rewritten
+# to ``;`` in :func:`_insert_unquoted_shell_boundaries` because ``shlex`` treats
+# newlines as whitespace and would otherwise erase the command boundary.
+_SHELL_COMMAND_SEPARATORS = frozenset({";", "&", "&&", "|", "||", "\n", "\r"})
+# Pure redirection operators that take a following word as the target when
+# not already glued (``> out`` vs ``>out``).
+_SHELL_REDIR_OPS = frozenset(
+    {">", ">>", "<", "<<", "<>", "<<<", ">&", "<&", ">|", "&>", "&>>"}
+)
+# Glued target (``2>/dev/null``) stays digit-or-empty prefix only. A quoted
+# ``'{fd}>/dev/null'`` decodes to one argv word and must remain literal.
+_SHELL_REDIR_GLUED = re.compile(
+    r"^(?:\d*)(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>]).+"
+)
+_SHELL_REDIR_PURE = re.compile(
+    rf"^{_REDIR_FD_PREFIX}(?:<<<|>>|<<|<>|>&|<&|>\||&>|&>>|[<>])$"
+)
+# Redirection operators that may take an adjacent FD prefix (``2>``,
+# ``2>&``, ``2<>``, ``{fd}>``, ``{fd}>&``). Control operators ``&&`` / ``||``
+# are not included.
+_SHELL_REDIR_TWOCHAR = frozenset({">>", "<<", "<>", ">&", "<&", ">|", "&>"})
+
+
+# Shell allows multi-digit FDs; keep a hard upper bound only as DoS guard
+# (old arbitrary 4-digit cap false-negatived ``12345>/dev/null …``).
+_MAX_ADJACENT_FD_DIGITS = 64
+# Bash 4+ named FD ``{ident}`` — ident is ``[A-Za-z_][A-Za-z0-9_]*``, max 64.
+_MAX_NAMED_FD_IDENT = 64
+
+
+def _adjacent_named_fd_prefix(text: str, op_index: int) -> str:
+    """Return adjacent ``{ident}`` immediately before *op_index*, else ``""``.
+
+    Fail-closed bash 4+ named-FD syntax: unquoted ``{fd}>word`` is one
+    redirect unit (on bash 3.2 it is argv ``{fd}`` plus ``>``, but the
+    command is still ``omc … team``). Rejects empty ``{}``, digit-leading
+    ``{1fd}``, hyphen ``{fd-x}``, idents longer than
+    :data:`_MAX_NAMED_FD_IDENT`, and ``{ident}`` glued to an alnum/``_``
+    head (``omc{fd}>out``).
+    """
+
+    if op_index < 2 or text[op_index - 1] != "}":
+        return ""
+    ident_end = op_index - 1
+    cursor = ident_end - 1
+    while cursor >= 0 and (
+        "A" <= text[cursor] <= "Z"
+        or "a" <= text[cursor] <= "z"
+        or "0" <= text[cursor] <= "9"
+        or text[cursor] == "_"
+    ):
+        if ident_end - cursor > _MAX_NAMED_FD_IDENT:
+            return ""
+        cursor -= 1
+    if cursor < 0 or text[cursor] != "{":
+        return ""
+    ident = text[cursor + 1 : ident_end]
+    if not ident or len(ident) > _MAX_NAMED_FD_IDENT:
+        return ""
+    first = ident[0]
+    if not (("A" <= first <= "Z") or ("a" <= first <= "z") or first == "_"):
+        return ""
+    if cursor > 0:
+        before = text[cursor - 1]
+        if before.isalnum() or before == "_":
+            return ""
+    return text[cursor:op_index]
+
+
+def _adjacent_fd_prefix(text: str, op_index: int) -> str:
+    """Return adjacent FD prefix immediately before *op_index*, else ``""``.
+
+    Digit FDs (``2>out`` / ``12345>/dev/null``) and bash named FDs
+    (``{fd}>`` / ``{my_fd}>>``) stay one redirect token when unquoted and
+    adjacent. Spaced ``2 >out`` / ``{fd} >out`` remain argv + redirect.
+    A prefix glued to an alnum/``_`` head (``echo2>out``, ``omc{fd}>out``)
+    is not an FD. Digit length is accepted up to
+    :data:`_MAX_ADJACENT_FD_DIGITS`; named idents up to
+    :data:`_MAX_NAMED_FD_IDENT`.
+    """
+
+    if op_index <= 0:
+        return ""
+    start = op_index
+    while (
+        start > 0
+        and text[start - 1].isdigit()
+        and op_index - (start - 1) <= _MAX_ADJACENT_FD_DIGITS
+    ):
+        start -= 1
+    digits = text[start:op_index]
+    if digits and digits.isdecimal():
+        if start > 0:
+            before = text[start - 1]
+            if before.isalnum() or before == "_":
+                return ""
+        return digits
+    return _adjacent_named_fd_prefix(text, op_index)
+
+
+def _emit_redir_op(out: list[str], text: str, op_index: int, op_len: int) -> None:
+    """Append a spaced redir token, gluing an immediately-adjacent FD prefix.
+
+    Pops already-emitted prefix characters from *out* when they form a bare
+    digit FD or named FD ``{ident}`` that was adjacent to the operator in the
+    original text. Spaced forms such as ``2 >out`` / ``{fd} >out`` keep the
+    prefix as a normal argv word.
+    """
+
+    fd = _adjacent_fd_prefix(text, op_index)
+    op = text[op_index : op_index + op_len]
+    if fd and len(out) >= len(fd) and "".join(out[-len(fd) :]) == fd:
+        del out[-len(fd) :]
+        out.append(f" {fd}{op} ")
+    else:
+        out.append(f" {op} ")
+
+
+def _insert_unquoted_shell_boundaries(text: str) -> str:
+    """Insert whitespace around unquoted shell operators (linear, quote-aware).
+
+    ``shlex`` does not treat ``; | & < > ( )`` as token boundaries when they are
+    glued to a word (``team>out``, ``team;echo``). Real shells do. This pass
+    normalizes only the bounded tail after an executable head so both foreign
+    ``omc team`` and first-party nested classification see the same tokens.
+
+    Also:
+    - Keeps FD digits **and** named FDs **adjacent** to redirection ops
+      (``2>out`` → ``2>`` + target, ``{fd}>/dev/null`` → ``{fd}>`` + target)
+      so spaced ``2 >out`` / ``{fd} >out`` remain argv + redirect (review3).
+    - Rewrites unquoted newlines/CRs to ``;`` so ``shlex`` cannot erase command
+      separators (``omc>out\\nteam`` is two commands, not ``omc team``).
+
+    Preserves single/double quotes and backslash escapes. Does not expand
+    substitutions or implement full shell grammar. O(n) in *text* length.
+    """
+
+    if not text:
+        return text
+    out: list[str] = []
+    context = "normal"  # normal | single | double
+    index = 0
+    n = len(text)
+    while index < n:
+        char = text[index]
+        following = text[index + 1] if index + 1 < n else ""
+        if context == "single":
+            out.append(char)
+            if char == "'":
+                context = "normal"
+            index += 1
+            continue
+        if context == "double":
+            out.append(char)
+            if char == "\\" and following:
+                out.append(following)
+                index += 2
+                continue
+            if char == '"':
+                context = "normal"
+            index += 1
+            continue
+        # normal context
+        if char == "\\" and following:
+            out.extend((char, following))
+            index += 2
+            continue
+        if char == "'":
+            out.append(char)
+            context = "single"
+            index += 1
+            continue
+        if char == '"':
+            out.append(char)
+            context = "double"
+            index += 1
+            continue
+        # Unquoted newline / CR are command separators. ``shlex`` treats them as
+        # whitespace and would otherwise glue the next line's tokens into this
+        # head's argv (``omc>out\\nteam`` must not become ``omc`` + ``team``).
+        if char == "\r":
+            index += 2 if following == "\n" else 1
+            out.append(" ; ")
+            continue
+        if char == "\n":
+            out.append(" ; ")
+            index += 1
+            continue
+        # Multi-character operators first (longest match).
+        three = text[index : index + 3]
+        if three in ("&>>", "<<<"):
+            _emit_redir_op(out, text, index, 3)
+            index += 3
+            continue
+        two = char + following if following else char
+        if two in ("&&", "||"):
+            out.append(f" {two} ")
+            index += 2
+            continue
+        if two in _SHELL_REDIR_TWOCHAR:
+            _emit_redir_op(out, text, index, 2)
+            index += 2
+            continue
+        if char in "<>":
+            _emit_redir_op(out, text, index, 1)
+            index += 1
+            continue
+        if char in ";&|()":
+            out.append(f" {char} ")
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _is_shell_redirect_token(word: str) -> bool:
+    """True for pure or glued redirection tokens (not ordinary path args).
+
+    Includes digit-prefixed (``2>``, ``2>/dev/null``) and named-FD
+    (``{fd}>``, ``{fd}>/dev/null``) forms.
+    """
+
+    if not word:
+        return False
+    if word in _SHELL_REDIR_OPS:
+        return True
+    if _SHELL_REDIR_PURE.match(word):
+        return True
+    if _SHELL_REDIR_GLUED.match(word):
+        return True
+    return False
+
+
+def _next_decoded_words(
+    command: str,
+    start: int,
+    *,
+    limit: int = 4,
+    raise_on_budget: bool = False,
+) -> list[str]:
+    """Decode at most *limit* **semantic** argv words from a bounded tail.
+
+    Applies a linear shell-operator boundary correction before shlex so
+    no-space forms like ``team>out`` / ``team;echo`` still yield ``team`` as
+    the first word. Shared by foreign ``omc team`` and first-party nested
+    classification.
+
+    Skips redirections *between* the executable and later argv (``omc 2>out
+    team``, ``omg 0</dev/null 1>out 2>&1 team``, ``omc <>out team``,
+    ``omc <<<payload team``, ``omc {fd}>/dev/null team``). FD-prefixed
+    redirs stay a single redirect token when originally adjacent
+    (``2>out``, ``2<>out``, ``{fd}>``, ``{fd}>&``); a spaced numeric or
+    ``{ident}`` argv (``2 >out``, ``{fd} >out``) remains a semantic word.
+    Raw tokens are **not** truncated before redirect-dropping — only the
+    512-char fragment bound and :data:`_HEAD_TAIL_RAW_SCAN_CAP` apply — so
+    multi-redir sequences cannot starve ``team``.
+
+    When *raise_on_budget* is true, character or raw-token budget exhaustion
+    before a separator or *limit* semantic words raises
+    :class:`_ShellParseBudgetExceeded` (indeterminate). Callers must enable
+    that only for orchestrator / nested-Team candidates.
+    """
+
+    if start >= len(command):
+        return []
+    char_truncated = start + _HEAD_TAIL_DECODE_LIMIT < len(command)
+    end = min(len(command), start + _HEAD_TAIL_DECODE_LIMIT)
+    fragment = _insert_unquoted_shell_boundaries(command[start:end])
+    # Decode the whole bounded fragment; drop redirs while scanning so a long
+    # redirect sequence never cuts ``team`` off before semantic collection.
+    raw_words = _decode_shell_words(fragment)
+    token_truncated = len(raw_words) > _HEAD_TAIL_RAW_SCAN_CAP
+    semantic: list[str] = []
+    skip_next = False
+    index = 0
+    n_raw = min(len(raw_words), _HEAD_TAIL_RAW_SCAN_CAP)
+    hit_separator = False
+    while index < n_raw:
+        word = raw_words[index]
+        index += 1
+        if skip_next:
+            skip_next = False
+            continue
+        if word in _SHELL_COMMAND_SEPARATORS:
+            hit_separator = True
+            break
+        if word in ("(", ")"):
+            hit_separator = True
+            break
+        if _is_shell_redirect_token(word):
+            # Pure ops (``>``, ``2>``, ``{fd}>``, ``<>``, ``<<<``, ``>&``)
+            # take a following target. Glued forms already include the target.
+            if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
+                skip_next = True
+            continue
+        semantic.append(word)
+        if len(semantic) >= limit:
+            break
+    if (
+        raise_on_budget
+        and len(semantic) < limit
+        and not hit_separator
+        and (char_truncated or token_truncated)
+    ):
+        raise _ShellParseBudgetExceeded
+    return semantic
+
+
+def _token_basename(word: str) -> str:
+    return word.rsplit("/", 1)[-1].lower() if word else ""
+
+
+def _looks_like_wrapper_option_residue(token: str) -> bool:
+    """True for a leftover wrapper flag used as the decoded command head."""
+
+    return bool(token) and token.startswith("-")
+
+
+def _should_peel_wrapper_head(raw_word: str, base: str | None) -> bool:
+    """Peel when the captured head is a wrapper or a leftover option.
+
+    Residue must be checked on the raw word first: ``env --split-string='…/usr/bin…'``
+    makes ``_executable_basename`` take the path inside the option value, so a
+    basename-only ``-…`` check would miss GNU ``--split-string=``.
+    """
+
+    return (
+        _looks_like_wrapper_option_residue(raw_word)
+        or _looks_like_wrapper_option_residue(base or "")
+        or base in _WRAPPER_NAMES
+    )
+
+
+def _is_env_assign_token(token: str) -> bool:
+    return bool(token) and _ENV_ASSIGN_TOKEN.match(token) is not None
+
+
+def _glued_nice_adjustment(token: str) -> bool:
+    """``-n5`` / ``-n-5`` — short niceness glued to ``-n``."""
+
+    return token.startswith("-n") and _NICE_ADJ_TOKEN.match(token[2:]) is not None
+
+
+def _command_option_kind(token: str) -> str | None:
+    """Classify a POSIX ``command`` short option.
+
+    ``discovery``: ``-v`` / ``-V`` or a ``p``/``v``/``V`` cluster that
+    contains ``v`` or ``V`` (lookup; the following name is not executed).
+    ``exec``: ``-p`` or a cluster of only ``p`` (default PATH, then execute).
+    ``None``: not a recognized ``command`` option.
+    """
+
+    if len(token) < 2 or token[0] != "-" or token.startswith("--"):
+        return None
+    letters = token[1:]
+    if not all(ch in "pvV" for ch in letters):
+        return None
+    if "v" in letters or "V" in letters:
+        return "discovery"
+    return "exec"
+
+
+def _parse_env_split_string(raw: str) -> list[str] | None:
+    """Bounded BSD/GNU ``env -S`` split. ``None`` is indeterminate (fail closed)."""
+
+    if "${" in raw or len(raw) > _ENV_SPLIT_CHAR_CAP:
+        return None
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    started = False
+    index = 0
+    length = len(raw)
+
+    def flush() -> bool:
+        nonlocal started
+        if not started:
+            return True
+        if len(tokens) >= _ENV_SPLIT_TOKEN_CAP:
+            return False
+        tokens.append("".join(buf))
+        buf.clear()
+        started = False
+        return True
+
+    while index < length:
+        char = raw[index]
+        following = raw[index + 1] if index + 1 < length else ""
+        if quote is None and char in " \t":
+            if not flush():
+                return None
+            index += 1
+            continue
+        if quote is None and char == "#" and not started:
+            break
+        if quote is None and char.isspace():
+            return None
+        if char == "\\":
+            if not following:
+                return None
+            if following == "c":
+                if not flush():
+                    return None
+                return tokens
+            if quote is None and following in {" ", "t", "_"}:
+                if not flush():
+                    return None
+                index += 2
+                continue
+            if following in {"\\", "'", '"', "$", "#"}:
+                buf.append(following)
+                started = True
+                index += 2
+                continue
+            if quote is not None and following in {" ", "t"}:
+                buf.append(" " if following == " " else "\t")
+                started = True
+                index += 2
+                continue
+            return None
+        if quote is None and char in {"'", '"'}:
+            quote = char
+            started = True
+            index += 1
+            continue
+        if quote is not None and char == quote:
+            quote = None
+            index += 1
+            continue
+        if quote is None and char == "$":
+            return None
+        buf.append(char)
+        started = True
+        index += 1
+    if quote is not None:
+        return None
+    if not flush():
+        return None
+    return tokens
+
+
+def _peel_one_wrapper(words: list[str]) -> list[str] | None:
+    """Peel one supported wrapper and its bounded options.
+
+    Returns remaining words after the wrapper. Stops before an unknown or
+    malformed option so the caller can fail-closed on residue flags.
+    Returns ``None`` when *words* does not start with a wrapper name.
+    ``env -S`` / ``--split-string`` expand once (fail closed if recursive
+    or indeterminate). ``command -p`` is an execution wrapper;
+    ``command -v`` / ``-V`` (and ``-pv`` clusters) are discovery and
+    consume the rest of this invocation so the looked-up name is not a
+    wrapped executable.
+    """
+
+    if not words:
+        return None
+    name = _token_basename(words[0])
+    if name not in _WRAPPER_NAMES:
+        return None
+    index = 1
+    n_words = len(words)
+    split_used = False
+    while index < n_words:
+        token = words[index]
+        if token == "--":
+            index += 1
+            break
+        if name == "env":
+            # One -S / --split-string per env wrapper. Splice in place; do
+            # not skip the first expanded token so inner -i / NAME= still peel.
+            split_raw: str | None = None
+            split_extra = 0
+            if token.startswith("-S=") or token.startswith("--S="):
+                raise _ShellParseBudgetExceeded
+            if token in {"-S", "--S", "--split-string"}:
+                if index + 1 >= n_words:
+                    raise _ShellParseBudgetExceeded
+                split_raw = words[index + 1]
+                split_extra = 1
+            elif token.startswith("--split-string="):
+                split_raw = token[len("--split-string=") :]
+                if not split_raw:
+                    raise _ShellParseBudgetExceeded
+            elif _ENV_SPLIT_COMBINED_SHORT.fullmatch(token):
+                if index + 1 >= n_words:
+                    raise _ShellParseBudgetExceeded
+                split_raw = words[index + 1]
+                split_extra = 1
+            elif token.startswith("-S") and len(token) > 2 and token[2] != "=":
+                split_raw = token[2:]
+            if split_raw is not None:
+                if split_used:
+                    raise _ShellParseBudgetExceeded
+                split_used = True
+                parsed = _parse_env_split_string(split_raw)
+                if parsed is None:
+                    raise _ShellParseBudgetExceeded
+                words = words[:index] + parsed + words[index + 1 + split_extra :]
+                n_words = len(words)
+                continue
+            if token in _ENV_WRAPPER_FLAGS:
+                index += 1
+                continue
+            if token in _ENV_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_ENV_WRAPPER_VALUE_EQ) and len(token) > len(
+                _ENV_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            if token.startswith(_ENV_WRAPPER_CHDIR_EQ) and len(token) > len(
+                _ENV_WRAPPER_CHDIR_EQ
+            ):
+                index += 1
+                continue
+            if _is_env_assign_token(token):
+                index += 1
+                continue
+            break
+        if name == "command":
+            kind = _command_option_kind(token)
+            if kind == "discovery":
+                # Lookup only: do not wrap the following name, and do not
+                # leave ``-v`` for residue-skip to promote a deny-bin head.
+                return []
+            if kind == "exec":
+                index += 1
+                continue
+            break
+        if name == "nice":
+            if _glued_nice_adjustment(token):
+                index += 1
+                continue
+            if token in _NICE_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words or not _NICE_ADJ_TOKEN.match(words[index + 1]):
+                    break
+                index += 2
+                continue
+            if token.startswith(_NICE_WRAPPER_VALUE_EQ) and _NICE_ADJ_TOKEN.match(
+                token[len(_NICE_WRAPPER_VALUE_EQ) :]
+            ):
+                index += 1
+                continue
+            break
+        if name == "sudo":
+            if token in _SUDO_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_SUDO_WRAPPER_VALUE_EQ) and len(token) > len(
+                _SUDO_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            break
+        if name == "xargs":
+            if token in _XARGS_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_XARGS_WRAPPER_VALUE_EQ) and len(token) > len(
+                _XARGS_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            break
+        if name == "exec":
+            if token in _EXEC_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token in {"-c", "-l", "-cl", "-lc"}:
+                index += 1
+                continue
+            break
+        if _is_env_assign_token(token):
+            index += 1
+            continue
+        break
+    return words[index:]
+
+
+def _peel_wrapper_chain(words: list[str]) -> list[str]:
+    """Peel stacked supported wrappers, then skip leftover unknown flags."""
+
+    remaining = words
+    while remaining:
+        peeled = _peel_one_wrapper(remaining)
+        if peeled is None:
+            break
+        remaining = peeled
+    return _after_wrapper_option_residue(remaining)
+
+
+def _semantic_words_from_head_match(
+    command: str,
+    match: re.Match[str],
+    *,
+    limit: int,
+    raise_on_budget: bool = False,
+) -> list[str]:
+    """Wrapper tokens in the match plus a bounded tail after the captured head.
+
+    ``_WRAPPERS`` consumes only the wrapper *name*, so ``env -i omg`` captures
+    ``-i``. Decoding the full match recovers ``env`` so option arity can peel.
+    """
+
+    raw = _decode_shell_words(_insert_unquoted_shell_boundaries(match.group(0)))
+    cleaned: list[str] = []
+    skip_next = False
+    for word in raw:
+        if skip_next:
+            skip_next = False
+            continue
+        if word in _SHELL_COMMAND_SEPARATORS or word in ("(", ")"):
+            continue
+        if _is_shell_redirect_token(word):
+            if word in _SHELL_REDIR_OPS or _SHELL_REDIR_PURE.match(word):
+                skip_next = True
+            continue
+        cleaned.append(word)
+    remain = max(0, limit - len(cleaned))
+    if remain == 0:
+        return cleaned
+    tail = _next_decoded_words(
+        command,
+        match.end(),
+        limit=remain,
+        raise_on_budget=raise_on_budget,
+    )
+    return [*cleaned, *tail]
+
+
+def _head_tail_budget_exhausted(command: str, match: re.Match[str]) -> bool:
+    """Whether char or raw-token bounds ended before head resolution."""
+    start = match.end()
+    if start + _HEAD_TAIL_DECODE_LIMIT < len(command):
+        return True
+    fragment = _insert_unquoted_shell_boundaries(
+        command[start : start + _HEAD_TAIL_DECODE_LIMIT]
+    )
+    return len(_decode_shell_words(fragment)) > _HEAD_TAIL_RAW_SCAN_CAP
+
+
+def _after_wrapper_option_residue(words: list[str]) -> list[str]:
+    """Skip leftover wrapper flags; return words from the first non-flag token.
+
+    Fail-closed look-ahead only. Does not skip a following value token, so
+    ``env --weird echo omg team`` does not treat later ``omg`` as the head.
+    """
+
+    if not words or not _looks_like_wrapper_option_residue(words[0]):
+        return words
+    index = 0
+    while index < len(words) and _looks_like_wrapper_option_residue(words[index]):
+        index += 1
+    return words[index:]
+
+
+def _shell_c_bodies_from_head_words(words: list[str]) -> list[str]:
+    """If peeled wrappers leave ``sh|bash|zsh -c``, yield the command body."""
+
+    remaining = _peel_wrapper_chain(words)
+    if not remaining:
+        return []
+    bodies: list[str] = []
+    if (
+        _token_basename(remaining[0]) in {"sh", "bash", "zsh"}
+        and len(remaining) >= 3
+        and remaining[1].startswith("-")
+        and "c" in remaining[1]
+    ):
+        bodies.append(remaining[2])
+    return bodies
+
+
+def _team_argv_from_semantic_words(words: list[str]) -> list[str] | None:
+    """Return argv-after-``team`` after peeling wrappers / option residue.
+
+    Unknown/malformed wrapper flags fail closed only when the next non-flag
+    token is ``omg``. A non-flag head that is not ``omg`` is not scanned
+    (avoids ``echo omg team``).
+    """
+
+    remaining = _peel_wrapper_chain(words)
+    if not remaining:
+        return None
+    if _token_basename(remaining[0]) != _FIRST_PARTY_TEAM_BIN:
+        return None
+    rest = _peel_supported_team_leading_globals(remaining[1:])
+    if rest and rest[0].lower() == "team":
+        return [w.lower() for w in rest[1:]]
+    return None
+
+
+def _has_foreign_omc_team(command: str) -> bool:
+    """True when a foreign ``omc team`` orchestration CLI is in command position.
+
+    Covers bare, path-prefixed, wrapper (``env``/``command``/``exec``/…), and
+    forms already exposed as executable heads by the bounded parser. Recursive
+    ``sh|bash|zsh -c/-lc`` bodies are handled by the existing shell-c walk.
+    Also covers no-space shell boundaries after *or before* ``team``
+    (``omc team>out``, ``omc>out team``, ``omc 2>&1 team``,
+    ``omc {fd}>/dev/null team``, ``omc team;echo``).
+    Wrapper-option residue (``env --weird omc team``) fail-closes by scanning
+    later tokens for ``omc`` + ``team``.
+    """
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            raw_word = match.group("word")
+            base = _executable_basename(raw_word)
+            if base in _FOREIGN_ORCHESTRATOR_BINS:
+                tail = _next_decoded_words(
+                    command, match.end(), limit=1, raise_on_budget=True
+                )
+                if tail and tail[0].lower() == "team":
+                    return True
+            elif _should_peel_wrapper_head(raw_word, base):
+                words = _semantic_words_from_head_match(
+                    command, match, limit=8, raise_on_budget=False
+                )
+                remaining = _peel_wrapper_chain(words)
+                if (
+                    remaining
+                    and _token_basename(remaining[0])
+                    in _FOREIGN_ORCHESTRATOR_BINS
+                    and len(remaining) == 1
+                    and _head_tail_budget_exhausted(command, match)
+                ):
+                    raise _ShellParseBudgetExceeded
+                if (
+                    remaining
+                    and _token_basename(remaining[0]) in _FOREIGN_ORCHESTRATOR_BINS
+                    and len(remaining) >= 2
+                    and remaining[1].lower() == "team"
+                ):
+                    return True
+        search_position = match.start() + 1
+    return False
+
+
+def _truthy_process_env(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def in_worker_process_context() -> bool:
+    """True when the *process* environment marks a depth-1 worker.
+
+    Command-text assignments such as ``OMG_TEAM_WORKER=0 omg team …`` must never
+    authorize or clear this — only real process env is consulted.
+    """
+
+    return any(_truthy_process_env(key) for key in _WORKER_ENV_MARKERS)
+
+
+def _iter_first_party_team_argvs(command: str):
+    """Yield argv-after-``team`` for every executable first-party ``omg team`` head.
+
+    Does not interpret command-text env assignments as process identity. Only a
+    few words after ``team`` are decoded (op classification is shallow).
+
+    Important (#146 multi-occurrence STOP): a safe/read-only/api head must never
+    short-circuit later launch/supervise heads in the same command string.
+
+    Shell metacharacter boundaries are normalized so no-space forms such as
+    ``omg team>out launch``, ``omg>out team launch``, ``omg 2>&1 team launch``,
+    and ``omg team;echo`` classify correctly.
+
+    Known wrapper options (``env -i`` / ``-S``, ``command -p``, ``nice -n 5``)
+    are consumed by :data:`_WRAPPERS` before the head token. Unknown/malformed
+    wrapper flags leave a ``-…`` residue head; those fail closed by scanning
+    later tokens for ``omg`` + ``team`` (not an unbounded payload scan after a
+    non-flag head such as ``echo``).
+    """
+
+    search_position = 0
+    while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+        if _shell_context_is_executable(command, match.start()) is True:
+            raw_word = match.group("word")
+            base = _executable_basename(raw_word)
+            if base == _FIRST_PARTY_TEAM_BIN:
+                tail = _next_decoded_words(
+                    command, match.end(), limit=10, raise_on_budget=True
+                )
+                rest = _peel_supported_team_leading_globals(tail)
+                if rest and rest[0].lower() == "team":
+                    yield [w.lower() for w in rest[1:]]
+            elif _should_peel_wrapper_head(raw_word, base):
+                words = _semantic_words_from_head_match(
+                    command,
+                    match,
+                    limit=_HEAD_TAIL_TEAM_LIMIT,
+                    raise_on_budget=False,
+                )
+                argv = _team_argv_from_semantic_words(words)
+                if argv is not None:
+                    yield argv
+                remaining = _peel_wrapper_chain(words)
+                if (
+                    remaining
+                    and _token_basename(remaining[0]) == _FIRST_PARTY_TEAM_BIN
+                    and len(remaining) == 1
+                    and _head_tail_budget_exhausted(command, match)
+                ):
+                    raise _ShellParseBudgetExceeded
+        search_position = match.start() + 1
+
+
+def _peel_supported_team_leading_globals(words: list[str]) -> list[str]:
+    """Drop supported CLI globals that may sit between ``omg`` and ``team``.
+
+    Mirrors ``split_supported_leading_globals`` arity: ``--json`` / ``--safe``
+    / ``--yolo`` take no value; ``--project-root`` takes one PATH (or
+    ``--project-root=PATH``). Unknown tokens stop the peel so arbitrary
+    payloads are not scanned.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        tok = words[i]
+        if tok in _TEAM_LEADING_FLAG_OPTS:
+            i += 1
+            continue
+        if tok in _TEAM_LEADING_VALUE_OPTS:
+            if i + 1 >= n:
+                break
+            i += 2
+            continue
+        if tok.startswith(_TEAM_LEADING_VALUE_EQ_PREFIX):
+            i += 1
+            continue
+        break
+    return words[i:]
+
+
+def _team_argv_is_nested_launch(argv: list[str]) -> bool:
+    """Match ``normalize_team_argv`` launch forms for soft-gate DiD.
+
+    Lifecycle verbs + ``shutdown`` alias, numeric ``N[:role]`` shorthand, and
+    bare goal strings (any non-reserved non-flag token) rewrite to ``team
+    launch`` at the CLI. Identity-bound / read-only reserved ops stay false.
+    """
+    if not argv:
+        # bare ``omg team`` — treat as launch surface (shorthand incomplete)
+        return True
+    op = argv[0]
+    if op in _TEAM_NESTED_LAUNCH_OPS:
+        return True
+    if _TEAM_SHORTHAND_WORKERS.match(op):
+        return True
+    # Flags after bare ``team`` are not Form B goals (normalize leaves raw).
+    if op.startswith("-") and op not in _TEAM_NON_LAUNCH_OPS:
+        return False
+    if op in ("hyperplan", "security-research"):
+        sub = argv[1] if len(argv) > 1 else ""
+        return sub in _TEAM_LEADER_COMPOSITION_OPS
+    if op in _TEAM_NON_LAUNCH_OPS:
+        return False
+    # Form B: ``omg team "fix tests"`` / ``omg team fix tests`` → launch.
+    return True
+
+
+def is_first_party_team_nested_launch(command: str, depth: int = 0) -> bool:
+    """Classify obviously nested Team launch/supervise verbs for soft defense-in-depth.
+
+    Authoritative admission remains the OMG Team runtime (``E_TEAM_NESTED_LAUNCH``).
+    The hook only recognizes clear launch/lifecycle forms so identity-bound
+    ``omg team api …`` still reaches runtime validation. Inspects **every**
+    executable first-party Team head in the command (safe first head must not
+    mask a later launch), and recurses into ``sh|bash|zsh -c/-lc`` bodies for
+    equivalent path/wrapper forms.
+    """
+
+    if not command or not isinstance(command, str):
+        return False
+    try:
+        command = _collapse_line_continuations(command)
+        for argv in _iter_first_party_team_argvs(command):
+            if _team_argv_is_nested_launch(argv):
+                return True
+        if depth >= 8:
+            return False
+        search_position = 0
+        while match := _SHELL_C_HEAD.search(command, search_position):
+            if _shell_context_is_executable(command, match.start()) is True:
+                words = _decode_shell_words(
+                    _eval_argument_tail(command, match.end())
+                )
+                body = words[0] if words else ""
+                if body and is_first_party_team_nested_launch(body, depth + 1):
+                    return True
+            search_position = match.start() + 1
+        # Wrapper options before ``bash -c`` (``env -i bash -c '…'``) are not
+        # visible to :data:`_SHELL_C_HEAD`; peel then inspect the body.
+        search_position = 0
+        while match := _DECODED_COMMAND_HEAD.search(command, search_position):
+            if _shell_context_is_executable(command, match.start()) is True:
+                raw_word = match.group("word")
+                base = _executable_basename(raw_word)
+                if _should_peel_wrapper_head(raw_word, base):
+                    words = _semantic_words_from_head_match(
+                        command, match, limit=_HEAD_TAIL_TEAM_LIMIT
+                    )
+                    for body in _shell_c_bodies_from_head_words(words):
+                        if body and is_first_party_team_nested_launch(
+                            body, depth + 1
+                        ):
+                            return True
+            search_position = match.start() + 1
+    except _ShellParseBudgetExceeded:
+        # Fail closed on nested-launch classification only when already in worker
+        # process context (caller still gates on that).
+        return True
     return False
 
 
@@ -1625,9 +2707,9 @@ def _should_deny_command(command: str, eval_depth: int) -> bool:
             return True
         if _has_denied_case_command_head(command):
             return True
-        if _has_executable_match(_OMC_TEAM, command) or _has_executable_match(
-            _OMG_TEAM, command
-        ):
+        # Foreign orchestration only (``omc team``). First-party ``omg team`` is
+        # intentionally NOT an external-CLI deny — runtime owns Team admission.
+        if _has_foreign_omc_team(command):
             return True
         # sh/bash/zsh -c/-lc command strings are recursively inspected.
         if _has_denied_shell_c_body(command, eval_depth):
@@ -2206,6 +3288,18 @@ def decide_pre_tool_use(event: dict[str, Any]) -> dict[str, str]:
         cmd = tin.get("command") if isinstance(tin, dict) else None
         if not isinstance(cmd, str):
             return {"decision": "allow"}
+        # Nested Team launch defense-in-depth: process env ONLY (never command-text
+        # assignments). Not bypassable via OMG_ALLOW_EXTERNAL_CLI (that escape is
+        # for advisors under omg ask children, not first-party Team).
+        if in_worker_process_context() and is_first_party_team_nested_launch(cmd):
+            return {
+                "decision": "deny",
+                "reason": (
+                    "oh-my-grok: nested omg team launch blocked in worker context "
+                    "(E_TEAM_NESTED_LAUNCH; OMG Team runtime also refuses before "
+                    "side effects — not an external advisor CLI)"
+                ),
+            }
         # ONLY process environment — never parse env from command string
         if os.environ.get("OMG_ALLOW_EXTERNAL_CLI") == "1":
             return {"decision": "allow"}

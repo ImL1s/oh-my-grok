@@ -84,14 +84,45 @@ def _is_flag(token: str) -> bool:
     return token.startswith("-")
 
 
-def normalize_team_argv(argv: Sequence[str]) -> list[str]:
-    """Rewrite OMX-like shorthand into ``team launch …``; else return a copy.
+# Root parser globals that may precede ``team`` (see omg_cli.main.build_parser).
+# Flags are arity 0; --project-root takes one PATH (or --project-root=PATH).
+# Do not add unknown options here — unknown tokens stay in the remainder so
+# argparse / host-launch keep their existing behavior.
+_LEADING_FLAG_OPTS: frozenset[str] = frozenset({"--json", "--safe", "--yolo"})
+_LEADING_VALUE_OPTS: frozenset[str] = frozenset({"--project-root"})
+_LEADING_VALUE_EQ_PREFIXES: tuple[str, ...] = ("--project-root=",)
 
-    Only rewrites when the first token is ``team`` and the second token is
-    either a worker spec (``3`` / ``3:executor``) or a bare goal string
-    (not a reserved action / flag).
+
+def split_supported_leading_globals(
+    argv: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """Peel supported leading globals; stop at the first non-global token.
+
+    Respects option arity. Incomplete ``--project-root`` (no value) is left
+    in the remainder for argparse. Does not scan arbitrary payloads.
     """
     raw = list(argv)
+    i = 0
+    n = len(raw)
+    while i < n:
+        tok = raw[i]
+        if tok in _LEADING_FLAG_OPTS:
+            i += 1
+            continue
+        if tok in _LEADING_VALUE_OPTS:
+            if i + 1 >= n:
+                break
+            i += 2
+            continue
+        if any(tok.startswith(p) for p in _LEADING_VALUE_EQ_PREFIXES):
+            i += 1
+            continue
+        break
+    return raw[:i], raw[i:]
+
+
+def _normalize_team_tail(raw: list[str]) -> list[str]:
+    """Rewrite a argv whose first token is already ``team``."""
     if not raw or raw[0] != "team":
         return raw
     if len(raw) == 1:
@@ -145,3 +176,18 @@ def normalize_team_argv(argv: Sequence[str]) -> list[str]:
         goal,
         *flags,
     ]
+
+
+def normalize_team_argv(argv: Sequence[str]) -> list[str]:
+    """Rewrite OMX-like shorthand into ``team launch …``; else return a copy.
+
+    Finds ``team`` after supported leading globals (``--project-root PATH``,
+    ``--json``, ``--safe``, ``--yolo``) and rewrites Form A/B before argparse.
+    Only rewrites when the team token's next token is a worker spec
+    (``3`` / ``3:executor``) or a bare goal string (not a reserved action /
+    flag). Unknown leading tokens are not skipped.
+    """
+    prefix, rest = split_supported_leading_globals(argv)
+    if not rest or rest[0] != "team":
+        return list(argv)
+    return prefix + _normalize_team_tail(rest)

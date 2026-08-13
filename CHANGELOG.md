@@ -48,6 +48,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#138 Slice A:** Council receipt and view share one count/status invariant helper: lane_count is the exact digest count, `0<=success_count<=lane_count`, `1<=minimum_successes<=lane_count`; succeeded iff all lanes, mixed iff threshold met but not all, fail-family only below threshold; queued/running may be 0..lane_count. Does not close #138.
 - **#138 Slice A:** ConsultationView rejects an injected ConsultationAttempt whose harness_id, attempt, or receipt_digest does not match the supplied receipt (consultation_id bound via that receipt). Does not close #138.
 - **#138 Slice A:** AdvisorHarnessSpecV1 rejects `advisor_read_only=qualified` without pinned identity/version/behavior evidence (schema v1 has none). Does not close #138.
+- **#146 / PR #156 wrapper option peeling:** PreToolUse consumes `env -`/`-C`/`--chdir`, `sudo -u`/`--user`, `xargs -n`/`--max-args`, and `exec -a` operands before classifying the executable head; budget-exhausted foreign/first-party heads fail closed instead of false-green on truncated wrapper tails. Refs #146 (does not close).
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
   install forwarding to the provider wrapper process group immediately after
   spawn, refine the target after provider-child resolution, and only then
@@ -111,6 +112,216 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Handshake/env tests prove `OMG_ACP_FAKE_SUFFIX_BYTES` forwarding with a non-default value and an exact allowlist assert so the fixture default cannot hide a missing allowlist entry. Does **not** close #105.
 - Handshake cumulative-total test now derives `max_total_bytes` from the actual serialized initialize/resume response frames plus the chosen leftover suffix (no magic 220), and a direct expired-deadline leftover check covers both buffered caps before timeout return. Does **not** close #105.
 - session/resume request is sessionId+cwd only; result allowlist modes/models/configOptions/_meta; {} valid; unknown keys and wrong container types fail closed; identity is JSON-RPC id + request hashes; padding not in result. Does **not** close #105.
+- **#146 / PR #156 F16 lexical leaf + exact schema:** supervisor
+  admission never `Path.resolve()`s the descriptor leaf. Only parent
+  directories are resolved; `read_managed_regular_bytes` opens the
+  original leaf with `O_NOFOLLOW`. Publish and `build_supervisor_prefix`
+  store/embed that lexical path. Provider descriptor, prepublish, and
+  authoritative `team.json` schema versions reject `bool`, strings, and
+  floats (`True` / `"1"` / `1.0` no longer admit as schema 1). Present
+  prepublish defects with `team.json` present fail closed and do not
+  fall through; only true ENOENT uses the published path. Same-FD
+  pinning tests replace the lexical path immediately after the leaf fd
+  opens.
+
+- **#146 / PR #156 prepublish same-FD admit:** supervisor admission
+  authenticates the CLI prepublish record first (confinement /
+  `O_NOFOLLOW`, regular single-link file, mode 0600, schema / writer /
+  run / worker / generation / attempt from that FD) and only then opens
+  the referenced descriptor the same way. `descriptor_sha256` must match
+  the authority and, when `team.json` is present, the published task
+  bind. Path `stat` / `read_text` / reopen cannot authorize a replacement
+  inode. Present-but-unsafe prepublish (symlink, hardlink, bad mode,
+  corrupt) is refused and does not fall through to the published
+  descriptor path.
+
+- **#146 / PR #156 `command -v`/`-V` discovery:** PreToolUse no longer
+  peels `command -v`/`-V` (or `-pv`/`-vp`/`-pV`/`-p -v`) as an execution
+  wrapper, so `command -v claude` / `command -v omc` stay Allow — the
+  name is lookup data, not the wrapped head. `command -p cmd` and
+  `command -- cmd` remain execution and still deny deny-bins / `omc team`
+  / worker nested `omg team launch`. Unknown flags stay fail-closed.
+
+- **#146 / PR #156 named-FD `{ident}>` peel:** PreToolUse treats adjacent
+  bash named file descriptors (`{fd}>/dev/null`, `{fd}>>`, `{fd}<`,
+  `{fd}<>`, `{fd}<<<`, `{fd}>&`) as one redirect unit before semantic
+  argv, so `omc {fd}>/dev/null team` cannot slip `team` past the
+  foreign-orchestrator limit. Quoted, spaced, invalid-ident, and
+  alnum-glued `{ident}` stay literal. Digit FDs and the 512/64
+  fail-closed budget are unchanged.
+
+- **#146 / PR #156 scale-up attempt-owned prepublish rollback:** after
+  supervisor prepublish authority is created, a non-receipt-bound
+  scale-up failure (partial publish, tmux/pane bind, or commit-prep)
+  removes only this attempt's matching regular-file records
+  (`kind`/`writer`/`run_id`/`worker_id`/`generation`/`attempt`).
+  Receipt-bound / live windows preserved for retry keep matching
+  prepublish. Rollback never masks the primary error.
+
+- **#146 / PR #156 env `-S` / `--split-string` peel:** PreToolUse parses
+  BSD/GNU `env -S` and GNU `--split-string` (including attached
+  `-SSTRING`, `--split-string=`, BSD `--S`, and combined `-iS`/`-vS`)
+  so hidden `omg team` / `omc team` / deny-bin heads classify.
+  Invalid, recursive, ambiguous (`-S=` / `--S=`), or over-budget split
+  strings fail closed. Ordinary `NAME=value` and `-i`/`-u`/`--unset`
+  still peel after expansion.
+
+- **#146 / PR #156 worker composition publication gate:** workers cannot run
+  leader-owned `omg team hyperplan|security-research` materialize / validate /
+  produce / admit-tasks / collect-tasks. Parsed-argv preflight and persist
+  writers fail closed with `E_TEAM_WORKER_OPERATION_REFUSED` /
+  `E_TEAM_COMPOSITION_TASK_GATE` before project-root or FS writes; PreToolUse
+  classifies those sub-actions as nested launch (`E_TEAM_NESTED_LAUNCH`).
+  Identity-bound `claim-lane` / `submit-lane-result` stay worker-reachable;
+  zero-mutation `plan` is ungated.
+
+- **#146 / PR #156 redirect `<>` / `<<<` + head-tail budget:** PreToolUse
+  now treats POSIX read/write `<>` and bash here-string `<<<` (including
+  FD-adjacent `2<>` / `0<<<`) as real redirects in the leading-redir
+  regex, operator sets, and quote-aware boundary inserter. Here-strings
+  stay excluded from the heredoc body parser. Character (512) and
+  raw-token (64) budget exhaustion is indeterminate and fail-closes only
+  for foreign `omc` / first-party `omg` candidates (and their wrapper
+  paths), not narrative `echo` / quoted mentions / spaced `2 <>out`.
+  Standalone hook regenerated.
+
+- **#146 / PR #156 descriptor admit/use digest bind:** post-publication
+  supervisor admission now requires `descriptor_sha256` on the matching
+  `team.json` task row (start and scale stamp it from the exact
+  published file). Admit loads the descriptor once (O_NOFOLLOW regular
+  file, mode 0600), binds that digest against prepublish or the
+  published task, and carries the immutable mapping into spawn so a
+  replacement between admit and use cannot execute. Missing digest
+  after publication fails closed. Prepublish digest validation and
+  run/team/worker/owner identity are unchanged.
+
+- **#146 / PR #156 reuse rollback of descriptor/authority:** failed
+  `--run` reuse now snapshots provider descriptors and supervisor
+  prepublish authority (bytes + mode) before materialize/publish.
+  Rollback restores prior regular files exactly or unlinks artifacts
+  created by the failed start, so no uncommitted executable authority
+  remains. New-run team dirs are still removed wholesale. Covers D1,
+  multi-CLI, fixture, and exact retry.
+
+- **#146 / PR #156 scale-up prepublish authority:** live
+  `omg team scale --add` now passes start_team-equivalent authority
+  kwargs into every scale materialize/fixture call and publishes
+  generation/attempt-bound supervisor authority after WAL plan,
+  before pane spawn. On success, prepublish is cleared after
+  team.json readback commits the new worker. Dry-run does not
+  publish.
+
+- **#146 / PR #156 startup fixture prepublish:** hermetic
+  `tests/test_team_startup.py` CLI supervisor cases publish the same
+  CLI-style prepublish authority as production (after descriptor write,
+  before `team supervisor` Popen). `admit_pane_supervisor` stays
+  fail-closed; forged/missing-authority negatives are unchanged.
+
+- **#146 / PR #156 P1 wrapper-option peel:** PreToolUse consumes bounded
+  wrapper options before the wrapped head (`env -i` /
+  `--ignore-environment` / `-u NAME`, `command -p` (execution peel), `nice -n N` /
+  `--adjustment`). `env -i omg team launch` under worker markers is
+  `E_TEAM_NESTED_LAUNCH` instead of treating `-i` as the command.
+  Unknown/malformed wrapper flags fail closed when the next non-flag
+  token is a nested launch; `echo omg team` after residue is not scanned.
+  Foreign `omc team` and deny-bin heads keep the same peel. Standalone
+  hook regenerated.
+
+- **#146 / PR #156 deny leading-global DiD:** PreToolUse first-party Team
+  scan peels the same supported leading globals as `normalize_team_argv`
+  (`--json` / `--safe` / `--yolo` / `--project-root PATH`) before
+  requiring `team`, so `omg --json team 3:executor …` under worker
+  markers is `E_TEAM_NESTED_LAUNCH`. Unknown flags are not skipped.
+  watch / hyperplan / security-research stay non-launch. Standalone hook
+  regenerated.
+
+- **#146 / PR #156 worker gate leading globals:** `normalize_team_argv`
+  now peels supported leading `--project-root PATH`, `--json`, `--safe`,
+  and `--yolo` (arity-aware; no payload scan) so Form A/B shorthand
+  rewrites before argparse. `--json team 3:executor …` and prefix
+  `--project-root /missing team …` under worker markers emit
+  `E_TEAM_NESTED_LAUNCH` instead of argparse `SystemExit`. Refused-path
+  tests also boom `write_pid_metadata`, `_SYSTEM_POPEN` / `Popen`,
+  `prepare_leader_spawn`, and `launch_team`. `cmd_team` launch DiD
+  re-proved. Legal status/panes/capture/API reach their helpers.
+
+- **#146 / PR #156 real-tmux fixture adapter:** `install_fixture_provider`
+  now accepts and forwards every production authority argument
+  (`leader_root`, `run_id`, `team_id`, `worker_id`, `owner_token`,
+  `authority_generation`, `authority_attempt`, `publish_authority`) into
+  `materialize_supervisor_pane_command`. Unknown kwargs still TypeError
+  (not swallowed). Fixes live `team-real-tmux-*` TypeError after 2c2283d.
+
+- **#146 / PR #156 parsed-argv Team worker preflight:** `main()` runs
+  `preflight_team_worker_parsed_argv` after argparse / `normalize_team_argv`
+  and **before** `clear_resolved_project_root` / project-root discovery /
+  git / supervisor-root, so a missing `--project-root` cannot mask typed
+  `E_TEAM_NESTED_LAUNCH` / `E_TEAM_WORKER_OPERATION_REFUSED`. `cmd_team`
+  keeps the same preflight as defense-in-depth. Legal pane `supervisor`,
+  identity-bound `api`, and read-only `status`/`panes`/`capture` continue.
+
+- **#146 / PR #156 Team worker preflight proof:** tests/placement now prove
+  git/tmux/process/state writers are not reached for prefix `--project-root`,
+  bare `team`, and other worker markers; legal `capture` + non-catalog `api`
+  still resolve.
+
+- **#146 / PR #156 post-publish descriptor bind:** after authoritative
+  `team.json` with `owner_token`, supervisor admission still requires the
+  CLI-published per-worker `{worker_id}.provider.json` path (and, when tasks
+  are listed, a known worker id). A shared owner token alone cannot spawn an
+  arbitrary schema-valid descriptor. Surviving prepublish records remain the
+  stronger digest bind when present.
+
+- **#146 / PR #156 parser residuals:** PreToolUse scanner recognizes leading
+  redirections before the executable (`>out omc team`, `2>/dev/null env
+  /opt/omc team`, worker analogues) and adjacent file-descriptor prefixes of
+  any shell-valid digit length (removed the arbitrary 4-digit cap so
+  `12345>/dev/null …` still drops the redir). Spaced `2 >out` remains argv.
+  Standalone hook regenerated.
+
+- **#146 / PR #156 hook launch-shorthand DiD:** worker PreToolUse nested-launch
+  classifier now matches `normalize_team_argv` Form B goal strings
+  (`omg team "fix tests"`) and the `shutdown` alias, not only lifecycle
+  verbs and numeric `N[:role]` specs. Path/wrapper/shell-c forms included;
+  api/status/panes and other non-launch reserved ops still reach runtime.
+  Standalone hook regenerated; vocab drift test vs `team.cli.RESERVED_ACTIONS`.
+
+- **#146 / PR #156 `--run` owner token reuse:** `start_team(--run existing)`
+  preserves the published `owner_token` from `team.json` instead of minting
+  a conflicting fresh token before supervisor admission. Explicit caller
+  tokens that disagree fail closed with `E_TEAM_OWNER_TOKEN_CONFLICT`
+  before pane/materialize mutation; rollback leaves published authority
+  intact. Covers materialize-only→live reuse.
+
+- **#146 / PR #156 supervisor prepublish authority:** `omg team supervisor`
+  no longer authorizes when `team.json` is absent. CLI publishes a managed
+  per-worker prepublish record under the existing team tree (binds
+  root/run/team/worker, owner token, descriptor path + content digest)
+  **before** pane spawn; admission validates it without side effects and
+  refuses forged env+descriptor. After authoritative `team.json` is
+  written, prepublish records are cleared. Split/windows/fixture/dry-run
+  paths covered; metadata absence never authorizes provider spawn.
+
+- **#146 / PR #156 worker operator controls:** worker process markers
+  (`OMG_TEAM_WORKER` / fanout / spawn markers) refuse leader-only operator
+  mutations (`omg team input|key|focus|view`, including takeover forms)
+  with typed `E_TEAM_WORKER_OPERATION_REFUSED` **before** `project_root`
+  discovery, operator helpers, or tmux client mutation. Lifecycle verbs
+  remain `E_TEAM_NESTED_LAUNCH`. Identity-bound `api` and read-only
+  `status` / `panes` / `capture` stay usable; legal pane `supervisor`
+  admission is unchanged. Command-text env assignments never authorize.
+
+- **#146 first-party `omg team` routing:** PreToolUse soft-gate no longer
+  classifies first-party `omg team …` as an external agent CLI. Executable
+  heads are basename-normalized across bare, absolute/relative path,
+  `env`/`command`/`exec`/`nice`/`nohup` wrappers, and `sh|bash|zsh -c/-lc`
+  recursion so path-prefixed forms match bare forms. Foreign
+  `omc team` / `claude`/`codex`/`omx`/`agy`/`cursor-agent`/`kimi` stay
+  denied. Nested Team launch in a worker process env is refused with
+  `E_TEAM_NESTED_LAUNCH` (hook defense-in-depth + runtime before side
+  effects); identity-bound `omg team api` reaches runtime validation.
+  Command-text env assignments never authorize. Standalone hook regenerated.
+
 - **#159 ralplan staged-proposal mtime freshness flake:**
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock

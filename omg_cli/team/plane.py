@@ -157,7 +157,15 @@ class TeamError(RuntimeError):
 
 
 class TeamGateError(TeamError):
-    """Policy / experimental gate failure (maps to exit 2)."""
+    """Policy / experimental gate failure (maps to exit 2).
+
+    Optional ``code`` is a stable typed token (e.g. ``E_TEAM_NESTED_LAUNCH``)
+    for CLI/API consumers; message remains human-readable.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +211,170 @@ def in_spawned_worker_context(env: Mapping[str, str] | None = None) -> bool:
 
     Reuses the same marker family process fanout / team panes inject into
     child environments (``OMG_*_WORKER``). Prompt-only bans are insufficient.
+    Command-text env assignments are never consulted — only the provided
+    mapping or the real process environment.
     """
     source = env if env is not None else os.environ
     for key in WORKER_ENV_MARKERS:
         if _truthy_env(source.get(key)):
             return True
     return False
+
+
+def refuse_nested_team_launch(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "launch",
+) -> None:
+    """Fail closed before Team side effects when already a depth-1 worker.
+
+    Stable code: ``E_TEAM_NESTED_LAUNCH``. Must run before run creation,
+    worktree prep, tmux mutation, descriptor publication, or state writes.
+    Does not authorize from command-text env assignments.
+
+    Does **not** gate legal pane ``omg team supervisor``: those processes are
+    intentionally worker-marked and admitted via identity-bound descriptor
+    validation (see ``admit_pane_supervisor``). Use this only for lifecycle
+    verbs that create or control a nested team (launch/start/run/scale/…).
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} refused: already inside a spawned-worker context "
+            f"(depth-1; E_TEAM_NESTED_LAUNCH; one of "
+            f"{', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Workers must not launch or control a nested team.",
+            code="E_TEAM_NESTED_LAUNCH",
+        )
+
+
+# Lifecycle verbs that create or control a team. ``shutdown`` is the OMX
+# alias ``normalize_team_argv`` rewrites to ``stop``. ``supervisor`` is
+# intentionally absent: legal pane supervisors are identity-admitted.
+NESTED_LAUNCH_ACTIONS: frozenset[str] = frozenset(
+    {
+        "launch",
+        "start",
+        "run",
+        "scale",
+        "resume",
+        "stop",
+        "collect",
+        "shutdown",  # OMX alias; normalize_team_argv rewrites to stop
+    }
+)
+
+
+# Leader-only operator mutations (#101 / PR #156): workers must not drive
+# peer/leader panes. Identity-bound ``api`` and read-only ``status`` /
+# ``panes`` / ``capture`` remain usable from worker context.
+LEADER_ONLY_OPERATOR_ACTIONS: frozenset[str] = frozenset(
+    {
+        "input",
+        "key",
+        "focus",
+        "view",
+    }
+)
+
+
+# Leader-owned hyperplan / security-research publication and decision.
+# Workers keep identity-bound ``claim-lane`` / ``submit-lane-result``.
+# Zero-mutation ``plan`` is not gated here.
+LEADER_ONLY_COMPOSITION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "materialize",
+        "validate-decision",
+        "validate-report",
+        "produce-decision",
+        "produce-report",
+        "admit-tasks",
+        "collect-tasks",
+    }
+)
+
+
+def refuse_worker_operator_mutation(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "input",
+) -> None:
+    """Fail closed before operator/tmux mutations when already a worker.
+
+    Stable code: ``E_TEAM_WORKER_OPERATION_REFUSED``. Must run before
+    ``project_root`` discovery, operator helpers, tmux client focus/send, or
+    any worktree/state write. Does not authorize from command-text env
+    assignments.
+
+    Does **not** gate legal pane supervisor admission, identity-bound team
+    API, or genuinely read-only status/panes/capture paths.
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} refused: worker processes cannot invoke "
+            f"leader/operator controls (E_TEAM_WORKER_OPERATION_REFUSED; "
+            f"one of {', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Use identity-bound team API or read-only status/panes/capture.",
+            code="E_TEAM_WORKER_OPERATION_REFUSED",
+        )
+
+
+def refuse_worker_composition_publication(
+    env: Mapping[str, str] | None = None,
+    *,
+    action: str = "hyperplan",
+    composition_action: str = "materialize",
+) -> None:
+    """Fail closed before composition publication/decision when already a worker.
+
+    Stable code: ``E_TEAM_WORKER_OPERATION_REFUSED``. Must run before
+    ``project_root`` discovery, JSON loads, or persist. Process env only —
+    command-text assignments never authorize.
+
+    Does **not** gate zero-mutation ``plan`` or identity-bound
+    ``claim-lane`` / ``submit-lane-result``.
+    """
+    if in_spawned_worker_context(env):
+        raise TeamGateError(
+            f"omg team {action} {composition_action} refused: worker processes "
+            "cannot invoke leader-owned composition publication/decision "
+            f"(E_TEAM_WORKER_OPERATION_REFUSED; "
+            f"one of {', '.join(WORKER_ENV_MARKERS)} is set). "
+            "Use identity-bound claim-lane / submit-lane-result or "
+            "zero-mutation plan.",
+            code="E_TEAM_WORKER_OPERATION_REFUSED",
+        )
+
+
+def preflight_team_worker_parsed_argv(
+    action: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    command: str | None = None,
+    composition_action: str | None = None,
+) -> None:
+    """Canonical parsed-argv Team worker preflight. No I/O.
+
+    Call from main() immediately after argparse / normalize_team_argv and
+    BEFORE clear_resolved_project_root / resolve_project_root /
+    resolve_supervisor_project_root / git / tmux / state / process writers.
+
+    Reuses refuse_nested_team_launch / refuse_worker_operator_mutation /
+    refuse_worker_composition_publication (process env only — command-text
+    assignments never authorize).
+    """
+    if command is not None and command != "team":
+        return
+    act = (action or "").strip()
+    if act in NESTED_LAUNCH_ACTIONS or not act:
+        refuse_nested_team_launch(env, action=act or "launch")
+    elif act in LEADER_ONLY_OPERATOR_ACTIONS:
+        refuse_worker_operator_mutation(env, action=act)
+    elif act in {"hyperplan", "security-research"}:
+        sub = (composition_action or "").strip()
+        if sub in LEADER_ONLY_COMPOSITION_ACTIONS:
+            refuse_worker_composition_publication(
+                env, action=act, composition_action=sub
+            )
 
 
 def in_non_team_spawn_context(env: Mapping[str, str] | None = None) -> bool:
@@ -320,8 +486,6 @@ def _atomic_write_json_at(parent_fd: int, name: str, data: Mapping[str, Any]) ->
 def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
     """Load ``team.json`` relative to a pinned team-directory descriptor."""
 
-    from omg_cli.contracts.path_keys import DATA_FILE_MODE
-
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open("team.json", flags, dir_fd=parent_fd)
@@ -341,14 +505,7 @@ def _load_team_meta_from_fd(parent_fd: int, *, run_id: str) -> dict[str, Any]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-    if not isinstance(data, dict):
-        raise TeamError("team.json must be a JSON object")
-    _require_cli_writer(data, label="team.json")
-    if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
-        raise TeamError(
-            f"team.json mode must be {DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}"
-        )
-    return data
+    return _finish_secure_team_meta(data, info)
 
 
 def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
@@ -360,8 +517,6 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
         raise TeamError(f"team.json missing for run {run_id}")
     except OSError as exc:
         raise TeamError(f"team.json secure open refused: {exc}") from exc
-    from omg_cli.contracts.path_keys import DATA_FILE_MODE
-
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
@@ -374,6 +529,15 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    return _finish_secure_team_meta(data, info)
+
+
+def _finish_secure_team_meta(
+    data: object, info: os.stat_result
+) -> dict[str, Any]:
+    """Shared post-open checks for the canonical team.json loader."""
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE
+
     if not isinstance(data, dict):
         raise TeamError("team.json must be a JSON object")
     _require_cli_writer(data, label="team.json")
@@ -382,6 +546,94 @@ def load_team_meta(root: Path | str, run_id: str) -> dict[str, Any]:
             f"team.json mode must be {DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}"
         )
     return data
+
+
+def team_meta_lstat(root: Path | str, run_id: str) -> os.stat_result | None:
+    """``lstat`` team.json without following. ``None`` only on ENOENT."""
+    path = team_meta_path(root, run_id)
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise TeamError(f"team.json not usable for run {run_id}: {exc}") from exc
+
+
+def load_authoritative_team_meta(
+    root: Path | str,
+    run_id: str,
+    *,
+    team_id: str,
+) -> dict[str, Any]:
+    """Admission-grade team.json: canonical secure load plus identity binds.
+
+    Reuses :func:`load_team_meta` (O_NOFOLLOW, regular file, mode 0600, CLI
+    writer) and additionally requires a known ``schema_version``, exact
+    ``run_id`` / ``team_id``, and a published owner token. Callers that
+    need worker identity (supervisor) bind that separately.
+    """
+    data = load_team_meta(root, run_id)
+    schema = data.get("schema_version")
+    if (
+        isinstance(schema, bool)
+        or not isinstance(schema, int)
+        or schema not in {LEGACY_TEAM_META_SCHEMA_VERSION, SCHEMA_VERSION}
+    ):
+        raise TeamError(f"team.json schema_version unsupported: {schema!r}")
+    meta_run = str(data.get("run_id") or "").strip()
+    if meta_run != run_id:
+        raise TeamError(
+            f"team.json run_id mismatch (file={meta_run!r} path={run_id!r})"
+        )
+    meta_team = str(data.get("team_id") or "").strip()
+    if meta_team != team_id:
+        raise TeamError(
+            f"team.json team_id mismatch (file={meta_team!r} expected={team_id!r})"
+        )
+    if not str(data.get("owner_token") or "").strip():
+        raise TeamError("team.json owner_token missing")
+    return data
+
+
+def _try_load_team_meta(root: Path | str, run_id: str) -> dict[str, Any] | None:
+    """Return team.json when present; ``None`` when absent. Fail closed if corrupt."""
+    if team_meta_lstat(root, run_id) is None:
+        return None
+    return load_team_meta(root, run_id)
+
+
+def resolve_owner_token_for_start(
+    root: Path | str,
+    *,
+    run_id: str | None,
+    owner_token: str | None,
+) -> str:
+    """Resolve owner token for start/launch, preserving published authority on reuse.
+
+    When ``--run`` targets an existing run that already published
+    ``owner_token`` in team.json, reuse that token so pane supervisors
+    admit against the published identity. Explicit caller tokens that
+    conflict with the published value fail closed (no pane spawn).
+
+    New runs (or reuse without a published token) use the caller token
+    when provided, else a fresh hex token.
+    """
+    caller = str(owner_token or "").strip() or None
+    if not run_id:
+        return caller or uuid.uuid4().hex
+    meta = _try_load_team_meta(root, run_id)
+    if meta is None:
+        return caller or uuid.uuid4().hex
+    published = str(meta.get("owner_token") or "").strip() or None
+    if not published:
+        return caller or uuid.uuid4().hex
+    if caller and caller != published:
+        raise TeamError(
+            f"owner_token conflicts with published team.json for --run "
+            f"{run_id!r} (E_TEAM_OWNER_TOKEN_CONFLICT); omit --owner-token "
+            "or pass the published token to relaunch"
+        )
+    return published
 
 
 def _read_meta_generation(meta: Mapping[str, Any]) -> int:
@@ -598,12 +850,7 @@ def _assert_start_gates(
             f"(not an execution sandbox). Multi-CLI panes require explicit "
             f"role routing; zero-config remains grok-only."
         )
-    if in_spawned_worker_context(env):
-        raise TeamGateError(
-            "omg team start refused: already inside a spawned-worker context "
-            f"(depth-1; one of {', '.join(WORKER_ENV_MARKERS)} is set). "
-            "Workers must not launch a team."
-        )
+    refuse_nested_team_launch(env, action="start")
     n = len(tasks)
     if n < 1:
         raise TeamError("at least one task is required")
@@ -941,9 +1188,12 @@ def build_supervisor_prefix(descriptor_path: Path | str) -> str:
     import shlex
     import sys
 
+    from omg_cli.team.supervisor import _lexical_descriptor_path
+
     repo_root = Path(__file__).resolve().parents[2]
     py_path = shlex.quote(str(repo_root))
-    desc = shlex.quote(str(Path(descriptor_path).resolve()))
+    lexical = _lexical_descriptor_path(descriptor_path)
+    desc = shlex.quote(str(lexical))
     supervisor = shlex.join(
         [
             sys.executable,
@@ -952,12 +1202,12 @@ def build_supervisor_prefix(descriptor_path: Path | str) -> str:
             "team",
             "supervisor",
             "--descriptor",
-            str(Path(descriptor_path).resolve()),
+            str(lexical),
         ]
     )
     # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
     # ``desc`` is already embedded via shlex.join; keep py_path explicit.
-    _ = desc  # path validated via resolve above
+    _ = desc  # confined to resolved parent + exact leaf (no leaf follow)
     return f"PYTHONPATH={py_path}:$PYTHONPATH {supervisor}"
 
 
@@ -1013,11 +1263,30 @@ def materialize_supervisor_pane_command(
     identity_basenames: Sequence[str] | None = None,
     provider_strategy: str | None = None,
     startup_strategy: str | None = None,
+    # Prepublish authority (CLI launch intent) — required before live panes
+    # when team.json is not yet authoritative.
+    leader_root: Path | str | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> str:
-    """Write provider descriptor and return supervisor pane command."""
-    from omg_cli.team.supervisor import write_provider_descriptor
+    """Write provider descriptor (+ optional prepublish authority) and pane cmd.
 
-    write_provider_descriptor(
+    When ``publish_authority`` is true, binds root/run/team/worker, owner
+    token, and descriptor path+digest under the team tree **before** the
+    caller spawns panes. Supervisor admission fails closed without this
+    record when ``team.json`` is absent.
+    """
+    from omg_cli.team.supervisor import (
+        publish_supervisor_authority,
+        write_provider_descriptor,
+    )
+
+    written = write_provider_descriptor(
         descriptor_path,
         provider=provider,
         argv=argv,
@@ -1029,12 +1298,50 @@ def materialize_supervisor_pane_command(
         provider_strategy=provider_strategy,
         startup_strategy=startup_strategy,
     )
+    if publish_authority:
+        if (
+            leader_root is None
+            or not run_id
+            or not team_id
+            or not worker_id
+            or not owner_token
+        ):
+            raise TeamError(
+                "materialize_supervisor_pane_command publish_authority "
+                "requires leader_root, run_id, team_id, worker_id, owner_token"
+            )
+        try:
+            publish_supervisor_authority(
+                leader_root=leader_root,
+                run_id=str(run_id),
+                team_id=str(team_id),
+                worker_id=str(worker_id),
+                owner_token=str(owner_token),
+                descriptor_path=written,
+                generation=int(authority_generation),
+                attempt=int(authority_attempt),
+            )
+        except Exception as exc:
+            # Surface supervisor typed failures as TeamError for start/scale.
+            from omg_cli.team.supervisor import SupervisorError
+
+            if isinstance(exc, SupervisorError):
+                raise TeamError(str(exc)) from exc
+            raise
     return wrap_pane_with_supervisor(descriptor_path)
 
 
 def build_fixture_pane_command(
     *,
     descriptor_path: Path | str | None = None,
+    leader_root: Path | str | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    worker_id: str | None = None,
+    owner_token: str | None = None,
+    authority_generation: int = 0,
+    authority_attempt: int = 1,
+    publish_authority: bool = False,
 ) -> str:
     """Pane command for hermetic transport smoke (ACK fixture; no grok).
 
@@ -1066,6 +1373,14 @@ def build_fixture_pane_command(
         argv=[sys.executable, str(fixture)],
         prompt_delivery="prompt-file",
         needs_pty=False,
+        leader_root=leader_root,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        owner_token=owner_token,
+        authority_generation=authority_generation,
+        authority_attempt=authority_attempt,
+        publish_authority=publish_authority,
     )
 
 # ---------------------------------------------------------------------------
@@ -1960,6 +2275,29 @@ def _remove_team_worktree(root: Path, worktree: Path) -> str | None:
     return None if not wt.exists() else f"worktree still present: {wt}"
 
 
+def _note_start_file_backup(
+    file_backups: dict[Path, tuple[bytes | None, int | None]],
+    path: Path,
+) -> None:
+    """Snapshot prior regular-file bytes+mode once (None, None if absent).
+
+    Used by ``--run`` reuse so rollback can restore descriptor / argv /
+    prepublish authority exactly, or unlink files this start created.
+    """
+    target = Path(path)
+    if target in file_backups:
+        return
+    if target.is_symlink():
+        raise TeamError(f"team start backup path may not be a symlink: {target}")
+    if target.is_file():
+        file_backups[target] = (
+            target.read_bytes(),
+            stat.S_IMODE(target.stat().st_mode),
+        )
+        return
+    file_backups[target] = (None, None)
+
+
 def _rollback_partial_team_start(
     root: Path,
     run_id: str,
@@ -1969,7 +2307,7 @@ def _rollback_partial_team_start(
     team_dir_path: Path | None,
     remove_ownership: bool = True,
     ownership_backup: bytes | None = None,
-    file_backups: Mapping[Path, bytes | None] | None = None,
+    file_backups: Mapping[Path, tuple[bytes | None, int | None]] | None = None,
 ) -> list[str]:
     """Undo pre-commit start debris (issue #17 all-or-nothing).
 
@@ -1978,7 +2316,8 @@ def _rollback_partial_team_start(
     - ``team_dir_path`` only when this start created the directory
     - ownership: restore ``ownership_backup`` when we overwrote a prior file;
       otherwise unlink only if ``remove_ownership`` (new write / new run)
-    - ``file_backups``: path → prior bytes (or None if this start created the file)
+    - ``file_backups``: path → ``(bytes, mode)`` or ``(None, None)`` if this
+      start created the file (descriptor / argv / prepublish authority)
 
     Reverse order: worktrees → team dir (or file restore) → ownership → active.
     Never raises; returns actionable error strings for diagnostics.
@@ -2005,26 +2344,7 @@ def _rollback_partial_team_start(
                 errors.append(f"team dir remove {tdir}: {exc}")
     elif file_backups:
         # Reused team dir: restore or remove files this start overwrote/created.
-        for fpath, prior in file_backups.items():
-            path = Path(fpath)
-            try:
-                if prior is None:
-                    if path.is_file() or path.is_symlink():
-                        path.unlink(missing_ok=True)
-                else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = path.with_name(f".{path.name}.{os.getpid()}.rb.tmp")
-                    try:
-                        tmp.write_bytes(prior)
-                        os.replace(tmp, path)
-                    finally:
-                        if tmp.exists():
-                            try:
-                                tmp.unlink()
-                            except OSError:
-                                pass
-            except OSError as exc:
-                errors.append(f"file restore {path}: {exc}")
+        errors.extend(_restore_live_start_files(file_backups, unlink_new=True))
 
     try:
         mpath = ownership_manifest_path(root, rid)
@@ -2859,7 +3179,6 @@ def start_team(
             f"unsupported team executor {executor!r} (supported: None / 'fixture')"
         )
     tid_plane = (team_id or "team").strip() or "team"
-    token = owner_token or uuid.uuid4().hex
     use_fixture_executor = executor_norm == "fixture"
 
     multi_cli = routing is not None
@@ -2910,7 +3229,7 @@ def start_team(
         created_team_dir = False
         ownership_backup: bytes | None = None
         remove_ownership = True
-        file_backups: dict[Path, bytes | None] = {}
+        file_backups: dict[Path, tuple[bytes | None, int | None]] = {}
         tdir: Path | None = None
         # Resolve / create run
         if run_id:
@@ -2954,6 +3273,16 @@ def start_team(
                 raise TeamError(str(exc)) from exc
             rid = str(run["run_id"])
             created_run = True
+
+        # Owner token after run identity is known: --run reuse must preserve
+        # published team.json authority so supervisors admit (PR #156 P1).
+        # Explicit conflicting caller token fails closed before any pane spawn.
+        # New runs resolve without consulting team.json (none yet).
+        token = resolve_owner_token_for_start(
+            root_path,
+            run_id=None if created_run else rid,
+            owner_token=owner_token,
+        )
 
         def _fail_start(exc: BaseException, *, extra: Sequence[str] = ()) -> TeamError:
             rb = _rollback_partial_team_start(
@@ -3052,6 +3381,8 @@ def start_team(
 
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])
+            from omg_cli.team.supervisor import supervisor_prepublish_path
+
             # Preserve manifest order for window indices
             for i, mtask in enumerate(manifest_tasks):
                 tid = str(mtask["task_id"])
@@ -3061,6 +3392,16 @@ def start_team(
                 owned = list(mtask.get("owned_files") or [])
                 src_task = tasks_by_id.get(tid) or mtask
                 role = _task_role(src_task)
+                desc_path = tdir / f"{tid}.provider.json"
+                # Snapshot before any materialize/publish so --run reuse can
+                # restore exact prior descriptor/authority bytes+mode.
+                if not created_team_dir:
+                    _note_start_file_backup(file_backups, desc_path)
+                    if not dry_run:
+                        _note_start_file_backup(
+                            file_backups,
+                            supervisor_prepublish_path(root_path, rid, tid),
+                        )
 
                 if multi_cli and resolved is not None:
                     route = resolved.for_role(role)
@@ -3089,7 +3430,8 @@ def start_team(
                     provider = inv.provider
                     posture = inv.posture
                     prompt_delivery = inv.prompt_delivery
-                    desc_path = tdir / f"{tid}.provider.json"
+                    # Live panes need prepublish before team.json; dry_run
+                    # never runs supervisor so skip authority publication.
                     pane_cmd = materialize_supervisor_pane_command(
                         descriptor_path=desc_path,
                         provider=provider,
@@ -3101,6 +3443,12 @@ def start_team(
                         identity_basenames=inv.identity_basenames or None,
                         provider_strategy=inv.provider_strategy or None,
                         startup_strategy=inv.startup_strategy or None,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
                     )
                 else:
                     # D1 zero-config path — identical to pre-D3 behavior.
@@ -3128,7 +3476,6 @@ def start_team(
                             prompt_path_d1 = Path(argv[pidx + 1])
                     except ValueError:
                         prompt_path_d1 = None
-                    desc_path = tdir / f"{tid}.provider.json"
                     pane_cmd = materialize_supervisor_pane_command(
                         descriptor_path=desc_path,
                         provider=provider,
@@ -3137,12 +3484,25 @@ def start_team(
                         prompt_file=prompt_path_d1,
                         needs_pty=False,
                         cwd=wt,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
                     )
 
                 if use_fixture_executor:
                     # Hermetic transport override — keep argv record for diagnostics.
-                    desc_path = tdir / f"{tid}.provider.json"
-                    pane_cmd = build_fixture_pane_command(descriptor_path=desc_path)
+                    pane_cmd = build_fixture_pane_command(
+                        descriptor_path=desc_path,
+                        leader_root=root_path,
+                        run_id=rid,
+                        team_id=tid_plane,
+                        worker_id=tid,
+                        owner_token=token,
+                        publish_authority=not dry_run,
+                    )
                     provider = "fixture"
 
                 # Job-backed workers may take an explicit jobs-admitted provider
@@ -3156,15 +3516,8 @@ def start_team(
 
                 # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
                 argv_path = tdir / f"{tid}.argv.json"
-                # When reusing a team dir, backup prior argv so rollback can restore.
-                if not created_team_dir and argv_path not in file_backups:
-                    if argv_path.is_file() and not argv_path.is_symlink():
-                        try:
-                            file_backups[argv_path] = argv_path.read_bytes()
-                        except OSError:
-                            file_backups[argv_path] = None
-                    else:
-                        file_backups[argv_path] = None
+                if not created_team_dir:
+                    _note_start_file_backup(file_backups, argv_path)
                 argv_path.write_text(
                     json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8",
@@ -3203,6 +3556,9 @@ def start_team(
                     role=role,
                     posture=posture,
                 )
+                from omg_cli.team.supervisor import stamp_task_descriptor_digest
+
+                stamp_task_descriptor_digest(rec, desc_path)
                 task_records.append(rec)
 
             routing_payload = resolved.to_dict() if resolved is not None else None
@@ -3378,6 +3734,11 @@ def start_team(
                             )
                             task.setdefault("attempt", 1)
                     _atomic_write_json(team_meta_path(root_path, rid), meta)
+                    from omg_cli.team.supervisor import (
+                        clear_supervisor_prepublish_authorities,
+                    )
+
+                    clear_supervisor_prepublish_authorities(root_path, rid)
                     write_status(
                         root_path,
                         rid,
@@ -3752,6 +4113,12 @@ def start_team(
                 # the intent WAL as a sweep gate. Clear is terminal for the
                 # intent — after it succeeds, do not roll back authority files.
                 _atomic_write_json(team_meta_path(root_path, rid), meta)
+                # Authoritative team.json supersedes prepublish launch intents.
+                from omg_cli.team.supervisor import (
+                    clear_supervisor_prepublish_authorities,
+                )
+
+                clear_supervisor_prepublish_authorities(root_path, rid)
                 if launch_intent_path:
                     committed = load_team_meta(root_path, rid)
                     verified = _load_team_launch_receipt(root_path, rid, committed)
@@ -6794,8 +7161,18 @@ __all__ = [
     "experimental_enabled",
     "format_status_table",
     "in_spawned_worker_context",
+    "LEADER_ONLY_COMPOSITION_ACTIONS",
+    "LEADER_ONLY_OPERATOR_ACTIONS",
+    "NESTED_LAUNCH_ACTIONS",
+    "load_authoritative_team_meta",
     "load_team_meta",
     "mutate_team_meta",
+    "team_meta_lstat",
+    "preflight_team_worker_parsed_argv",
+    "refuse_nested_team_launch",
+    "refuse_worker_composition_publication",
+    "refuse_worker_operator_mutation",
+    "resolve_owner_token_for_start",
     "start_team",
     "status_locked_view",
     "stop_team",
