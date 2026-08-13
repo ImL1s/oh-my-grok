@@ -7,9 +7,13 @@ network, and they never claim support or qualification.
 from __future__ import annotations
 
 import math
+import os
+import re
 from collections.abc import Mapping, Sequence
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+from omg_cli.redaction import redact_text
 
 from .advisor_contract import (
     ADVISOR_FLAG_KEYS,
@@ -190,16 +194,26 @@ _MAX_REASONS = 16
 _MAX_COUNCIL_LANES = 8
 _MAX_REASON_CHARS = 240
 _STATE_ROOT = ".omg/state"
-_SECRET_EXACT_MARKERS = (
-    "eyJ",
-    "-----BEGIN",
-    "Bearer ",
-    "/home/",
-    "/Users/",
-    "/private/",
-    "C:\\",
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?:^|[\s;,&?])"
+    r"(?:token\s*=\s*sk-|api[_-]?key\s*=|password\s*=|endpoint\s*=|"
+    r"account\s*=|query\s*=|credential\s*=|prompt\s*=|response\s*=|"
+    r"body\s*=|provider\s*=)"
 )
-_SECRET_CI_MARKERS = ("api_key=", "password=")
+_SECRET_HEADER_RE = re.compile(
+    r"(?i)(?:^|[\s;])(?:authorization|proxy-authorization|cookie|set-cookie)"
+    r"\s*[:=]"
+)
+_BEARER_RE = re.compile(r"(?i)(?:^|[\s:=])bearer\s+\S")
+_SK_TOKEN_RE = re.compile(r"(?i)(?:^|[\s=\"'])sk-[a-z0-9]")
+_JWT_RE = re.compile(r"eyJ")
+_PEM_RE = re.compile(r"-----BEGIN")
+_DRIVE_RE = re.compile(r"(?i)(?:^|[\s:=\"'])[a-z]:[\\/]")
+_POSIX_PATH_RE = re.compile(
+    r"(?i)(?:^|[\s:=\"'])(/tmp|/private/tmp|/var/folders|/home|/users|/private)"
+    r"(?:/|\\|$)"
+)
+_TILDE_PATH_RE = re.compile(r"(?:^|[\s:=\"'])~/")
 
 
 def _require_bool(value: Any, *, label: str) -> bool:
@@ -494,12 +508,61 @@ def _begin_parse(
     return payload
 
 
+def _home_prefixes() -> tuple[str, ...]:
+    found: list[str] = []
+    for key in ("HOME", "USERPROFILE"):
+        value = os.environ.get(key)
+        if value:
+            found.append(value.rstrip("/\\"))
+    try:
+        found.append(str(Path.home()).rstrip("/\\"))
+    except (OSError, RuntimeError):
+        pass
+    unique: list[str] = []
+    for item in found:
+        if item and len(item) >= 3 and item not in unique:
+            unique.append(item)
+    return tuple(unique)
+
+
+def _home_in_text(text: str) -> bool:
+    for home in _home_prefixes():
+        if text == home or text.startswith(home + "/") or text.startswith(home + "\\"):
+            return True
+        escaped = re.escape(home)
+        if re.search(rf"(?:^|[\s:=\"']){escaped}(?:/|\\|$)", text):
+            return True
+    return False
+
+
+def _has_private_or_absolute_path(text: str) -> bool:
+    if _DRIVE_RE.search(text) or _POSIX_PATH_RE.search(text) or _TILDE_PATH_RE.search(text):
+        return True
+    if text.startswith("\\\\") or "\\\\" in text:
+        return True
+    return _home_in_text(text)
+
+
+def public_string_is_copy_unsafe(text: str) -> bool:
+    """True when a public typed string must be rejected, never redacted."""
+
+    if redact_text(text) != text:
+        return True
+    if _has_private_or_absolute_path(text):
+        return True
+    return bool(
+        _SECRET_ASSIGNMENT_RE.search(text)
+        or _SECRET_HEADER_RE.search(text)
+        or _BEARER_RE.search(text)
+        or _SK_TOKEN_RE.search(text)
+        or _JWT_RE.search(text)
+        or _PEM_RE.search(text)
+    )
+
+
 def _walk_secret_strings(value: Any, *, label: str) -> None:
     if isinstance(value, str):
-        lowered = value.casefold()
-        if any(marker in value for marker in _SECRET_EXACT_MARKERS) or any(
-            marker in lowered for marker in _SECRET_CI_MARKERS
-        ):
+        if public_string_is_copy_unsafe(value):
             raise ContractValidationError(
                 f"{label} contains a forbidden secret or private-path marker"
             )
@@ -610,7 +673,9 @@ def parse_workspace_descriptor(raw: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def parse_typed_reason(raw: Mapping[str, Any] | None) -> dict[str, Any]:
-    payload = _begin_parse(raw, label="typed reason", required=TYPED_REASON_KEYS)
+    payload = _begin_parse(
+        raw, label="typed reason", required=TYPED_REASON_KEYS, secret_scan=True
+    )
     message = require_nonempty_string(payload["message"], label="message")
     if len(message) > _MAX_REASON_CHARS:
         raise ContractValidationError("message exceeds 240 characters")
@@ -626,6 +691,7 @@ def parse_consultation_request_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         label="consultation request",
         required=CONSULTATION_REQUEST_V1_KEYS,
         schema=True,
+        secret_scan=True,
     )
     taxonomy = _parse_taxonomy(payload)
     prompt_artifact = parse_artifact_descriptor(payload["prompt_artifact"])
@@ -1160,4 +1226,5 @@ __all__ = [
     "validate_council_count_invariants",
     "parse_typed_reason",
     "parse_workspace_descriptor",
+    "public_string_is_copy_unsafe",
 ]
