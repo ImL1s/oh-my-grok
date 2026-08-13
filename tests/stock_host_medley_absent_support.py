@@ -321,7 +321,12 @@ def _is_reviewed_python_argv(args: Sequence[object], raw: str, grok_home: Path) 
 
 
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Doctor hook smoke: exact ``/bin/sh -c`` launcher plus matching installed standalone."""
+    """Doctor hook smoke: exact canonical ``/bin/sh -c`` launcher plus lstat+digest.
+
+    Authorizes only ``("/bin/sh", "-c", launcher_command(final_path))`` when that
+    direct canonical final path is a regular non-symlink file (``os.lstat``) and
+    ``sha256`` of those bytes equals the committed standalone.
+    """
     if raw != "/bin/sh" or len(args) != 3:
         return False
     gh = _usable_grok_home(grok_home)
@@ -333,10 +338,6 @@ def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Pa
         expected_path = gh / "hooks" / STANDALONE_BASENAME
         expected = ("/bin/sh", "-c", launcher_command(expected_path))
         if tuple(str(a) for a in args) != expected:
-            return False
-        if expected_path.name != STANDALONE_BASENAME:
-            return False
-        if expected_path.parent.resolve() != (gh / "hooks").resolve():
             return False
         st = os.lstat(expected_path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
