@@ -6,7 +6,9 @@ import hashlib
 import io
 import json
 import os
+import select
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +21,7 @@ from omg_cli.host_acp import (
     AcpError,
     AcpResumeReceipt,
     AcpStdioSession,
+    _CANCEL_POLL_INTERVAL_S,
     _STDOUT_READ_CHUNK,
     _absorb_pending_continuation,
     _extract_complete_frame,
@@ -2322,5 +2325,218 @@ def test_handshake_partial_suffix_expired_deadline_is_timeout(
         assert ei.value.code == "E_ACP_TIMEOUT"
         assert sess._receipt is None
         assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_absorb_partial_select_timeout_is_cancel_poll_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    cancel = threading.Event()
+    timeouts: list[float | None] = []
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        timeouts.append(timeout)
+        if timeout is not None and timeout > 0:
+            cancel.set()
+        return ([], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 15.0,
+                cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        positive = [t for t in timeouts if t is not None and t > 0]
+        assert positive
+        assert all(t <= _CANCEL_POLL_INTERVAL_S + 1e-9 for t in positive)
+        assert elapsed < 1.0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_partial_cancel_between_polls_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    cancel = threading.Event()
+    timeouts: list[float | None] = []
+    calls = {"n": 0}
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        timeouts.append(timeout)
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            cancel.set()
+        return ([], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 15.0,
+                cancel_event=cancel,
+            )
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_TIMEOUT"
+        assert ei.value.code != "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        positive = [t for t in timeouts if t is not None and t > 0]
+        assert positive
+        assert all(t <= _CANCEL_POLL_INTERVAL_S + 1e-9 for t in positive)
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_already_buffered_overflow_beats_cancel() -> None:
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * 300)
+    budget = [0]
+    cancel = threading.Event()
+    cancel.set()
+    try:
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=256,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 15.0,
+                cancel_event=cancel,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert ei.value.code != "E_ACP_CANCELLED"
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_chunk_none_is_not_eof(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc, r_file, w_file = _pipe_proc()
+    frame = b'{"a":1}\n'
+    rx_buf = bytearray(frame)
+    budget = [0]
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        return ([proc.stdout], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    monkeypatch.setattr(r_file, "read", lambda _n: None)
+    try:
+        saw_eof = _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() + 15.0,
+        )
+        assert saw_eof is False
+        assert bytes(rx_buf) == frame
+        assert budget[0] == 0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_chunk_none_partial_continues_then_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    cancel = threading.Event()
+    calls = {"n": 0}
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            cancel.set()
+        return ([proc.stdout], [], [])
+
+    monkeypatch.setattr(select, "select", _select)
+    monkeypatch.setattr(r_file, "read", lambda _n: None)
+    try:
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 15.0,
+                cancel_event=cancel,
+            )
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert ei.value.code != "E_ACP_EOF"
+        assert bytes(rx_buf) == b"abc"
+        assert budget[0] == 0
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_handshake_partial_absorb_cancel_writes_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "50"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    orig_await = sess._await_result
+    past_resume = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 2:
+            past_resume["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    cancel = threading.Event()
+    real_select = select.select
+
+    def _select(r, w, x, timeout=None):  # noqa: ANN001
+        if past_resume["on"] and timeout is not None and 0 < timeout <= 1.0:
+            cancel.set()
+            return ([], [], [])
+        return real_select(r, w, x, timeout)
+
+    monkeypatch.setattr(select, "select", _select)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=15.0, cancel_event=cancel)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_CANCELLED"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert elapsed < 2.0
     finally:
         sess.close()

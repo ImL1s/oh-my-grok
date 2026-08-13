@@ -45,6 +45,7 @@ DEFAULT_MAX_LINE_BYTES = 256_000
 DEFAULT_DRAIN_MAX_BYTES = 2_000_000
 _STDERR_DRAIN_CHUNK = 8192
 _STDOUT_READ_CHUNK = 4096
+_CANCEL_POLL_INTERVAL_S = 0.05
 
 
 class AcpError(RuntimeError):
@@ -421,24 +422,27 @@ def _absorb_pending_continuation(
 
     Never returns just because *rx_buf* ends on NL. When there is no
     incomplete suffix, nonblocking-probes and drains every chunk already
-    readable on stdout. When a partial suffix exists, waits only until
-    *deadline*. Does not extract frames or increment *byte_budget*.
+    readable on stdout. When a partial suffix exists, waits in
+    ``_CANCEL_POLL_INTERVAL_S`` slices (rechecking *cancel_event* each
+    poll) up to *deadline*. Does not extract frames or increment
+    *byte_budget*.
 
     Overflow of any complete or incomplete frame is classified before
-    EOF or timeout. An empty read while a partial suffix remains is
-    ``E_ACP_EOF`` even if ``proc.poll()`` is still ``None``. An empty
-    read after only complete frames returns ``True`` so the caller can
-    F9-drain then fail ``E_ACP_EOF``. Deadline / no-ready with a
-    partial suffix is ``E_ACP_TIMEOUT`` (never a silent return).
-    Returns ``False`` when the probe finds no further ready data.
+    cancel, EOF, or timeout. Only an empty-bytes read (``b""``) is
+    proven EOF; ``chunk is None`` is not EOF (no bytes available now).
+    An empty read while a partial suffix remains is ``E_ACP_EOF``
+    even if ``proc.poll()`` is still ``None``. An empty read after
+    only complete frames returns ``True`` so the caller can F9-drain
+    then fail ``E_ACP_EOF``. Deadline / no-ready with a partial suffix
+    is ``E_ACP_TIMEOUT`` (never a silent return). Returns ``False``
+    when the probe finds no further ready data.
     """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
     import select
 
     while True:
-        if cancel_event is not None and cancel_event.is_set():
-            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
+        # Already-buffered overflow beats cancel and EOF.
         _raise_if_buffered_limits(
             byte_budget,
             rx_buf,
@@ -446,10 +450,16 @@ def _absorb_pending_continuation(
             max_total_bytes=max_total_bytes,
             include_complete_frames=True,
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise AcpError("ACP handshake cancelled", code="E_ACP_CANCELLED")
         has_partial = _incomplete_line_len(rx_buf) > 0
         if has_partial:
             remaining = deadline - time.monotonic()
-            timeout = remaining if remaining > 0 else 0.0
+            if remaining <= 0:
+                # F12: still drain currently-ready bytes; no-ready → TIMEOUT.
+                timeout = 0.0
+            else:
+                timeout = min(remaining, _CANCEL_POLL_INTERVAL_S)
         else:
             timeout = 0.0
         try:
@@ -462,15 +472,29 @@ def _absorb_pending_continuation(
                     max_total_bytes=max_total_bytes,
                     include_complete_frames=True,
                 )
+                if cancel_event is not None and cancel_event.is_set():
+                    raise AcpError(
+                        "ACP handshake cancelled", code="E_ACP_CANCELLED"
+                    )
                 if has_partial:
-                    raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AcpError(
+                            "ACP read timed out", code="E_ACP_TIMEOUT"
+                        )
+                    continue
                 if proc.poll() is not None:
                     return True
                 return False
+            # Recheck cancel before read; overflow already classified.
+            if cancel_event is not None and cancel_event.is_set():
+                raise AcpError(
+                    "ACP handshake cancelled", code="E_ACP_CANCELLED"
+                )
             chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
         except (OSError, ValueError) as exc:
             raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
-        if chunk is None or chunk == b"":
+        if chunk == b"":
             _raise_if_buffered_limits(
                 byte_budget,
                 rx_buf,
@@ -483,6 +507,26 @@ def _absorb_pending_continuation(
                     "ACP EOF with incomplete frame", code="E_ACP_EOF"
                 )
             return True
+        if chunk is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AcpError(
+                    "ACP handshake cancelled", code="E_ACP_CANCELLED"
+                )
+            if has_partial:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _raise_if_buffered_limits(
+                        byte_budget,
+                        rx_buf,
+                        max_line_bytes=max_line_bytes,
+                        max_total_bytes=max_total_bytes,
+                        include_complete_frames=True,
+                    )
+                    raise AcpError(
+                        "ACP read timed out", code="E_ACP_TIMEOUT"
+                    )
+                continue
+            return False
         rx_buf.extend(chunk)
 
 
@@ -540,7 +584,9 @@ def _read_line(
         try:
             import select
 
-            ready, _, _ = select.select([proc.stdout], [], [], 0.05)
+            ready, _, _ = select.select(
+                [proc.stdout], [], [], _CANCEL_POLL_INTERVAL_S
+            )
             if not ready:
                 if proc.poll() is not None:
                     _raise_if_buffered_limits(
@@ -734,7 +780,10 @@ class AcpStdioSession:
             if remaining <= 0:
                 break
             msg = self._try_read_message(
-                deadline=min(deadline, time.monotonic() + min(0.05, remaining)),
+                deadline=min(
+                    deadline,
+                    time.monotonic() + min(_CANCEL_POLL_INTERVAL_S, remaining),
+                ),
                 cancel_event=cancel_event,
                 allow_timeout=True,
             )
@@ -797,7 +846,7 @@ class AcpStdioSession:
         self,
         *,
         cancel_event: threading.Event | None = None,
-        idle_poll_s: float = 0.05,
+        idle_poll_s: float = _CANCEL_POLL_INTERVAL_S,
     ) -> str:
         """Discard allowed chrome notifications until cancel or failure.
 
