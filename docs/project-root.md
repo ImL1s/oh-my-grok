@@ -39,6 +39,14 @@ Inspect via `omg team status <run> --full` (descriptor only — not pane scrollb
 - `omg doctor` prints `project_root` and `source=…`.
 - Resolution API: `omg_cli.project_root.resolve_project_root`.
 
+## State directory (#74)
+
+The table above is **project identity** only. The physical `.omg` state
+directory is a separate contract: [state-root.md](./state-root.md)
+(`omg_cli.state_root.resolve_state_root`). This PR is the contract — not
+a cutover. Writers still use `<project_root>/.omg`. There is no `omg`
+flag for `OMG_STATE_DIR` (API / env only).
+
 ## Migration
 
 If you already created a nested `.omg` by accident:

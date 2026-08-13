@@ -9,6 +9,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **#74 PR1 canonical state-root contract:** pure resolver
+  `omg_cli.state_root.resolve_state_root` (API/env only:
+  `OMG_STATE_DIR`, `OMG_WORKSPACE_MARKER`,
+  `OMG_DISABLE_WORKSPACE_MARKER`). Scopes `per_worktree` |
+  `workspace_shared` | `centralized`. Writers still use
+  `<project_root>/.omg` — no writer cutover, no CLI flags, no
+  mkdir/write. Hermetic coverage in `tests/test_state_root.py`.
+  Docs: `docs/state-root.md`, `docs/project-root.md`. **Refs #74
+  (does not close)**.
+
 ### Fixed
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
   install forwarding to the provider wrapper process group immediately after

@@ -67,7 +67,9 @@ files = [
   "omg_cli/__init__.py",
   "omg_cli/main.py",
   "omg_cli/project_root.py",
+  "omg_cli/state_root.py",
   "tests/test_release_readback.py",
   "tests/test_project_root.py",
+  "tests/test_state_root.py",
   "tests/test_version_consistency.py",
 ]
