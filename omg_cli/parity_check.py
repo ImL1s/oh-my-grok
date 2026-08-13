@@ -15,6 +15,8 @@ from omg_cli.contracts.parity_schema import (
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_claim_gate import check_parity_release_claims
 from omg_cli.parity_completeness import check_completeness_promotion_gate
+from omg_cli.parity_issue_state import check_issue_state_evidence
+from omg_cli.parity_ownership import check_parity_residual_owners
 
 __all__ = [
     "ARTIFACT_PATHS_RELATIVE",
@@ -61,7 +63,11 @@ def apply_strict_parity_gates(
 
     Invokes the completeness-promotion proof gate whenever any source/category
     (or overall inventory) status is ``complete``. Retains the open-P0 rule for
-    overall-complete inventories. Returns the completeness proof-state payload.
+    overall-complete inventories. When ``repo_root`` is set, also binds
+    closure-sensitive issue claims to the committed offline receipt
+    (``docs/parity/issue-state/v1.json``). Schema-only callers (no
+    ``repo_root``) skip that file so unit fixtures still work. Returns the
+    completeness proof-state payload.
     """
     if inventory.get("schema_version") != 2:
         empty = {
@@ -95,6 +101,10 @@ def apply_strict_parity_gates(
                 "complete inventory cannot leave open P0 gaps: "
                 + ",".join(str(gap.get("id")) for gap in open_p0)
             )
+
+    check_parity_residual_owners(inventory)
+    if repo_root is not None:
+        check_issue_state_evidence(inventory, repo_root=repo_root)
 
     gate = check_completeness_promotion_gate(inventory, repo_root=repo_root)
     if completeness_payload is not None:

@@ -97,12 +97,9 @@
         "source_paths": [
           "CHANGELOG.md"
         ],
-        "notes": "Host terminal theme detection; not OMG topology."
+        "notes": "Host terminal theme detection; not OMG topology. Historical theme provenance #95/#104; not current implementation ownership. #147 is future interactive TTY/live tmux evidence only, not auto-theme owner."
       },
-      "downstream_issues": [
-        "#95",
-        "#104"
-      ]
+      "downstream_issues": []
     },
     {
       "id": "grok.tui.narrow_table_reflow",
@@ -352,10 +349,9 @@
         "source_paths": [
           "CHANGELOG.md"
         ],
-        "notes": "session/resume is no-replay attach; not code restore."
+        "notes": "session/resume is no-replay attach; not code restore. Attach/close landed under closed #103; current owner is #74."
       },
       "downstream_issues": [
-        "#103",
         "#74"
       ]
     },
@@ -373,10 +369,9 @@
         "source_paths": [
           "CHANGELOG.md"
         ],
-        "notes": "Explicit session lifecycle close."
+        "notes": "Explicit session lifecycle close. Attach/close landed under closed #103; current owner is #74."
       },
       "downstream_issues": [
-        "#103",
         "#74"
       ]
     },
@@ -394,10 +389,9 @@
         "source_paths": [
           "CHANGELOG.md"
         ],
-        "notes": "Child session registration on restore."
+        "notes": "Child session registration on restore. Attach/close landed under closed #103; current owner is #74."
       },
       "downstream_issues": [
-        "#103",
         "#74"
       ]
     },
@@ -415,10 +409,9 @@
         "source_paths": [
           "CHANGELOG.md"
         ],
-        "notes": "Conversation resume != code restore."
+        "notes": "Conversation resume != code restore. Attach/close landed under closed #103; current owner is #74."
       },
       "downstream_issues": [
-        "#103",
         "#74"
       ]
     },
@@ -499,7 +492,6 @@
         "notes": "Parent-continue reminder; does not replace OMG jobs."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -520,7 +512,6 @@
         "notes": "Cancel must not restart model turn."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -541,7 +532,6 @@
         "notes": "Host parallel child cap; OMG still owns admission."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -583,7 +573,6 @@
         "notes": "Lossless ordered queue under wait."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -604,7 +593,6 @@
         "notes": "Queue visibility while waiting on subagents."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -625,7 +613,6 @@
         "notes": "Host queue reorder UX/contract."
       },
       "downstream_issues": [
-        "#68",
         "#69"
       ]
     },
@@ -646,7 +633,7 @@
         "notes": "Recap must not interleave busy turns."
       },
       "downstream_issues": [
-        "#68"
+        "#69"
       ]
     },
     {

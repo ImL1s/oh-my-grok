@@ -27,6 +27,37 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   publish `provider_spawned`. A termination signal delivered as soon as the
   receipt becomes observable can no longer bypass forwarding and orphan the
   provider process group.
+- **Issue-state `closure_sensitive` HIGH:** production receipts must use
+  the exact canonical list `["#67", "#68", "#78"]` (order + set; drop /
+  add / duplicate / reorder fail closed). Arbitrary nonempty `#N` lists
+  are no longer accepted. Digest, source identity, and open-P0 reopen
+  semantics unchanged. Refs #158.
+- **Issue-state identity HIGH:** `load_and_validate_issue_state_evidence`
+  rejects boolean `schema_version`, non-canonical
+  `github.com/ImL1s/oh-my-grok` source identity, `#N` keys whose
+  `number` is not the exact non-bool integer `N`, and issue URLs that
+  are not `https://github.com/ImL1s/oh-my-grok/issues/N`. Digest and
+  temporal validation stay fail closed. Refs #158.
+- **Host-review historical to_ref HIGH:** pin-transition no longer
+  swallows `assert_host_generated_docs_consistent`, globs arbitrary
+  `GROK_BUILD-from-to-*.json` receipts, or authorizes a
+  candidate-provided `generated_docs_hash`. Historical edges recompute
+  the exact transition plan and canonical generated-doc digest from
+  committed blobs at `to_ref` (fail closed if unrecomputable), resolve
+  only the content-binding filename, and advertise that filename when
+  missing. Claim-gate git used for committed-blob identity now passes
+  `--no-replace-objects` and a sanitized env that drops `GIT_DIR` and
+  related object overrides. Refs #158 / #105.
+- **Host-review receipt HIGH:** `assert_host_review_binds_current_content`
+  no longer accepts a forged untracked or committed JSON file just
+  because nested `host_baseline` hashes match. Current-content and
+  compatible pin-transition gates share
+  `assert_canonical_immutable_host_review_receipt`: exact non-bool
+  `schema_version`, exact `store_kind`/`source`/`from`/`to`/
+  `reviewed_pin`/`previous_pin`/`snapshot_path`, canonical
+  `change_digest`, recomputed `content_binding_digest`, filename bind,
+  required acknowledgments, and a HEAD-committed blob. No
+  change_digest-only filename fallback. Refs #158 / #105.
 - **#159 ralplan staged-proposal mtime freshness flake:**
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock
@@ -39,6 +70,63 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   accept; independent one-at-a-time mismatch reject for all eight
   exact identity/schema bindings with fresh mtime; no sleep /
   tolerance). Closes #159.
+
+### Changed
+- **Reconcile #105 current host downstream owners:** session attach/close
+  caps list `#74` only (not closed `#103`); queue/subagent/fan-out and
+  auto-recap-no-interleave stay `#69` (not closed `#68`); auto-theme must
+  not list `#95`/`#104`/`#147` as current owners. Production
+  `check_host_downstream_owners` plus mutation tests.
+  `HISTORICAL_GOVERNANCE_GAP_IDS` now restricts closed-gap `#78` to
+  `gap.parity.governance.remaining` only. Minted a new content-bound
+  `GROK_BUILD` receipt (`731c4c27…` / snapshot `31ff814c…` / docs
+  `c2488910…`); historical `80a22517…` and `81e709b1…` ledgers
+  untouched. Release-gate hermetic fixtures retain F4 issue-state
+  bindings (`#67`/`#68` closed gaps + `v1.json`) so `--release` still
+  fails on upstream drift, not missing evidence. Inventory stays
+  `bootstrapping`. No live/completeness promotion. Refs #105 #74 #69
+  (does not close). Historical #78.
+- **Pinned offline issue-state evidence:** `--strict` consumes
+  `docs/parity/issue-state/v1.json` (digest-bound, no network) for
+  closure-sensitive `#67`/`#68`/`#78`. Observed GitHub: `#67`/`#68`
+  closed; `#78` open/reopened with close pending PR #158 — not live
+  truth. Rejects missing/stale/unknown/tampered receipts, inventory
+  disagreement, and mutation reopening those issues as Open P0.
+  Inventory stays `bootstrapping`.
+- **Host baseline review ledger content-bind:** mint a new immutable
+  `GROK_BUILD` receipt bound to current snapshot/docs hashes
+  (`38350559…` / `23d41ed5…`) instead of rewriting the historical
+  `81e709b1…` ledger (`3eed15cc…` / `fe0b9855…`). Filename digest is
+  `change_digest` + `snapshot_hash` + `generated_docs_hash`. Strict/host
+  `--check` fails if no receipt binds current content. Inventory stays
+  `bootstrapping`. Refs #78 (historical) #105.
+- **Closed #78 must not remain a present-tense residual owner** on
+  capability/gap `issues`. Child owners: skills #70, agents #71, hooks
+  #72, LSP/AST/MCP #73, session/state #74, visual #75, edit/hygiene #76,
+  install #77, Team/runtime #69; #79 aggregate only. Locks #73/#76.
+  Strict gate rejects residual #78 and #79-only replacement of locked
+  children. Inventory stays `bootstrapping`. Open P0 still #69. Refs
+  #70-#77 #69 #79 (does not close). Does not close #78 again (already
+  closed as governance).
+- **#78 GAPS governance reconciliation:** closed GitHub issues #67/#68 are
+  no longer open P0 owners in `docs/parity/omg-parity.json` or generated
+  `GAPS.md` Open P0. `gap.parity.governance.remaining` is closed: pinned
+  inventory, CI claim gates, and generated docs exist. Remaining
+  authenticated Antigravity live evidence, Team job-backed workers, and
+  host prompt-queue/fan-out consume stay on #69; provider loading/doctor
+  follow-up on #77; near-1:1 leftovers (including host-owned typed AG
+  model/effort/mode) on #79. Inventory stays `bootstrapping`. No
+  `live_verified` or completeness promotion. Historical #67/#68/#78 links
+  remain on closed gaps and capability provenance. Closes #78. Refs #69
+  #77 #79 (does not close #69/#77/#79).
+
+### Fixed
+- **Parity FEATURE-MATRIX / GAPS owner drift (#77):**
+  `antigravity.provider.adapter` now lists active owner `#77` (provider
+  loading/doctor via `gap.install.provider_doctor`) alongside historical
+  `#67` and remaining live/team `#69`, so generated FEATURE-MATRIX agrees
+  with GAPS. Inventory stays `bootstrapping`. Open P0 remains `#69` only.
+  No live promotion. Refs #77 #69 (does not close).
 
 ### Added
 - **#69 PR13 Composition Lane Worker Protocol V1:** shared worker-scoped

@@ -45,9 +45,24 @@ Refresh workflow: `omg parity refresh --source … --pin … --plan --catalog �
 - Classifications: `host_owned` \| `consumed_downstream` \| `irrelevant` (every release delta must be classified)
 - Generated docs: `docs/parity/generated/host-baseline.md`, `host-capability-matrix.md`
 - Pin transitions use the same committed ledger path as other sources:
-  `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`)
+  `docs/parity/reviews/GROK_BUILD-<from>-<to>-<digest>.json` with a required `host_baseline` block (`snapshot_hash`, `reviewed_pin`, `generated_docs_hash`). The filename digest for GROK_BUILD is content-bound (`change_digest` + current snapshot/docs hashes) so a new receipt can be added instead of rewriting an immutable ledger.
 
-Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here.
+Release gate (`check_parity_release_claims`) requires the host snapshot to match `FROZEN_PINS["GROK_BUILD"]` and `upstream_pins.GROK_BUILD.revision`, rejects symlink/malformed/stale snapshots, and fails closed when a `GROK_BUILD` pin moves without a matching review. `host_owned` rows must not claim OMG `omg_paths` as implementation evidence. Catalogue maturity starts at `catalogued`; do not overclaim live promotion here. Closed issues cannot be current host `downstream_issues` owners; `#78` on closed gaps is allowlisted only via `HISTORICAL_GOVERNANCE_GAP_IDS`.
+
+## Issue-state evidence (closure-sensitive)
+
+Pinned offline receipt: [`issue-state/v1.json`](issue-state/v1.json)
+(`store_kind=parity-issue-state-evidence`, exact non-bool `schema_version` 1,
+canonical `github.com/ImL1s/oh-my-grok` source, `#N` keys bound to integer
+`N` and `https://github.com/ImL1s/oh-my-grok/issues/N`). Production
+`closure_sensitive` must be exactly `["#67", "#68", "#78"]` in that order.
+`--strict` with `repo_root` binds Open-P0 owners to this digest-bound
+observation — no network. See [`issue-state/README.md`](issue-state/README.md).
+
+This is **bounded release-time** evidence, not live GitHub. Observed pin:
+`#67` / `#68` closed/completed; `#78` **open/reopened**, close pending
+PR 158. Do not treat the receipt as current GitHub truth.
+
 ## Validation entry points
 
 ```python
@@ -81,6 +96,7 @@ Under `--strict` (validator `repo_root` set):
 - Claimable classifications (`faithful` / `omg_native` / `antigravity_native`) require non-empty `omg_paths` that exist under the repo.
 - `healthy` / `live_verified` require `healthy_evidence` entries that are existing repo-relative paths (opaque strings like `"x"` fail closed).
 - Alias rows may not exceed canonical maturity per runtime; aliases of `host_impossible` / `excluded` / `optional_unclaimed` cannot claim positive maturity. Claim markers for aliases derive from the canonical target.
+- Closure-sensitive GitHub issue state is bound to [`issue-state/v1.json`](issue-state/v1.json) (offline `release_pin`; `#78` observed open/reopened). Schema-only checks without `repo_root` skip this file.
 
 ## Release check
 
@@ -96,6 +112,6 @@ python3 scripts/check_parity_inventory.py --strict --release --base-ref <previou
 - doc overclaim scan (forbidden phrases / per-capability maturity overclaim while bootstrapping)
 - live-evidence freshness for `live_verified` rows
 - upstream drift vs `docs/parity/upstream-snapshots/*.json` (each unresolved add/delete/rename/change fails closed unless acknowledged in a refresh review artifact)
-- **pin-transition ledger:** when any source pin changes vs the durable base inventory (`--base-ref` / `OMG_PARITY_BASE_REF`, previous `v*` release tag, or `origin/main|main` — not `HEAD^` in release mode; optional `--base-inventory` only when bound to a matching `--base-ref` blob), a **git-tracked** review must exist at `docs/parity/reviews/<source>-<from>-<to>-<change-digest>.json` with matching HEAD blob bytes, canonical change digest, and dispositions. Intermediate inventory pin bumps between the trusted base and the candidate are scanned via the `base_ref..HEAD` commit DAG (so an unreviewed bump cannot be masked by a later revert). `--base-inventory` alone is insufficient for `--release` (endpoint-only compare would miss mid-DAG transitions). Optional local `.omg/artifacts/` paths alone are not sufficient.
+- **pin-transition ledger:** when any source pin changes vs the durable base inventory (`--base-ref` / `OMG_PARITY_BASE_REF`, previous `v*` release tag, or `origin/main|main` — not `HEAD^` in release mode; optional `--base-inventory` only when bound to a matching `--base-ref` blob), a **git-tracked** review must exist at `docs/parity/reviews/<source>-<from>-<to>-<digest>.json` (comparison sources use the catalogue change digest; `GROK_BUILD` uses the content-binding digest) with matching HEAD blob bytes, canonical change digest, and dispositions. Historical `GROK_BUILD` edges reconstruct the generated-doc digest from committed blobs at `to_ref` and resolve only that exact content-binding filename — they never glob digest suffixes or trust a candidate-provided `generated_docs_hash`. Intermediate inventory pin bumps between the trusted base and the candidate are scanned via the `base_ref..HEAD` commit DAG (so an unreviewed bump cannot be masked by a later revert). `--base-inventory` alone is insufficient for `--release` (endpoint-only compare would miss mid-DAG transitions). Optional local `.omg/artifacts/` paths alone are not sufficient.
 
 PR CI uses `--strict` only; `release.yml` uses `--strict --release`.

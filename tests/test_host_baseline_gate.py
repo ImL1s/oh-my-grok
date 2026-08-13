@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from omg_cli.contracts.parity_schema import (
     HOST_BASELINE_GENERATED_RELATIVE,
     HOST_BASELINE_PIN_ID,
     HOST_BASELINE_SNAPSHOT_RELATIVE,
+    load_json_object,
+    validate_host_baseline_snapshot,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
 from omg_cli.parity_claim_gate import (
@@ -20,9 +23,11 @@ from omg_cli.parity_claim_gate import (
     check_parity_release_claims,
     load_host_baseline_snapshot,
 )
+from omg_cli.parity_ownership import check_host_downstream_owners
 from tests.test_parity_claim_gate import (
     FIXED_NOW,
     _bootstrapping_inventory,
+    _ensure_fixture_git_commit,
     _honest_docs,
     _scaffold_inventory_paths,
     _write_host_baseline_snapshot,
@@ -30,11 +35,31 @@ from tests.test_parity_claim_gate import (
     _write_required_snapshots,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+HOST_SNAPSHOT = ROOT / "docs" / "parity" / "upstream-snapshots" / "grok-build.json"
+
+_SESSION_CAPS = (
+    "grok.session.acp_resume_no_replay",
+    "grok.session.acp_close",
+    "grok.session.child_restore_registration",
+    "grok.session.restore_code_explicit",
+)
+_QUEUE_SUBAGENT_FANOUT_CAPS = (
+    "grok.prompt_queue.lossless_ordered",
+    "grok.prompt_queue.visible_while_waiting",
+    "grok.prompt_queue.reorderable",
+    "grok.subagent.parent_continue_reminder",
+    "grok.subagent.cancel_no_restart",
+    "grok.workflow.parallel_child_cap",
+    "grok.dashboard.auto_recap_no_interleave",
+)
+
 
 def test_host_baseline_gate_passes_matching_snapshot(tmp_path: Path) -> None:
     inventory = _bootstrapping_inventory(tmp_path)
     _scaffold_inventory_paths(tmp_path, inventory)
     _write_host_baseline_snapshot(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
     payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
     assert payload["ok"] is True
     assert payload["public_commit"] == FROZEN_PINS[HOST_BASELINE_PIN_ID]
@@ -169,7 +194,9 @@ def test_host_owned_cannot_claim_omg_implementation_in_release_path(
         "issues": ["#105"],
         "maturity_floor": "catalogued",
     }
-    _write_host_baseline_snapshot(tmp_path, inventory, snapshot_override=snapshot)
+    _write_host_baseline_snapshot(
+        tmp_path, inventory, snapshot_override=snapshot, write_binding_review=False
+    )
     with pytest.raises(ContractValidationError, match="omg_paths"):
         assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
 
@@ -199,6 +226,7 @@ def test_release_gate_still_passes_with_host_snapshot(tmp_path: Path) -> None:
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
     payload = check_parity_release_claims(
         inventory_path=inv_path,
         repo_root=tmp_path,
@@ -207,3 +235,161 @@ def test_release_gate_still_passes_with_host_snapshot(tmp_path: Path) -> None:
     )
     assert payload["ok"] is True
     assert payload["host_baseline_checked"] is True
+
+
+def test_host_gate_rejects_stale_review_hashes_when_receipts_exist(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.parity_refresh import write_committed_host_baseline_review
+    from omg_cli.parity_refresh import (
+        build_host_baseline_refresh_plan,
+        generated_docs_content_hash,
+        host_snapshot_content_hash,
+    )
+    from datetime import datetime, timezone
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory)
+    snapshot = load_host_baseline_snapshot(tmp_path)
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision="7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+        to_revision=snapshot["public_commit"],
+        host_snapshot=snapshot,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    path = write_committed_host_baseline_review(tmp_path, plan)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["host_baseline"]["snapshot_hash"] = "0" * 64
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    reviews = tmp_path / "docs" / "parity" / "reviews"
+    for other in reviews.glob("GROK_BUILD-*.json"):
+        if other.resolve() != path.resolve():
+            other.unlink()
+    with pytest.raises(
+        ContractValidationError,
+        match=(
+            "snapshot_hash|generated_docs_hash|bind|not tracked|"
+            "differs from HEAD|content_binding_digest|change_digest"
+        ),
+    ):
+        assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+
+
+def test_host_gate_fails_when_no_content_bound_review_exists(tmp_path: Path) -> None:
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory, write_binding_review=False)
+    with pytest.raises(
+        ContractValidationError,
+        match="snapshot_hash|generated_docs_hash|bind",
+    ):
+        assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+
+
+def test_host_gate_accepts_content_bound_review(tmp_path: Path) -> None:
+    from omg_cli.parity_refresh import write_committed_host_baseline_review
+    from omg_cli.parity_refresh import (
+        build_host_baseline_refresh_plan,
+        generated_docs_content_hash,
+        host_snapshot_content_hash,
+    )
+    from datetime import datetime, timezone
+
+    inventory = _bootstrapping_inventory(tmp_path)
+    _scaffold_inventory_paths(tmp_path, inventory)
+    _honest_docs(tmp_path)
+    _write_required_snapshots(tmp_path, inventory)
+    _write_host_baseline_snapshot(tmp_path, inventory)
+    snapshot = load_host_baseline_snapshot(tmp_path)
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision="7cfcb20d2b50b0d18801a6c0af2e401c0e060894",
+        to_revision=snapshot["public_commit"],
+        host_snapshot=snapshot,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    write_committed_host_baseline_review(tmp_path, plan)
+    _ensure_fixture_git_commit(tmp_path, "commit content-bound review")
+    payload = assert_host_baseline_gate(inventory=inventory, repo_root=tmp_path)
+    assert payload["ok"] is True
+    assert payload["generated_docs_hash"] == docs_hash
+
+
+def _committed_host_snapshot() -> dict:
+    return validate_host_baseline_snapshot(load_json_object(HOST_SNAPSHOT))
+
+
+def _cap_by_id(snapshot: dict, cap_id: str) -> dict:
+    for row in snapshot["capabilities"]:
+        if row["id"] == cap_id:
+            return row
+    raise AssertionError(cap_id)
+
+
+def test_committed_host_snapshot_current_downstream_owners() -> None:
+    snapshot = _committed_host_snapshot()
+    check_host_downstream_owners(snapshot)
+    for cap_id in _SESSION_CAPS:
+        issues = _cap_by_id(snapshot, cap_id)["downstream_issues"]
+        assert issues == ["#74"]
+        assert "#103" not in issues
+    for cap_id in _QUEUE_SUBAGENT_FANOUT_CAPS:
+        issues = _cap_by_id(snapshot, cap_id)["downstream_issues"]
+        assert "#69" in issues
+        assert "#68" not in issues
+    theme = set(_cap_by_id(snapshot, "grok.tmux.auto_theme")["downstream_issues"])
+    assert not theme & {"#95", "#104", "#147"}
+
+
+def test_host_downstream_owners_reject_closed_session_103() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.session.acp_close")["downstream_issues"] = ["#103"]
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.session\.acp_close.*#103.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+def test_host_downstream_owners_reject_closed_queue_68() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.prompt_queue.lossless_ordered")["downstream_issues"] = [
+        "#68",
+        "#69",
+    ]
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.prompt_queue\.lossless_ordered.*#68.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+@pytest.mark.parametrize("owner", ["#95", "#147"])
+def test_host_downstream_owners_reject_auto_theme_forbidden(owner: str) -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.tmux.auto_theme")["downstream_issues"] = [owner]
+    with pytest.raises(
+        ContractValidationError,
+        match=rf"grok\.tmux\.auto_theme.*{owner}.*current downstream owner",
+    ):
+        check_host_downstream_owners(snapshot)
+
+
+def test_host_downstream_owners_reject_missing_auto_recap_69() -> None:
+    snapshot = copy.deepcopy(_committed_host_snapshot())
+    _cap_by_id(snapshot, "grok.dashboard.auto_recap_no_interleave")[
+        "downstream_issues"
+    ] = []
+    with pytest.raises(
+        ContractValidationError,
+        match=r"grok\.dashboard\.auto_recap_no_interleave.*#69",
+    ):
+        check_host_downstream_owners(snapshot)

@@ -94,7 +94,8 @@ Hosts in the tested window below `0.2.121` are `compatibility=legacy`:
 
 Upgrade to ≥0.2.121 (or any host that **advertises** the needed methods) to
 unlock the modern gates. See issue #105 for catalogue rows and downstream
-adoption (`#103`, `#74`, …) — this document does not claim live verification.
+adoption (`#74`, `#69`, …) — this document does not claim live verification.
+Closed `#103` is historical session-attach provenance, not a current owner.
 
 ## Team resume consumer (#105 PR3)
 
@@ -127,5 +128,6 @@ adoption (`#103`, `#74`, …) — this document does not claim live verification
   `session/load`, cross-directory UUID search, child-session / plan-mode
   restore, host background queue/fan-out, and live-host evidence.
 
-Related trackers `#103` / `#68` / `#69` / `#74` **consume** host gates here
-but are **not** completed by this PR.
+Related trackers `#69` / `#74` **consume** host gates here
+but are **not** completed by this PR. Closed `#103` / `#68` are historical;
+prompt-queue / fan-out consume is `#69`.

@@ -6,6 +6,7 @@ import copy
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -200,4 +201,327 @@ def test_strict_payload_reports_completeness_proof_state() -> None:
     assert via_script["completeness_gate_checked"] is True
     assert via_script["completeness_proofs_required"] is False
     assert via_script["completeness_proofs_verified"] == 0
+
+
+def _row_by_id(rows: list[dict], row_id: str) -> dict:
+    for row in rows:
+        if row["id"] == row_id:
+            return row
+    raise AssertionError(row_id)
+
+
+def test_apply_strict_rejects_residual_78_and_79_only_lock() -> None:
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    apply_strict_parity_gates(inventory, repo_root=ROOT)
+
+    residual = copy.deepcopy(inventory)
+    issues = _row_by_id(residual["capabilities"], "omc.quality.visual_release")["issues"]
+    if "#78" not in issues:
+        issues.append("#78")
+    validate_parity_inventory(residual)
+    with pytest.raises(
+        ContractValidationError, match=r"omc\.quality\.visual_release.*#78"
+    ):
+        apply_strict_parity_gates(residual)
+
+    locked = copy.deepcopy(inventory)
+    _row_by_id(locked["capabilities"], "omo.edit.hash_anchored")["issues"] = ["#79"]
+    validate_parity_inventory(locked)
+    with pytest.raises(
+        ContractValidationError, match=r"omo\.edit\.hash_anchored.*#76"
+    ):
+        apply_strict_parity_gates(locked)
+
+
+def test_strict_gate_requires_issue_state_evidence(tmp_path: Path) -> None:
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    with pytest.raises(ContractValidationError, match="issue-state evidence missing"):
+        apply_strict_parity_gates(inventory, repo_root=tmp_path)
+
+
+def test_strict_gate_rejects_tampered_issue_state_digest(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import ISSUE_STATE_EVIDENCE_RELATIVE
+
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    evidence_src = ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest = tmp_path / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest.parent.mkdir(parents=True)
+    payload = json.loads(evidence_src.read_text(encoding="utf-8"))
+    payload["content_digest"] = "0" * 64
+    evidence_dest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ContractValidationError, match="tampered"):
+        apply_strict_parity_gates(inventory, repo_root=tmp_path)
+
+
+def test_strict_gate_rejects_unknown_issue_state_store_kind(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+    )
+
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    evidence_src = ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest = tmp_path / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest.parent.mkdir(parents=True)
+    payload = json.loads(evidence_src.read_text(encoding="utf-8"))
+    payload["store_kind"] = "not-a-real-store"
+    payload["content_digest"] = _issue_state_digest(payload)
+    evidence_dest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ContractValidationError, match="unknown issue-state store_kind"):
+        apply_strict_parity_gates(inventory, repo_root=tmp_path)
+
+
+def test_strict_gate_rejects_reopening_67_in_evidence(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+    )
+
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    evidence_src = ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest = tmp_path / ISSUE_STATE_EVIDENCE_RELATIVE
+    evidence_dest.parent.mkdir(parents=True)
+    payload = json.loads(evidence_src.read_text(encoding="utf-8"))
+    payload["issues"]["#67"]["observed_state"] = "open"
+    payload["content_digest"] = _issue_state_digest(payload)
+    evidence_dest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ContractValidationError, match="#67"):
+        apply_strict_parity_gates(inventory, repo_root=tmp_path)
+
+
+def test_issue_state_rejects_78_false_close(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+        load_and_validate_issue_state_evidence,
+    )
+
+    payload = json.loads(
+        (ROOT / ISSUE_STATE_EVIDENCE_RELATIVE).read_text(encoding="utf-8")
+    )
+    payload["issues"]["#78"]["observed_state"] = "closed"
+    payload["issues"]["#78"]["closed_at"] = "2026-08-08T08:26:30Z"
+    payload["content_digest"] = _issue_state_digest(payload)
+    path = tmp_path / "false-close.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ContractValidationError, match="close_event after reopen"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_ttl_stale_fixture(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+        load_and_validate_issue_state_evidence,
+    )
+
+    payload = json.loads(
+        (ROOT / ISSUE_STATE_EVIDENCE_RELATIVE).read_text(encoding="utf-8")
+    )
+    payload["freshness"] = {"semantics": "ttl", "max_age_days": 1}
+    payload["source"]["observed_at"] = "2020-01-01T00:00:00Z"
+    payload["content_digest"] = _issue_state_digest(payload)
+    path = tmp_path / "ttl.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    load_and_validate_issue_state_evidence(
+        path, now=datetime(2020, 1, 1, 12, tzinfo=timezone.utc)
+    )
+    with pytest.raises(ContractValidationError, match="stale"):
+        load_and_validate_issue_state_evidence(
+            path, now=datetime(2020, 1, 10, tzinfo=timezone.utc)
+        )
+
+
+def _mutated_issue_state(tmp_path: Path, mutator) -> Path:
+    from omg_cli.parity_issue_state import (
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        _issue_state_digest,
+    )
+
+    payload = json.loads(
+        (ROOT / ISSUE_STATE_EVIDENCE_RELATIVE).read_text(encoding="utf-8")
+    )
+    mutator(payload)
+    payload["content_digest"] = _issue_state_digest(payload)
+    path = tmp_path / "issue-state.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_issue_state_happy_path_production_receipt() -> None:
+    from omg_cli.parity_issue_state import (
+        CANONICAL_ISSUE_STATE_HTML_URL,
+        ISSUE_STATE_EVIDENCE_RELATIVE,
+        load_and_validate_issue_state_evidence,
+    )
+
+    evidence = load_and_validate_issue_state_evidence(
+        ROOT / ISSUE_STATE_EVIDENCE_RELATIVE
+    )
+    assert evidence["schema_version"] == 1
+    assert evidence["source"]["html_url"] == CANONICAL_ISSUE_STATE_HTML_URL
+    assert evidence["closure_sensitive"] == ["#67", "#68", "#78"]
+    assert evidence["issues"]["#67"]["number"] == 67
+    assert (
+        evidence["issues"]["#67"]["url"]
+        == f"{CANONICAL_ISSUE_STATE_HTML_URL}/issues/67"
+    )
+
+
+def test_issue_state_bool_schema_version_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    path = _mutated_issue_state(tmp_path, lambda p: p.__setitem__("schema_version", True))
+    with pytest.raises(ContractValidationError, match="schema_version"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_source_host_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["source"]["host"] = "evil.example"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="source.host"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_source_repo_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["source"]["name"] = "not-oh-my-grok"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="source.name"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_key_number_mismatch_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["number"] = 68
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="number mismatch"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_wrong_url_host_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["url"] = "https://evil.example/ImL1s/oh-my-grok/issues/67"
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67.*url"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_wrong_url_path_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["url"] = (
+            "https://github.com/ImL1s/oh-my-grok/pull/67"
+        )
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67.*url"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_bool_number_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["issues"]["#67"]["number"] = True
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match=r"#67\.number"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_drop_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_add_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68", "#78", "#79"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_duplicate_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#67", "#68", "#78", "#67"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_issue_state_closure_sensitive_reorder_rejected(tmp_path: Path) -> None:
+    from omg_cli.parity_issue_state import load_and_validate_issue_state_evidence
+
+    def mutate(payload: dict) -> None:
+        payload["closure_sensitive"] = ["#78", "#67", "#68"]
+
+    path = _mutated_issue_state(tmp_path, mutate)
+    with pytest.raises(ContractValidationError, match="exact canonical"):
+        load_and_validate_issue_state_evidence(path)
+
+
+def test_strict_gate_rejects_reopening_closure_sensitive_open_p0() -> None:
+    inventory = validate_parity_inventory(load_json_object(INVENTORY), repo_root=ROOT)
+    broken = copy.deepcopy(inventory)
+    for gap in broken["gaps"]:
+        if gap["status"] == "open" and gap["priority"] == "P0":
+            gap["issues"] = list(gap["issues"]) + ["#67"]
+            for cap in broken["capabilities"]:
+                if cap["id"] in gap["capability_ids"]:
+                    if "#67" not in cap["issues"]:
+                        cap["issues"] = list(cap["issues"]) + ["#67"]
+            break
+    with pytest.raises(ContractValidationError, match="reopening"):
+        apply_strict_parity_gates(broken, repo_root=ROOT)
+
+
+def test_strict_gate_rejects_closed_governance_as_residual_owner() -> None:
+    inventory = load_json_object(INVENTORY)
+    validated = validate_parity_inventory(inventory, repo_root=ROOT)
+    apply_strict_parity_gates(validated, repo_root=ROOT)
+
+    broken = copy.deepcopy(validated)
+    for row in broken["capabilities"]:
+        if row["id"] == "omo.quality.comment_hygiene":
+            row["issues"] = ["#79"]
+            break
+    with pytest.raises(ContractValidationError, match="#76"):
+        apply_strict_parity_gates(broken)
+
+    residual = copy.deepcopy(validated)
+    for row in residual["capabilities"]:
+        if row["id"] == "omo.tools.lsp_ast_codegraph_mcp":
+            row["issues"] = ["#78"]
+            break
+    with pytest.raises(ContractValidationError, match="residual #78"):
+        apply_strict_parity_gates(residual)
 

@@ -508,6 +508,17 @@ def test_validate_upstream_catalog_rejects_duplicate_ids() -> None:
         validate_upstream_catalog(catalog)
 
 
+def test_host_baseline_receipt_digest_matches_canonical_identity() -> None:
+    from omg_cli.parity_refresh import host_baseline_receipt_digest
+
+    digest = host_baseline_receipt_digest(
+        change_digest="81e709b16d44b7c162d757bce71a22ebdacadb21533d4f0ac7b9c691026c1d08",
+        snapshot_hash="3835055907587cdceb67c41693d01212683a9a127f5a802c0ed1bee325a7ad1f",
+        generated_docs_hash="23d41ed5d7b1c84455c982415cdc86a6e2137a8ebbe9a7d76e7a55d97f886e41",
+    )
+    assert digest == "80a22517c3fa0ffee5034aca171fae6eac68c2fe757cc18114da35f942fc798b"
+
+
 def test_canonical_changes_digest_stable_for_empty_and_deleted() -> None:
     from omg_cli.parity_refresh import canonical_changes_digest
 

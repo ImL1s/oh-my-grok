@@ -20,8 +20,14 @@ from omg_cli.contracts.parity_schema import (
     load_json_object,
 )
 from omg_cli.contracts.state_schemas import ContractValidationError
-from omg_cli.parity_claim_gate import check_parity_release_claims
-from omg_cli.parity_refresh import build_refresh_plan
+from omg_cli.parity_claim_gate import check_parity_release_claims, load_host_baseline_snapshot
+from omg_cli.parity_refresh import (
+    build_host_baseline_refresh_plan,
+    build_refresh_plan,
+    generated_docs_content_hash,
+    host_snapshot_content_hash,
+    write_committed_host_baseline_review,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "parity" / "omg-parity.json"
@@ -40,17 +46,17 @@ def _fresh_iso(*, days_ago: float = 0.0, now: datetime = FIXED_NOW) -> str:
 
 def _minimal_inventory() -> dict:
     full = load_json_object(INVENTORY)
-    omc_ids = {
+    keep_ids = {
         "team.plane_v3",
         "parity.inventory.governance",
         "omc.cli.session_surfaces",
+        # F4 closure-sensitive closed gaps must remain so issue-state can bind.
+        "antigravity.provider.adapter",
+        "jobs.durable_background",
     }
     inv = copy.deepcopy(full)
     inv["capabilities"] = [
-        row
-        for row in inv["capabilities"]
-        if row.get("upstream", {}).get("source") == "OMC"
-        and row["id"] in omc_ids
+        row for row in inv["capabilities"] if row["id"] in keep_ids
     ]
     cap_ids = {row["id"] for row in inv["capabilities"]}
     inv["gaps"] = [
@@ -264,8 +270,18 @@ def _init_git_repo(root: Path) -> None:
 
 
 def _git_commit_all(root: Path, message: str) -> str:
+    if not (root / ".git").exists():
+        _init_git_repo(root)
     _git(root, "add", "-A")
-    _git(root, "commit", "-m", message)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        _git(root, "commit", "-m", message)
     proc = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
         check=True,
@@ -273,6 +289,22 @@ def _git_commit_all(root: Path, message: str) -> str:
         text=True,
     )
     return proc.stdout.strip()
+
+
+def _ensure_fixture_git_commit(root: Path, message: str = "commit fixture") -> None:
+    """Commit dirty fixture files so host-review receipts can be HEAD-bound."""
+    if not (root / ".git").exists():
+        _init_git_repo(root)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        return
+    _git_commit_all(root, message)
 
 
 def _bump_omc_pin(inventory: dict, new_pin: str) -> None:
@@ -344,12 +376,39 @@ def _minimal_host_capability(pin: str) -> dict:
     }
 
 
+_HOST_REVIEW_SENTINEL_FROM = "0000000000000000000000000000000000000001"
+
+
+def _write_binding_host_review(tmp_path: Path) -> Path:
+    """Mint a content-bound GROK_BUILD receipt for the fixture snapshot.
+
+    Fail closed on setup errors — never swallow and return None (false-green).
+    """
+    snapshot = load_host_baseline_snapshot(tmp_path)
+    pin = snapshot["public_commit"]
+    previous = _HOST_REVIEW_SENTINEL_FROM
+    if previous == pin:
+        previous = "0000000000000000000000000000000000000002"
+    docs_hash = generated_docs_content_hash(tmp_path, snapshot["generated"]["docs"])
+    plan = build_host_baseline_refresh_plan(
+        from_revision=previous,
+        to_revision=pin,
+        host_snapshot=snapshot,
+        previous_snapshot=None,
+        generated_at=datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc),
+        snapshot_hash=host_snapshot_content_hash(snapshot),
+        generated_docs_hash=docs_hash,
+    )
+    return write_committed_host_baseline_review(tmp_path, plan)
+
+
 def _write_host_baseline_snapshot(
     tmp_path: Path,
     inventory: dict,
     *,
     snapshot_override: dict | None = None,
     write_generated_docs: bool = True,
+    write_binding_review: bool = True,
 ) -> Path:
     pin = inventory["upstream_pins"][HOST_BASELINE_PIN_ID]["revision"]
     snap_dir = tmp_path / "docs" / "parity" / "upstream-snapshots"
@@ -389,6 +448,8 @@ def _write_host_baseline_snapshot(
                 f"<!-- GENERATED test fixture for {relative} pin={pin} -->\n",
                 encoding="utf-8",
             )
+        if write_binding_review:
+            _write_binding_host_review(tmp_path)
     return path
 
 
@@ -565,6 +626,7 @@ def test_release_gate_passes_honest_bootstrapping_inventory(tmp_path: Path) -> N
     _scaffold_inventory_paths(tmp_path, inventory)
     _honest_docs(tmp_path)
     _write_required_snapshots(tmp_path, inventory)
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -721,6 +783,7 @@ def test_upstream_drift_passes_when_acknowledged(tmp_path: Path) -> None:
     )
     review_path = tmp_path / "review.json"
     review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -755,6 +818,7 @@ def test_upstream_drift_passes_when_rename_acknowledged(tmp_path: Path) -> None:
     )
     review_path = tmp_path / "review.json"
     review_path.write_text(json.dumps(_ack_review(plan), indent=2), encoding="utf-8")
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -795,6 +859,7 @@ def test_upstream_drift_passes_when_acknowledgments_key_used(tmp_path: Path) -> 
         json.dumps(_ack_review(plan, use_acknowledgments_key=True), indent=2),
         encoding="utf-8",
     )
+    _ensure_fixture_git_commit(tmp_path, "commit host binding review")
 
     payload = check_parity_release_claims(
         inventory_path=inv_path,
@@ -1724,6 +1789,8 @@ def test_pin_transition_rejects_parent_directory_symlink(tmp_path: Path) -> None
     # Move committed ledger into real store, then replace reviews/ with symlink.
     moved = real_store / path.name
     path.replace(moved)
+    for child in list(reviews_dir.iterdir()):
+        child.unlink()
     reviews_dir.rmdir()
     # Also keep a decoy copy under real_store that matches for content tricks.
     _init_git_repo(tmp_path)

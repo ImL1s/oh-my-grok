@@ -110,7 +110,7 @@ Background admits `fake` and `agy` only (maps to jobs `fake` / `antigravity`).
 - Large outputs stay in `artifacts/`; status/collect return descriptors only.
 - Jobs never grant `verified`.
 
-## Open follow-ups (#68 remains open)
+## Open follow-ups (owned by #69)
 
-Authenticated live Antigravity evidence and Team job-backed workers (#69)
-remain open after this PR5 auto-retry scheduler slice. #68 stays open.
+Authenticated live Antigravity evidence and Team job-backed workers remain
+open under #69. #68 is closed; do not treat it as a current blocker.
