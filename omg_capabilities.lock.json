@@ -266,14 +266,27 @@
     ],
     "claim_status": {
       "roles": "claimed",
-      "advisor_routing": "claimed",
+      "advisor_catalog": "claimed",
+      "legacy_ask_execution": "claimed",
       "mcp": "claimed",
       "lsp": "claimed",
       "workflow": "claimed"
     },
     "source_bindings": [
       {
-        "surface": "advisor",
+        "surface": "advisor_catalog",
+        "path": "omg_cli/ask/registry.py",
+        "sha256": "0f99a27d70d764d24d7e3aebf0cf799fadf18a6a6794a4b8ac42a9cb7ef49159",
+        "status": "valid"
+      },
+      {
+        "surface": "advisor_catalog",
+        "path": "omg_cli/contracts/advisor_contract.py",
+        "sha256": "275070e52040c78ba0b0c0051f077691edb6929f58293e75683bd81a33c4e9b3",
+        "status": "valid"
+      },
+      {
+        "surface": "legacy_ask_execution",
         "path": "omg_cli/ask/providers.py",
         "sha256": "5bb0d0615a648b0a9f21e3b742890615d4e1ef1b332e1217a8b3cc3a561a61bf",
         "status": "valid"
@@ -321,7 +334,90 @@
         "status": "valid"
       }
     ],
-    "advisor_routing": {
+    "advisor_catalog": {
+      "kind": "canonical_catalog",
+      "harnesses": [
+        {
+          "harness_id": "claude-cli",
+          "aliases": [
+            "claude",
+            "fable"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        },
+        {
+          "harness_id": "codex-cli",
+          "aliases": [
+            "codex"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        },
+        {
+          "harness_id": "grok-cli",
+          "aliases": [
+            "grok"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        },
+        {
+          "harness_id": "cursor-cli",
+          "aliases": [
+            "cursor",
+            "cursor-agent"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        },
+        {
+          "harness_id": "antigravity-cli",
+          "aliases": [
+            "agy",
+            "antigravity"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        },
+        {
+          "harness_id": "gemini-cli",
+          "aliases": [
+            "gemini"
+          ],
+          "advisor_read_only": "unproven",
+          "supports_advisor": false,
+          "supports_executor": false,
+          "supports_background": false,
+          "supports_structured_output": false,
+          "supports_resume": false
+        }
+      ]
+    },
+    "legacy_ask_execution": {
+      "kind": "legacy_execution",
+      "canonical_qualification": false,
+      "canonical_support": false,
       "skills": [
         "omg-ask",
         "omg-dual-review",
@@ -379,5 +475,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "b5860d88e4cce4771328ff1684a13923076f8dc5da1078e418cd05a26df25ff3"
+  "session_surface_aggregate": "dacf474106f2cc1070da8f73a8a15bf7f35e65b8bf3eed761dbbde8be15011dd"
 }

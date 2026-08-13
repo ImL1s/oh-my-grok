@@ -118,6 +118,41 @@ def _populate_surface_sources(root: Path) -> None:
         "    authoritative: bool = False\n",
     )
     _write(
+        root / "omg_cli" / "contracts" / "advisor_contract.py",
+        "CANONICAL_HARNESS_IDS = (\n"
+        "    'claude-cli', 'codex-cli', 'grok-cli',\n"
+        "    'cursor-cli', 'antigravity-cli', 'gemini-cli',\n"
+        ")\n"
+        "HARNESS_ALIASES = {\n"
+        "    'claude-cli': ('claude', 'fable'),\n"
+        "    'codex-cli': ('codex',),\n"
+        "    'grok-cli': ('grok',),\n"
+        "    'cursor-cli': ('cursor', 'cursor-agent'),\n"
+        "    'antigravity-cli': ('agy', 'antigravity'),\n"
+        "    'gemini-cli': ('gemini',),\n"
+        "}\n",
+    )
+    _write(
+        root / "omg_cli" / "ask" / "registry.py",
+        "HARNESS_BINARY_NAMES = {\n"
+        "    'claude-cli': ('claude',),\n"
+        "    'codex-cli': ('codex',),\n"
+        "    'grok-cli': ('grok',),\n"
+        "    'cursor-cli': ('cursor', 'cursor-agent'),\n"
+        "    'antigravity-cli': ('agy',),\n"
+        "    'gemini-cli': ('gemini',),\n"
+        "}\n\n"
+        "def _build_specs():\n"
+        "    return {\n"
+        "        'supports_advisor': False,\n"
+        "        'supports_executor': False,\n"
+        "        'supports_background': False,\n"
+        "        'supports_structured_output': False,\n"
+        "        'supports_resume': False,\n"
+        "        'advisor_read_only': 'unproven',\n"
+        "    }\n",
+    )
+    _write(
         root / "omg_cli" / "team" / "roles.py",
         "_ROLES = {'y': RoleMeta(posture='read-only', role_class='reviewer')}\n",
     )
@@ -184,6 +219,8 @@ def test_missing_surface_sources_are_explicitly_unclaimed(tmp_path: Path) -> Non
         "omg_cli/lsp_tools.py",
         "omg_cli/workflows/grok_adapter.py",
         "omg_cli/ask/providers.py",
+        "omg_cli/ask/registry.py",
+        "omg_cli/contracts/advisor_contract.py",
         "omg_cli/team/roles.py",
     ):
         (root / relative).unlink()
@@ -192,7 +229,8 @@ def test_missing_surface_sources_are_explicitly_unclaimed(tmp_path: Path) -> Non
 
     assert surface["claim_status"] == {
         "roles": "missing",
-        "advisor_routing": "missing",
+        "advisor_catalog": "missing",
+        "legacy_ask_execution": "missing",
         "mcp": "missing",
         "lsp": "missing",
         "workflow": "missing",
@@ -200,13 +238,15 @@ def test_missing_surface_sources_are_explicitly_unclaimed(tmp_path: Path) -> Non
     assert surface["mcp"]["operations"] == []
     assert surface["lsp"]["owner"] == "unclaimed"
     assert surface["workflow"]["contract"] is None
-    assert surface["advisor_routing"]["providers"] == {}
+    assert surface["legacy_ask_execution"]["providers"] == {}
+    assert surface["advisor_catalog"]["harnesses"] == []
     codes = {issue["code"] for issue in surface["issues"]}
     assert {
         "W_MCP_SOURCE_MISSING",
         "W_LSP_SOURCE_MISSING",
         "W_WORKFLOW_SOURCE_MISSING",
-        "W_ADVISOR_SOURCE_MISSING",
+        "W_LEGACY_ASK_EXECUTION_SOURCE_MISSING",
+        "W_ADVISOR_CATALOG_SOURCE_MISSING",
         "W_ROLES_SOURCE_MISSING",
     } <= codes
 
@@ -309,10 +349,10 @@ def test_malformed_and_mismatched_sources_never_claim(tmp_path: Path) -> None:
         "PROVIDERS = {\n", encoding="utf-8"
     )
     malformed_surface = gen.discover_session_surface(malformed)
-    assert malformed_surface["claim_status"]["advisor_routing"] == "malformed"
-    assert malformed_surface["advisor_routing"]["providers"] == {}
+    assert malformed_surface["claim_status"]["legacy_ask_execution"] == "malformed"
+    assert malformed_surface["legacy_ask_execution"]["providers"] == {}
     assert any(
-        issue["code"] == "W_ADVISOR_SOURCE_MALFORMED"
+        issue["code"] == "W_LEGACY_ASK_EXECUTION_SOURCE_MALFORMED"
         for issue in malformed_surface["issues"]
     )
 
@@ -345,8 +385,11 @@ def test_arbitrary_root_python_is_parsed_but_never_executed(tmp_path: Path) -> N
 
     surface = gen.discover_session_surface(root)
 
-    assert surface["claim_status"]["advisor_routing"] == "claimed"
-    assert surface["advisor_routing"]["providers"]["claude"]["aliases"] == ["fable"]
+    assert surface["claim_status"]["legacy_ask_execution"] == "claimed"
+    assert surface["legacy_ask_execution"]["providers"]["claude"]["aliases"] == ["fable"]
+    assert surface["legacy_ask_execution"]["kind"] == "legacy_execution"
+    assert surface["legacy_ask_execution"]["canonical_qualification"] is False
+    assert surface["legacy_ask_execution"]["canonical_support"] is False
 
 
 def test_editing_file_changes_aggregate(tmp_path: Path) -> None:
@@ -401,6 +444,56 @@ def test_check_exits_0_when_current_1_when_stale(tmp_path: Path) -> None:
     )
     assert rc1.returncode == 1
     assert rc1.stdout or rc1.stderr  # prints a diff
+
+
+def test_catalog_lock_rows_are_unproven_and_unsupported(tmp_path: Path) -> None:
+    gen = _load_gen_module()
+    root = _fake_repo(tmp_path)
+    surface = gen.discover_session_surface(root)
+    assert surface["claim_status"]["advisor_catalog"] == "claimed"
+    rows = surface["advisor_catalog"]["harnesses"]
+    assert [row["harness_id"] for row in rows] == [
+        "claude-cli",
+        "codex-cli",
+        "grok-cli",
+        "cursor-cli",
+        "antigravity-cli",
+        "gemini-cli",
+    ]
+    assert rows[0]["aliases"] == ["claude", "fable"]
+    for row in rows:
+        assert row["advisor_read_only"] == "unproven"
+        assert row["supports_advisor"] is False
+        assert row["supports_executor"] is False
+        assert row["supports_background"] is False
+        assert row["supports_structured_output"] is False
+        assert row["supports_resume"] is False
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "omg_cli/ask/registry.py",
+        "omg_cli/contracts/advisor_contract.py",
+    ],
+)
+def test_registry_byte_change_fails_check(tmp_path: Path, relative: str) -> None:
+    gen = _load_gen_module()
+    root = _fake_repo(tmp_path)
+    gen.write_lock(root)
+    path = root / relative
+    path.write_text(path.read_text(encoding="utf-8") + "# registry drift\n", encoding="utf-8")
+    rc = subprocess.run(
+        [sys.executable, str(GEN_SCRIPT), "--check", "--root", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rc.returncode == 1
+    after = gen.compute_lock_for(root)
+    stored = gen.read_lock(root)
+    assert stored is not None
+    assert not gen.lock_matches(stored, after)
 
 
 @pytest.mark.parametrize("drift", ["version", "session_surface"])
