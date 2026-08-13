@@ -1,0 +1,7 @@
+{
+  "store_kind": "spawn_receipt",
+  "kind": "ask",
+  "writer": "omg-cli",
+  "version": 1,
+  "provider": "claude"
+}

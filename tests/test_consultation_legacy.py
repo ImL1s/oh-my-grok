@@ -867,6 +867,7 @@ def test_legacy_field_true_for_all_five_providers() -> None:
         ("negative-team-worker-envelope.json", "team"),
         ("negative-native-spawn-receipt.json", "team|native"),
         ("negative-medley-catalog.json", "native"),
+        ("negative-native-spawn-only.json", "native"),
     ],
 )
 def test_team_and_native_fixtures_are_not_consultations(name: str, family: str) -> None:
@@ -874,6 +875,109 @@ def test_team_and_native_fixtures_are_not_consultations(name: str, family: str) 
         map_legacy_ask_record(_load(name))
     message = str(excinfo.value)
     assert "consultation" not in message
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("runtime_kind", "native_host"),
+        ("purpose", "task_execution"),
+        ("lifecycle", "team_member"),
+        ("lifecycle", "background_job"),
+        ("worker_eligible", True),
+        ("authoritative", True),
+        ("auto_apply", True),
+    ],
+)
+def test_mapper_rejects_contradictory_taxonomy_or_flags(
+    key: str, value: object
+) -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw[key] = value
+    with pytest.raises(ContractValidationError, match=key):
+        map_legacy_ask_record(raw)
+
+
+def test_mapper_accepts_matching_supplied_taxonomy() -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["runtime_kind"] = "external_cli"
+    raw["purpose"] = "advisory"
+    raw["lifecycle"] = "foreground"
+    raw["worker_eligible"] = False
+    raw["authoritative"] = False
+    raw["auto_apply"] = False
+    mapped = map_legacy_ask_record(raw)
+    assert mapped["runtime_kind"] == "external_cli"
+    assert mapped["authoritative"] is False
+
+
+def test_mapper_accepts_genuine_historical_advisor_route() -> None:
+    mapped = map_legacy_ask_record(_load("legacy-ask-claude-route.json"))
+    assert mapped["harness_id"] == "claude-cli"
+    assert mapped["source_provider"] == "claude"
+    assert "advisor_route" not in mapped
+
+
+def test_mapper_accepts_alias_provider_inside_matching_route() -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["advisor_route"] = {"provider": "fable"}
+    mapped = map_legacy_ask_record(raw)
+    assert mapped["harness_id"] == "claude-cli"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["task", "member", "worktree", "token", "medley", "provider_route"],
+)
+def test_mapper_rejects_one_key_team_or_native_on_ask_meta(key: str) -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw[key] = "x"
+    with pytest.raises(ContractValidationError, match="team|native"):
+        map_legacy_ask_record(raw)
+
+
+def test_mapper_rejects_unknown_ask_meta_keys() -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["verified"] = True
+    with pytest.raises(ContractValidationError, match="extra"):
+        map_legacy_ask_record(raw)
+
+
+def test_mapper_rejects_bool_version() -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["version"] = True
+    with pytest.raises(ContractValidationError, match="version"):
+        map_legacy_ask_record(raw)
+
+
+def test_mapper_rejects_null_nested_provider() -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["advisor_route"] = {"provider": None}
+    with pytest.raises(ContractValidationError, match="provider"):
+        map_legacy_ask_record(raw)
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        {"provider": "codex"},
+        {"authoritative": True},
+        {"worker_eligible": True},
+        {"auto_apply": True},
+        {"runtime_kind": "native_host"},
+        {"purpose": "task_execution"},
+        {"lifecycle": "background_job"},
+        {"task_id": "task-1"},
+        {"model_route": "x"},
+    ],
+)
+def test_mapper_rejects_contradictory_or_foreign_advisor_route(
+    route: dict,
+) -> None:
+    raw = _load("legacy-ask-claude.json")
+    raw["advisor_route"] = route
+    with pytest.raises(ContractValidationError):
+        map_legacy_ask_record(raw)
 
 
 @pytest.mark.parametrize("provider", ["grok", "cursor", "fake", "antigravity"])
