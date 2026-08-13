@@ -749,13 +749,30 @@ def consultation_view_from_receipt(
     """Project allowlisted receipt facts into ConsultationViewV1."""
 
     parsed_receipt = parse_consultation_receipt_v1(receipt)
+    expected_digest = consultation_receipt_digest(parsed_receipt)
     if isinstance(attempt, Mapping):
         parsed_attempt = parse_consultation_attempt_v1(attempt)
+        if parsed_attempt["harness_id"] != parsed_receipt["harness_id"]:
+            raise ContractValidationError(
+                "consultation attempt harness_id does not match the supplied receipt"
+            )
+        if parsed_attempt["attempt"] != parsed_receipt["attempt"]:
+            raise ContractValidationError(
+                "consultation attempt number does not match the supplied receipt"
+            )
+        if parsed_attempt["receipt_digest"] != expected_digest:
+            raise ContractValidationError(
+                "consultation attempt receipt_digest does not match the supplied receipt"
+            )
         attempt_number = parsed_attempt["attempt"]
         output_present = parsed_attempt["output_present"]
         output_truncated = parsed_attempt["output_truncated"]
     else:
         attempt_number = require_integer(attempt, label="attempt", minimum=1)
+        if attempt_number != parsed_receipt["attempt"]:
+            raise ContractValidationError(
+                "consultation attempt number does not match the supplied receipt"
+            )
         output_present = parsed_receipt["response_digest"] is not None
         output_truncated = False
     model = parsed_receipt["selected_model"]
@@ -778,7 +795,7 @@ def consultation_view_from_receipt(
         "terminal_at": parsed_receipt["terminal_at"],
         "output_present": output_present,
         "output_truncated": output_truncated,
-        "receipt_digest": consultation_receipt_digest(parsed_receipt),
+        "receipt_digest": expected_digest,
         "council_id": council_id,
         "reasons": list(reasons),
         "authoritative": False,

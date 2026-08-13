@@ -114,6 +114,16 @@ def _valid_attempt(**overrides: object) -> dict:
     return raw
 
 
+def _bound_attempt(receipt: dict, **overrides: object) -> dict:
+    raw = _valid_attempt(
+        harness_id=receipt["harness_id"],
+        attempt=receipt["attempt"],
+        receipt_digest=consultation_receipt_digest(receipt),
+    )
+    raw.update(overrides)
+    return raw
+
+
 def _valid_receipt(**overrides: object) -> dict:
     raw: dict = {
         "schema_version": 1,
@@ -197,7 +207,7 @@ def test_happy_path_request_attempt_receipt_view_flags_false() -> None:
     attempt = parse_consultation_attempt_v1(_valid_attempt())
     receipt = parse_consultation_receipt_v1(_valid_receipt())
     view = parse_consultation_view_v1(
-        consultation_view_from_receipt(receipt, attempt=attempt)
+        consultation_view_from_receipt(receipt, attempt=_bound_attempt(receipt))
     )
     assert request["timeout_s"] == 600
     assert request["harness_id"] == "claude-cli"
@@ -340,6 +350,61 @@ def test_view_projector_copies_allowlist_only() -> None:
     assert view["model"] == "gpt-test"
     assert view["receipt_digest"] == consultation_receipt_digest(receipt)
     assert view["authoritative"] is False
+
+
+def test_view_from_bound_attempt_matches_receipt_identity() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    attempt = parse_consultation_attempt_v1(_bound_attempt(receipt))
+    view = consultation_view_from_receipt(receipt, attempt=attempt)
+    assert view["consultation_id"] == receipt["consultation_id"]
+    assert view["harness_id"] == receipt["harness_id"]
+    assert view["attempt"] == receipt["attempt"]
+    assert view["receipt_digest"] == consultation_receipt_digest(receipt)
+    assert view["receipt_digest"] == attempt["receipt_digest"]
+
+
+def test_view_rejects_attempt_harness_id_mismatch() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    attempt = _bound_attempt(receipt, harness_id="codex-cli")
+    with pytest.raises(ContractValidationError, match="harness_id"):
+        consultation_view_from_receipt(receipt, attempt=attempt)
+
+
+def test_view_rejects_attempt_number_mismatch() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    attempt = _bound_attempt(receipt, attempt=2)
+    with pytest.raises(ContractValidationError, match="attempt"):
+        consultation_view_from_receipt(receipt, attempt=attempt)
+
+
+@pytest.mark.parametrize("bad_digest", [DIGEST_D, "e" * 64])
+def test_view_rejects_attempt_receipt_digest_mismatch(bad_digest: str) -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    attempt = _bound_attempt(receipt, receipt_digest=bad_digest)
+    with pytest.raises(ContractValidationError, match="receipt_digest"):
+        consultation_view_from_receipt(receipt, attempt=attempt)
+
+
+def test_view_rejects_attempt_injected_from_another_consultation() -> None:
+    receipt_a = parse_consultation_receipt_v1(
+        _valid_receipt(consultation_id="consult-1")
+    )
+    receipt_b = parse_consultation_receipt_v1(
+        _valid_receipt(consultation_id="consult-2")
+    )
+    assert receipt_a["consultation_id"] != receipt_b["consultation_id"]
+    assert consultation_receipt_digest(receipt_a) != consultation_receipt_digest(
+        receipt_b
+    )
+    injected = _bound_attempt(receipt_b)
+    with pytest.raises(ContractValidationError, match="receipt_digest"):
+        consultation_view_from_receipt(receipt_a, attempt=injected)
+
+
+def test_view_rejects_integer_attempt_mismatch() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    with pytest.raises(ContractValidationError, match="attempt"):
+        consultation_view_from_receipt(receipt, attempt=2)
 
 
 def test_council_request_nested_parse_unique_harness_and_agy_not_gemini() -> None:
