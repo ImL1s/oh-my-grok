@@ -25,9 +25,11 @@ _Unofficial community plugin — not affiliated with xAI or the OMC/OMX/OmO main
 
 _Don't learn every Grok flag. Use `omg` + skills: clarify → plan → execute → verify._
 
-**Docs (EN):** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)  
-**文件（繁中）:** [Skills 目錄](docs/skills.zh-TW.md) · [Autopilot](docs/autopilot.zh-TW.md) · [安全模型](docs/security-model.zh-TW.md) · [文件索引](docs/README.zh-TW.md) · [README 繁中](docs/readme/README.zh-TW.md)  
-**文档（简体）:** [Skills 目录](docs/skills.zh.md) · [Autopilot](docs/autopilot.zh.md) · [安全模型](docs/security-model.zh.md) · [文档索引](docs/README.zh.md) · [README 简体](docs/readme/README.zh.md)
+**Docs (EN):** [Skills catalog](docs/skills.md) · [Autopilot](docs/autopilot.md) · [Security model](docs/security-model.md) · [Agent model routing](docs/architecture/agent-model-routing.md) · [Docs index](docs/README.md) · [Changelog](CHANGELOG.md)
+
+**文件（繁中）:** [Skills 目錄](docs/skills.zh-TW.md) · [Autopilot](docs/autopilot.zh-TW.md) · [安全模型](docs/security-model.zh-TW.md) · [Agent 模型路由（投影）](docs/architecture/agent-model-routing.zh-TW.md) · [英文 canonical](docs/architecture/agent-model-routing.md) · [文件索引](docs/README.zh-TW.md) · [README 繁中](docs/readme/README.zh-TW.md)
+
+**文档（简体）:** [Skills 目录](docs/skills.zh.md) · [Autopilot](docs/autopilot.zh.md) · [安全模型](docs/security-model.zh.md) · [Agent 模型路由（投影）](docs/architecture/agent-model-routing.zh.md) · [英文 canonical](docs/architecture/agent-model-routing.md) · [文档索引](docs/README.zh.md) · [README 简体](docs/readme/README.zh.md)
 
 ---
 
@@ -58,6 +60,8 @@ Version: **0.8.0** · License: MIT
 ## Quick start
 
 **Requirements:** [Grok Build CLI](https://github.com/xai-org/grok-build) (`grok` on `PATH`) · Python **3.11+**
+
+**Host compatibility:** **Original Grok Build is the required, first-class baseline host.** OMG installs and runs ordinary agents, skills, workflows, evidence, and acceptance with Medley **absent**. [Medley](https://github.com/ImL1s/medley) is an **optional** compatible host; installing OMG does **not** install Medley, and Medley is **never** a hard dependency. Enhanced native routing and Medley-side negotiation are **planned / contract-only (#131)**, not shipped. Current `omg doctor` reports current host/session capabilities only; it does **not** decide Medley routing availability. External Team CLI executors (`--routing`) remain separate optional tools. Details: [`docs/architecture/agent-model-routing.md`](docs/architecture/agent-model-routing.md).
 
 OMG has **two surfaces**: Grok **plugin** (skills/agents/hooks) + **`omg` CLI** (state, accept, verified). You need both for the full product.
 
@@ -508,6 +512,7 @@ Do not claim production isolation from unit green alone. See [`docs/research/tes
 
 | Path | Contents |
 |------|----------|
+| [`docs/architecture/agent-model-routing.md`](docs/architecture/agent-model-routing.md) | Dual-host agent/model routing (Grok Build baseline + optional Medley) |
 | [`docs/security-model.md`](docs/security-model.md) | Isolation layers |
 | [`docs/workflows.md`](docs/workflows.md) | Repository workflow contract, receipts, permissions, ship gates |
 | [`docs/parity/`](docs/parity/) | Canonical claimability inventory (v2) + generated matrices / gaps — bootstrapping; no parity % |

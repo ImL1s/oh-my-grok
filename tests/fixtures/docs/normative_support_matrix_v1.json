@@ -1,0 +1,15 @@
+{
+  "schema": "omg.docs.support_matrix/v1",
+  "note": "Temporary docs contract for the English architecture matrix until the #131 capability registry replaces it. Not a runtime registry.",
+  "header": ["Capability", "Original Grok Build", "Medley"],
+  "rows": [
+    ["OMG agents, skills, workflows, acceptance", "Required", "Required"],
+    ["Native child sessions", "Host baseline", "Host baseline"],
+    ["Exact/inherit per-agent model binding", "Supported when exposed by host", "Supported"],
+    ["Ordered native catalog candidates", "Not assumed", "Via Medley native-route contract"],
+    ["Provider/access/readiness truth", "Host-owned, limited to exposed facts", "Medley-owned typed route"],
+    ["Secret-free route receipt", "Not assumed", "Medley extension"],
+    ["Replay-safe cross-route runtime fallback", "Not claimed", "Only through Medley admission contract"],
+    ["External CLI Team executors", "OMG-owned", "OMG-owned"]
+  ]
+}

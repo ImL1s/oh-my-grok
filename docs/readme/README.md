@@ -23,6 +23,7 @@ The repository root keeps only the canonical [`README.md`](../../README.md) so t
 | Autopilot | [../autopilot.md](../autopilot.md) | [../autopilot.zh.md](../autopilot.zh.md) | [../autopilot.zh-TW.md](../autopilot.zh-TW.md) |
 | Workflows | [../workflows.md](../workflows.md) | [../workflows.zh.md](../workflows.zh.md) | [../workflows.zh-TW.md](../workflows.zh-TW.md) |
 | Security model | [../security-model.md](../security-model.md) | [../security-model.zh.md](../security-model.zh.md) | [../security-model.zh-TW.md](../security-model.zh-TW.md) |
+| Agent model routing (EN canonical) | [../architecture/agent-model-routing.md](../architecture/agent-model-routing.md) | [../architecture/agent-model-routing.zh.md](../architecture/agent-model-routing.zh.md) | [../architecture/agent-model-routing.zh-TW.md](../architecture/agent-model-routing.zh-TW.md) |
 | Release protocol | [../RELEASE.md](../RELEASE.md) | [../RELEASE.zh.md](../RELEASE.zh.md) | [../RELEASE.zh-TW.md](../RELEASE.zh-TW.md) |
 
 ## Maintenance rules

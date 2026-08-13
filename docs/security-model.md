@@ -358,6 +358,7 @@ OMX/Sol-aligned root entry (not a mode FSM; never stamps `verified`):
 
 `--madmax` is intentional break-glass, not a sandbox. Document and name-prefix (`omg-`) are the mitigations — not PreToolUse.
 
+<a id="team-integration-isolation"></a>
 ## Team plane: `omg team` (default on; D1 zero-config + D3 multi-CLI + D2 staged driver + D4 scale/resume/ralph)
 
 **Default on** (promoted 2026-07-30; `LIVE_TEAM_SMOKE_OK` local). Kill switch **`OMG_DISABLE_TMUX_TEAM=1`** (legacy **`OMG_EXPERIMENTAL_TMUX_TEAM=0`** also disables). Lifecycle: `start` / `run` / `scale` / `resume` / `status` / `collect` / `stop`.

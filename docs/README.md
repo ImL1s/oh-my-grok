@@ -14,6 +14,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [autopilot.md](./autopilot.md) · [autopilot.zh.md](./autopilot.zh.md) · [autopilot.zh-TW.md](./autopilot.zh-TW.md) | Deep dive: autopilot skill + phase machine |
 | [workflows.md](./workflows.md) · [workflows.zh.md](./workflows.zh.md) · [workflows.zh-TW.md](./workflows.zh-TW.md) | Versioned repository workflows, receipt execution, and ship gates |
 | [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
+| [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) · [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) | EN **canonical**; zh / zh-TW are projections — do not fork the matrix |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | Maintainer release protocol |
 
 ## Skills (quick map)
