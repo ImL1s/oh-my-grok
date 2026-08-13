@@ -21,6 +21,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (does not close)**.
 
 ### Fixed
+- **#138 Slice A:** `omg ask list-advisors` / `explain` reject every ask execution option by explicit presence (including explicit defaults) in either ordering, reject `--` extras, emit JSON `E_USAGE` on usage exit 2, and include `E_ADVISOR_NOT_FOUND` on human unknown. Does not close #138.
 - **#138 Slice A:** Council receipt and view share one count/status invariant helper: lane_count is the exact digest count, `0<=success_count<=lane_count`, `1<=minimum_successes<=lane_count`; succeeded iff all lanes, mixed iff threshold met but not all, fail-family only below threshold; queued/running may be 0..lane_count. Does not close #138.
 - **#138 Slice A:** ConsultationView rejects an injected ConsultationAttempt whose harness_id, attempt, or receipt_digest does not match the supplied receipt (consultation_id bound via that receipt). Does not close #138.
 - **#138 Slice A:** AdvisorHarnessSpecV1 rejects `advisor_read_only=qualified` without pinned identity/version/behavior evidence (schema v1 has none). Does not close #138.

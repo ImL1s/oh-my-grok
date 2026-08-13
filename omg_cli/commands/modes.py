@@ -240,6 +240,36 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ask_catalog_usage(args: argparse.Namespace, command: str, message: str) -> int:
+    from omg_cli.ask.catalog_usage import CATALOG_USAGE_CODE
+    from omg_cli.cli_envelope import emit_json, failure, wants_json
+
+    if wants_json(args):
+        emit_json(failure(command, CATALOG_USAGE_CODE, message))
+    else:
+        print(f"omg {command.replace('.', ' ')}: {message}", file=sys.stderr)
+    return 2
+
+
+def _reject_catalog_execution_options(
+    args: argparse.Namespace, command: str
+) -> int | None:
+    from omg_cli.ask.catalog_usage import (
+        catalog_forbidden_supplied,
+        catalog_usage_message,
+    )
+
+    raw = getattr(args, "raw_argv", None)
+    if raw is None:
+        return _ask_catalog_usage(
+            args, command, "missing invocation argv"
+        )
+    supplied = catalog_forbidden_supplied(raw)
+    if not supplied:
+        return None
+    return _ask_catalog_usage(args, command, catalog_usage_message(supplied))
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """User-invoked trusted broker for external advisor CLIs (never product executor)."""
     verb = str(getattr(args, "provider", "") or "").strip()
@@ -296,9 +326,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 def _cmd_ask_list_advisors(args: argparse.Namespace) -> int:
     """Offline catalog list.  No provider exec, PATH probe, or prompt required."""
+    blocked = _reject_catalog_execution_options(args, "ask.list-advisors")
+    if blocked is not None:
+        return blocked
     if args.prompt:
-        print("omg ask list-advisors: unexpected arguments", file=sys.stderr)
-        return 2
+        return _ask_catalog_usage(
+            args, "ask.list-advisors", "unexpected arguments"
+        )
     from omg_cli.ask.views import list_advisor_catalog, render_catalog_list_human
     from omg_cli.cli_envelope import emit_json, success, wants_json
 
@@ -312,10 +346,15 @@ def _cmd_ask_list_advisors(args: argparse.Namespace) -> int:
 
 def _cmd_ask_explain(args: argparse.Namespace) -> int:
     """Offline catalog explain.  No provider exec or PATH probe."""
+    blocked = _reject_catalog_execution_options(args, "ask.explain")
+    if blocked is not None:
+        return blocked
     parts = list(args.prompt or [])
     if len(parts) != 1:
-        print("omg ask explain: advisor id required", file=sys.stderr)
-        return 2
+        message = (
+            "unexpected arguments" if len(parts) > 1 else "advisor id required"
+        )
+        return _ask_catalog_usage(args, "ask.explain", message)
     from omg_cli.ask.views import (
         AdvisorCatalogError,
         explain_advisor_catalog,
@@ -327,10 +366,11 @@ def _cmd_ask_explain(args: argparse.Namespace) -> int:
         row = explain_advisor_catalog(parts[0])
     except AdvisorCatalogError as exc:
         message = str(exc)
+        code = getattr(exc, "code", "E_ADVISOR_NOT_FOUND")
         if wants_json(args):
-            emit_json(failure("ask.explain", "E_ADVISOR_NOT_FOUND", message))
+            emit_json(failure("ask.explain", code, message))
         else:
-            print(f"omg ask explain: {message}", file=sys.stderr)
+            print(f"omg ask explain: {code}: {message}", file=sys.stderr)
         return 1
     if wants_json(args):
         emit_json(success("ask.explain", advisor=row))

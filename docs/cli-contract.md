@@ -78,6 +78,7 @@ Stable error codes already in use:
 | `E_LSP_HOST_OWNED` | semantic proxy refused (#28) |
 | `max_stall_relaunches` | autopilot unattended budget (#40) |
 | `E_ADVISOR_NOT_FOUND` | `omg ask explain` unknown/unresolvable catalog id (#138 Slice A) |
+| `E_USAGE` | `omg ask list-advisors` / `explain` usage (execution option present, `--` extras, extra args, missing id) |
 
 Prefer `error` as a string code for simple surfaces; nested
 `error: {code,message,details,retryable,next_action}` is allowed for complex

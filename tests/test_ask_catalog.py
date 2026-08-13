@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import socket
@@ -10,6 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from omg_cli.ask.catalog_usage import (
+    ASK_EXECUTION_OPTION_STRINGS,
+    CATALOG_USAGE_CODE,
+    catalog_forbidden_supplied,
+    catalog_verb_from_argv,
+)
 from omg_cli.ask.registry import CANONICAL_HARNESS_IDS
 from omg_cli.ask.views import (
     CATALOG_FACT_KEYS,
@@ -237,6 +244,266 @@ def test_ask_codex_still_routes_to_cmd_ask() -> None:
     assert ns.func is cmd_ask
     assert ns.provider == "codex"
     assert ns.prompt == ["hello"]
+
+
+_EXECUTION_FLAG_ARGV: tuple[tuple[str, list[str]], ...] = (
+    ("--prompt-file", ["--prompt-file", "prompt.txt"]),
+    ("--file", ["--file", "ctx.txt"]),
+    ("--cwd", ["--cwd", "."]),
+    ("--timeout", ["--timeout", "600"]),
+    ("--timeout", ["--timeout=600"]),
+    ("--max-bytes", ["--max-bytes", "524288"]),
+    ("--out", ["--out", "out.md"]),
+    ("--run", ["--run", "run-1"]),
+    ("--dry-run", ["--dry-run"]),
+    ("--model", ["--model", "x"]),
+    ("--extra", ["--extra", "passthrough"]),
+    ("--background", ["--background"]),
+    ("--attempt-budget", ["--attempt-budget", "1"]),
+    ("--role", ["--role", "researcher"]),
+)
+
+
+def _assert_catalog_usage(
+    capsys: pytest.CaptureFixture[str], code: int, command: str, *, json_mode: bool
+) -> dict | str:
+    assert code == 2
+    captured = capsys.readouterr()
+    if json_mode:
+        payload = json.loads(captured.out)
+        assert isinstance(payload, dict)
+        assert payload["ok"] is False
+        assert payload["schema_version"] == SCHEMA_VERSION
+        assert payload["command"] == command
+        assert payload.get("error_code") == CATALOG_USAGE_CODE
+        err = payload.get("error")
+        assert isinstance(err, dict)
+        assert err.get("code") == CATALOG_USAGE_CODE
+        assert captured.err == ""
+        return payload
+    assert captured.out == ""
+    assert f"omg {command.replace('.', ' ')}:" in captured.err
+    return captured.err
+
+
+@pytest.mark.parametrize("option,flag_argv", _EXECUTION_FLAG_ARGV)
+@pytest.mark.parametrize("verb_argv,command", [
+    (["list-advisors"], "ask.list-advisors"),
+    (["explain", "fable"], "ask.explain"),
+])
+@pytest.mark.parametrize("flag_first", [True, False])
+def test_catalog_rejects_execution_options_by_presence(
+    catalog_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    flag_argv: list[str],
+    verb_argv: list[str],
+    command: str,
+    flag_first: bool,
+) -> None:
+    assert option in ASK_EXECUTION_OPTION_STRINGS
+    body = [*flag_argv, *verb_argv] if flag_first else [*verb_argv, *flag_argv]
+    human = _assert_catalog_usage(
+        capsys, main(["ask", *body]), command, json_mode=False
+    )
+    assert isinstance(human, str)
+    assert option in human
+    payload = _assert_catalog_usage(
+        capsys, main(["--json", "ask", *body]), command, json_mode=True
+    )
+    assert isinstance(payload, dict)
+    assert option in str(payload.get("message", ""))
+
+
+def test_catalog_rejects_double_dash_extras(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["ask", "list-advisors", "--"])
+    _assert_catalog_usage(capsys, code, "ask.list-advisors", json_mode=False)
+    code = main(["--json", "ask", "explain", "--", "fable"])
+    payload = _assert_catalog_usage(capsys, code, "ask.explain", json_mode=True)
+    assert isinstance(payload, dict)
+    assert "--" in str(payload.get("message", ""))
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "ask", "list-advisors"],
+        ["ask", "--json", "list-advisors"],
+        ["ask", "list-advisors", "--json"],
+        ["--json", "ask", "explain", "fable"],
+        ["ask", "--json", "explain", "fable"],
+        ["ask", "explain", "fable", "--json"],
+        ["ask", "explain", "--json", "fable"],
+    ],
+)
+def test_catalog_json_all_supported_positions_one_document(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    code = main(argv)
+    assert code == 0
+    payload = _stdout_json(capsys)
+    assert payload["ok"] is True
+    if "list-advisors" in argv:
+        assert payload["command"] == "ask.list-advisors"
+        assert len(payload["advisors"]) == 6
+    else:
+        assert payload["command"] == "ask.explain"
+        assert payload["advisor"]["harness_id"] == "claude-cli"
+
+
+def test_json_catalog_usage_is_envelope_exit_2(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--json", "ask", "explain"])
+    payload = _assert_catalog_usage(capsys, code, "ask.explain", json_mode=True)
+    assert isinstance(payload, dict)
+    assert "advisor id required" in str(payload.get("message", ""))
+    code = main(["--json", "ask", "list-advisors", "extra"])
+    extra = _assert_catalog_usage(capsys, code, "ask.list-advisors", json_mode=True)
+    assert isinstance(extra, dict)
+    assert "unexpected arguments" in str(extra.get("message", ""))
+
+
+def test_human_unknown_includes_advisor_not_found(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["ask", "explain", "nope"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "E_ADVISOR_NOT_FOUND" in captured.err
+    assert "nope" in captured.err
+
+
+def test_catalog_rejects_prompt_file_before_read(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = catalog_root / "missing-prompt.txt"
+    assert not missing.exists()
+    code = main(["ask", "list-advisors", "--prompt-file", str(missing)])
+    _assert_catalog_usage(capsys, code, "ask.list-advisors", json_mode=False)
+    captured = capsys.readouterr()
+    del captured
+    code = main(["ask", "explain", "fable", "--prompt-file", str(missing)])
+    err = capsys.readouterr()
+    assert code == 2
+    assert "cannot read" not in err.err
+    assert "--prompt-file" in err.err
+
+
+def test_catalog_forbidden_detector_is_presence_not_defaults() -> None:
+    assert catalog_forbidden_supplied(["ask", "list-advisors"]) == ()
+    assert catalog_forbidden_supplied(
+        ["ask", "--timeout", "600", "list-advisors"]
+    ) == ("--timeout",)
+    assert catalog_forbidden_supplied(
+        ["ask", "explain", "fable", "--role=researcher"]
+    ) == ("--role",)
+    assert catalog_forbidden_supplied(["ask", "list-advisors", "--"]) == ("--",)
+    assert "--json" not in catalog_forbidden_supplied(
+        ["--json", "ask", "list-advisors"]
+    )
+    assert "--project-root" not in catalog_forbidden_supplied(
+        ["ask", "--project-root", ".", "list-advisors"]
+    )
+
+
+_PREFIX_FLAG_ARGV: tuple[tuple[str, list[str]], ...] = (
+    ("--dry", ["--dry"]),
+    ("--back", ["--back"]),
+    ("--prompt", ["--prompt", "prompt.txt"]),
+    ("--mod", ["--mod", "x"]),
+    ("--rol", ["--rol", "researcher"]),
+)
+
+
+@pytest.mark.parametrize("option,flag_argv", _PREFIX_FLAG_ARGV)
+def test_catalog_rejects_unique_option_prefixes(
+    catalog_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    flag_argv: list[str],
+) -> None:
+    human = _assert_catalog_usage(
+        capsys,
+        main(["ask", "list-advisors", *flag_argv]),
+        "ask.list-advisors",
+        json_mode=False,
+    )
+    assert isinstance(human, str)
+    assert option in human
+    payload = _assert_catalog_usage(
+        capsys,
+        main(["--json", "ask", "explain", "fable", *flag_argv]),
+        "ask.explain",
+        json_mode=True,
+    )
+    assert isinstance(payload, dict)
+    assert option in str(payload.get("message", ""))
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "ask", "list-advisors", "--timeout"],
+        ["--json", "ask", "list-advisors", "--timeout=nope"],
+        ["--json", "ask", "list-advisors", "--attempt-budget=x"],
+        ["--json", "ask", "explain", "fable", "--timeout"],
+    ],
+)
+def test_json_catalog_malformed_execution_flag_is_envelope(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    try:
+        code = main(argv)
+    except SystemExit as exc:
+        raise AssertionError(f"argparse SystemExit leaked: {exc}") from exc
+    command = (
+        "ask.list-advisors" if "list-advisors" in argv else "ask.explain"
+    )
+    payload = _assert_catalog_usage(capsys, code, command, json_mode=True)
+    assert isinstance(payload, dict)
+
+
+def test_ask_parser_execution_options_match_detector() -> None:
+    parser = build_parser()
+    ask = None
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            ask = action.choices.get("ask")
+            if ask is not None:
+                break
+    assert ask is not None
+    owned: set[str] = set()
+    global_flags = {"--json", "--project-root", "--safe", "--yolo", "--help"}
+    for action in ask._actions:
+        for option in action.option_strings:
+            if option in global_flags or not option.startswith("--"):
+                continue
+            owned.add(option)
+    assert owned == set(ASK_EXECUTION_OPTION_STRINGS)
+
+
+def test_provider_option_abbreviation_still_parses() -> None:
+    ns = build_parser().parse_args(["ask", "codex", "hello", "--mod", "x"])
+    assert ns.func is cmd_ask
+    assert ns.provider == "codex"
+    assert ns.model == "x"
+    assert catalog_verb_from_argv(["ask", "codex", "hello", "--mod", "x"]) is None
+
+
+def test_catalog_allows_global_project_root_and_json(
+    catalog_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["ask", "--project-root", str(catalog_root), "list-advisors", "--json"]
+    )
+    assert code == 0
+    payload = _stdout_json(capsys)
+    assert payload["command"] == "ask.list-advisors"
+    assert len(payload["advisors"]) == 6
 
 
 def test_views_share_immutable_facts_and_resolve_aliases() -> None:
