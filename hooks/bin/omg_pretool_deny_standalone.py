@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "215f52123122654e9c49ac11f1591e098048a64b9eeb46fa6d0220fd8d48e11f"
+_OMG_GENERATED_FROM_SHA = "ea33c31f174cb6604310525c789f2a4d2a2535f978fefeeff497bc3a19a2bf64"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -74,12 +74,18 @@ _HEAD_TAIL_TEAM_LIMIT = 14
 _WRAPPER_NAMES = frozenset(
     {"env", "command", "xargs", "nice", "nohup", "sudo", "time", "exec"}
 )
-_ENV_WRAPPER_FLAGS = frozenset({"-i", "--ignore-environment"})
-_ENV_WRAPPER_VALUE_OPTS = frozenset({"-u", "--unset"})
+_ENV_WRAPPER_FLAGS = frozenset({"-", "-i", "--ignore-environment"})
+_ENV_WRAPPER_VALUE_OPTS = frozenset({"-u", "--unset", "-C", "--chdir"})
 _ENV_WRAPPER_VALUE_EQ = "--unset="
+_ENV_WRAPPER_CHDIR_EQ = "--chdir="
 _NICE_WRAPPER_VALUE_OPTS = frozenset({"-n", "--adjustment"})
 _NICE_WRAPPER_VALUE_EQ = "--adjustment="
 _NICE_ADJ_TOKEN = re.compile(r"^[+-]?\d+$")
+_SUDO_WRAPPER_VALUE_OPTS = frozenset({"-u", "--user"})
+_SUDO_WRAPPER_VALUE_EQ = "--user="
+_XARGS_WRAPPER_VALUE_OPTS = frozenset({"-n", "--max-args"})
+_XARGS_WRAPPER_VALUE_EQ = "--max-args="
+_EXEC_WRAPPER_VALUE_OPTS = frozenset({"-a"})
 _ENV_ASSIGN_TOKEN = re.compile(r"^[A-Za-z_][\w]*=")
 # Bounded env -S / --split-string (BSD + GNU). One expansion per env wrapper.
 _ENV_SPLIT_CHAR_CAP = 512
@@ -1929,7 +1935,7 @@ def _token_basename(word: str) -> str:
 def _looks_like_wrapper_option_residue(token: str) -> bool:
     """True for a leftover wrapper flag used as the decoded command head."""
 
-    return bool(token) and token.startswith("-") and token != "-"
+    return bool(token) and token.startswith("-")
 
 
 def _should_peel_wrapper_head(raw_word: str, base: str | None) -> bool:
@@ -2127,6 +2133,11 @@ def _peel_one_wrapper(words: list[str]) -> list[str] | None:
             ):
                 index += 1
                 continue
+            if token.startswith(_ENV_WRAPPER_CHDIR_EQ) and len(token) > len(
+                _ENV_WRAPPER_CHDIR_EQ
+            ):
+                index += 1
+                continue
             if _is_env_assign_token(token):
                 index += 1
                 continue
@@ -2153,6 +2164,40 @@ def _peel_one_wrapper(words: list[str]) -> list[str] | None:
             if token.startswith(_NICE_WRAPPER_VALUE_EQ) and _NICE_ADJ_TOKEN.match(
                 token[len(_NICE_WRAPPER_VALUE_EQ) :]
             ):
+                index += 1
+                continue
+            break
+        if name == "sudo":
+            if token in _SUDO_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_SUDO_WRAPPER_VALUE_EQ) and len(token) > len(
+                _SUDO_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            break
+        if name == "xargs":
+            if token in _XARGS_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token.startswith(_XARGS_WRAPPER_VALUE_EQ) and len(token) > len(
+                _XARGS_WRAPPER_VALUE_EQ
+            ):
+                index += 1
+                continue
+            break
+        if name == "exec":
+            if token in _EXEC_WRAPPER_VALUE_OPTS:
+                if index + 1 >= n_words:
+                    break
+                index += 2
+                continue
+            if token in {"-c", "-l", "-cl", "-lc"}:
                 index += 1
                 continue
             break
@@ -2212,6 +2257,17 @@ def _semantic_words_from_head_match(
         raise_on_budget=raise_on_budget,
     )
     return [*cleaned, *tail]
+
+
+def _head_tail_budget_exhausted(command: str, match: re.Match[str]) -> bool:
+    """Whether char or raw-token bounds ended before head resolution."""
+    start = match.end()
+    if start + _HEAD_TAIL_DECODE_LIMIT < len(command):
+        return True
+    fragment = _insert_unquoted_shell_boundaries(
+        command[start : start + _HEAD_TAIL_DECODE_LIMIT]
+    )
+    return len(_decode_shell_words(fragment)) > _HEAD_TAIL_RAW_SCAN_CAP
 
 
 def _after_wrapper_option_residue(words: list[str]) -> list[str]:
@@ -2291,9 +2347,17 @@ def _has_foreign_omc_team(command: str) -> bool:
                     return True
             elif _should_peel_wrapper_head(raw_word, base):
                 words = _semantic_words_from_head_match(
-                    command, match, limit=8, raise_on_budget=True
+                    command, match, limit=8, raise_on_budget=False
                 )
                 remaining = _peel_wrapper_chain(words)
+                if (
+                    remaining
+                    and _token_basename(remaining[0])
+                    in _FOREIGN_ORCHESTRATOR_BINS
+                    and len(remaining) == 1
+                    and _head_tail_budget_exhausted(command, match)
+                ):
+                    raise _ShellParseBudgetExceeded
                 if (
                     remaining
                     and _token_basename(remaining[0]) in _FOREIGN_ORCHESTRATOR_BINS
@@ -2361,11 +2425,19 @@ def _iter_first_party_team_argvs(command: str):
                     command,
                     match,
                     limit=_HEAD_TAIL_TEAM_LIMIT,
-                    raise_on_budget=True,
+                    raise_on_budget=False,
                 )
                 argv = _team_argv_from_semantic_words(words)
                 if argv is not None:
                     yield argv
+                remaining = _peel_wrapper_chain(words)
+                if (
+                    remaining
+                    and _token_basename(remaining[0]) == _FIRST_PARTY_TEAM_BIN
+                    and len(remaining) == 1
+                    and _head_tail_budget_exhausted(command, match)
+                ):
+                    raise _ShellParseBudgetExceeded
         search_position = match.start() + 1
 
 
