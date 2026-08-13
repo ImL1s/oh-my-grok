@@ -924,6 +924,60 @@ def test_supervisor_immediate_exit_fails_closed(
     assert out["startup_process_ready"] == 0
 
 
+def test_supervisor_installs_signal_forwarding_before_spawn_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The observable spawn receipt must never precede forwarding handlers."""
+    import omg_cli.team.supervisor as supervisor
+
+    _bind_env(monkeypatch, tmp_path, run_id="run-signal-order")
+    script = _hold_script(tmp_path / "hold.py", seconds=0.2)
+    desc = write_provider_descriptor(
+        tmp_path / "desc.json",
+        provider="fake-ready",
+        argv=[sys.executable, str(script)],
+    )
+    events: list[tuple[str, object]] = []
+    real_write_startup_phase = supervisor.write_startup_phase
+
+    def record_forwarding(
+        child_pgid: int | None,
+        child_pid: int | None,
+        *,
+        wrapper_pid: int | None = None,
+    ) -> None:
+        events.append(("forward", (child_pgid, child_pid, wrapper_pid)))
+
+    def record_phase(*args: object, **kwargs: object) -> Path:
+        phase = kwargs.get("phase")
+        events.append(("phase", phase))
+        return real_write_startup_phase(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_forward_signals", record_forwarding)
+    monkeypatch.setattr(supervisor, "write_startup_phase", record_phase)
+
+    assert run_supervisor(
+        descriptor_path=desc, ready_timeout_s=2.0, poll_s=0.01
+    ) == 0
+
+    spawned_index = events.index(("phase", StartupPhase.PROVIDER_SPAWNED))
+    forwarding = [
+        (index, payload)
+        for index, (kind, payload) in enumerate(events)
+        if kind == "forward"
+    ]
+    assert len(forwarding) == 2
+    assert all(index < spawned_index for index, _payload in forwarding)
+    initial = forwarding[0][1]
+    refined = forwarding[1][1]
+    assert isinstance(initial, tuple)
+    assert initial[0] == initial[1]
+    assert initial[2] is None
+    assert isinstance(refined, tuple)
+    assert refined[0] == refined[1]
+    assert refined[1] == refined[2]
+
+
 def test_supervisor_auth_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1034,13 +1088,15 @@ def test_supervisor_signal_forwards_and_reaps(
     os.kill(proc.pid, signal.SIGTERM)
     proc.wait(timeout=5)
     # Provider should be gone (no orphan group).
-    time.sleep(0.2)
-    alive = True
-    try:
-        os.kill(provider_pid, 0)
-    except OSError:
-        alive = False
-    assert alive is False
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(provider_pid, 0)
+        except OSError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail(f"provider remained alive after supervisor exit: pid={provider_pid}")
 
 
 def test_diagnostics_separate_and_bounded(tmp_path: Path) -> None:
