@@ -360,6 +360,10 @@ def plan_hash_edit(
         rebased = False
 
     planned = _planned_bytes(current, chosen, desc.replacement)
+    if len(planned) > MAX_PLAN_FILE_BYTES:
+        raise HashEditInputError(
+            f"planned bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
     after_text = planned.decode("utf-8")
     diff = unified_diff_text(desc.path, text, after_text)
     return HashEditPlanV1(

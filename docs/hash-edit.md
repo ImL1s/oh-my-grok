@@ -51,7 +51,9 @@ The plan carries before/after SHA-256, byte offsets of `old_text`, line
 span, `rebased`, descriptor digest, and a deterministic unified diff +
 digest. Apply **splices at those offsets**. Do not `patch(1)` the diff.
 
-Current-file limit: 16 MiB. Invalid UTF-8 and NUL bytes are rejected.
+Current-file and planned-file limit: 16 MiB (growing a file past the cap
+fails in the planner, before apply writes). Invalid UTF-8 and NUL bytes
+are rejected.
 
 ## Apply (confined)
 

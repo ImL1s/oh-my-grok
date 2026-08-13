@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import shutil
+import socket
 import stat
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -250,6 +254,47 @@ def test_fifo_rejected_and_bytes_unchanged(tmp_path: Path) -> None:
         assert stat.S_ISFIFO(target.stat().st_mode)
     finally:
         target.unlink()
+
+
+def test_unix_socket_leaf_rejected() -> None:
+    current = "before\nalpha\nafter\n"
+    # pytest tmp_path is often longer than AF_UNIX sockaddr (~104 bytes on macOS).
+    root = Path(tempfile.mkdtemp(prefix="he", dir="/tmp"))
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        payload, plan = _plan_for(root, current, path="s")
+        target = root / "s"
+        target.unlink()
+        server.bind(str(target))
+        with pytest.raises(HashEditPathError, match="regular|socket|fifo|device"):
+            apply_hash_edit(root, payload, plan)
+        assert stat.S_ISSOCK(os.lstat(target).st_mode)
+    finally:
+        server.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_device_leaf_rejected_if_mknod_permitted(tmp_path: Path) -> None:
+    current = "before\nalpha\nafter\n"
+    payload, plan = _plan_for(tmp_path, current)
+    target = tmp_path / "docs" / "example.md"
+    target.unlink()
+    try:
+        os.mknod(target, mode=stat.S_IFCHR | 0o600, device=os.makedev(1, 3))
+    except (OSError, AttributeError, PermissionError) as exc:
+        pytest.skip(f"chr device mknod not permitted: {exc}")
+    try:
+        if not stat.S_ISCHR(os.lstat(target).st_mode):
+            pytest.skip("mknod did not create a character device")
+        with pytest.raises(HashEditPathError, match="regular|device|fifo|socket"):
+            apply_hash_edit(tmp_path, payload, plan)
+        assert stat.S_ISCHR(os.lstat(target).st_mode)
+    finally:
+        try:
+            target.unlink()
+        except OSError as exc:
+            if exc.errno != errno.ENOENT:
+                raise
 
 
 def test_multi_link_rejected(tmp_path: Path) -> None:

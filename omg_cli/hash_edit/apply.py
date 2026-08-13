@@ -323,6 +323,10 @@ def apply_hash_edit(
                 + desc.replacement.encode("utf-8")
                 + current[fresh_plan.end_offset :]
             )
+            if len(spliced) > MAX_PLAN_FILE_BYTES:
+                raise HashEditApplyError(
+                    f"planned bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+                )
             if _sha256_bytes(spliced) != locked_plan.after_sha256:
                 raise HashEditApplyError("spliced bytes do not match plan.after_sha256")
 

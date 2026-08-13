@@ -367,3 +367,15 @@ def test_unique_shift_does_not_use_similar_text() -> None:
             payload,
             HashEditCurrentFact(path="docs/example.md", current_bytes=similar.encode()),
         )
+
+
+def test_planned_bytes_oversize_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    current = "before\nalpha\nafter\n"
+    cap = len(current.encode("utf-8"))
+    monkeypatch.setattr(planner_mod, "MAX_PLAN_FILE_BYTES", cap)
+    payload = _payload(current, replacement="beta" * 8)
+    with pytest.raises(HashEditInputError, match="planned bytes exceed"):
+        plan_hash_edit(
+            payload,
+            HashEditCurrentFact(path="docs/example.md", current_bytes=current.encode()),
+        )
