@@ -364,6 +364,28 @@ def test_ensure_rejects_reuse_when_inner_acp_peer_dead(root: Path) -> None:
         pass
 
 
+def test_ensure_inherits_fail_closed_resume_identity(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure writes no receipt when handshake identity fails (PR5 inherit).
+
+    Spawn-identity leftover stays fail-closed in
+    ``test_cancel_unproven_retains_binding_blocks_second_sidecar`` — do not
+    reopen that work here.
+    """
+    monkeypatch.setenv("OMG_ACP_FAKE_SCENARIO", "resume_false")
+    run_id = _seed_run(root)
+    with pytest.raises(JobStoreError) as ei:
+        ensure_acp_session_sidecar(root, run_id=run_id, ready_timeout_s=8.0)
+    assert ei.value.code in {
+        "E_ACP_SIDECAR_DEAD",
+        "E_ACP_READY_TIMEOUT",
+        "E_ACP_RESUME",
+        "E_ACP_IDENTITY",
+    }
+    assert list(root.rglob("grok_acp_resume_receipt.json")) == []
+
+
 def test_cancel_unproven_retains_binding_blocks_second_sidecar(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

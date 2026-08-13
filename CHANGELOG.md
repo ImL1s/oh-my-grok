@@ -71,6 +71,32 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `change_digest`, recomputed `content_binding_digest`, filename bind,
   required acknowledgments, and a HEAD-committed blob. No
   change_digest-only filename fallback. Refs #158 / #105.
+- **#105 PR5 ACP sidecar hardening:** validate `session/resume` identity
+  (`sessionId` or the single `session_id` alias exclusively — dual keys
+  rejected even when equal, string-equal UUID, JSON
+  boolean `resumed is True`) before any receipt; `resume_matched` is
+  fail-closed (missing / truthy-not-True ≠ success);
+  `validate_receipt` / ensure inherit that check. Daemon-drain peer
+  stderr to a bounded in-memory discard (never persisted). Cumulative
+  `byte_budget` is compared only to `max_total_bytes` (per-line cap
+  stays `max_line_bytes`). Does **not** close #105 (no `session/close`,
+  `session/load`, live evidence, or UUID search).
+- Constructor identity hashes must match `hash_session_id(session_id)` /
+  `hash_cwd(cwd)` else `E_ACP_IDENTITY` and no receipt.
+- Leftover newline-free `rx_buf` that already exceeds `max_line_bytes` fails closed with `E_ACP_OVERFLOW` before poll/timeout so a coalesced oversized suffix cannot ride through the quiet window into a receipt.
+- Leftover newline-free `rx_buf` counts toward `max_total_bytes` (committed `byte_budget` plus currently buffered bytes) before poll/timeout and after append so a coalesced under-line-cap suffix cannot ride a quiet-window timeout into a receipt; complete frames still increment the budget only once (no double-count when leftover later completes). Does **not** close #105.
+- Leftover incomplete suffix is checked for both per-line and cumulative caps before every timeout/`allow_timeout` return and unconditionally at the handshake pre-receipt boundary so `quiet_window_s=0` or an expired overall deadline cannot issue a receipt over a leftover overflow. Does **not** close #105.
+- Complete NL-terminated frames already in `rx_buf` are checked against `max_line_bytes` before every timeout/`allow_timeout` return and at handshake pre-receipt so a coalesced oversized complete frame cannot ride `quiet_window_s=0` or an expired window into a receipt; extract-first leftover-only checks during read are unchanged; each buffered frame is classified individually (no combined-line false overflow; no budget double-count). Does **not** close #105.
+- Pre-receipt absorb of pending incomplete-frame continuation still in the OS pipe so a coalesced resume + 300000-byte unterminated suffix at default `max_line_bytes` / `quiet_window_s=0` cannot issue a receipt before overflow. Does **not** close #105.
+- Pre-receipt drain parses every complete NL-terminated frame already in `rx_buf` even when `quiet_window_s=0` (quiet loop never runs) so a coalesced resume + `agent_message_chunk` in one `os.write` raises `E_ACP_REPLAY` and never emits a receipt; malformed complete frames raise `E_ACP_MALFORMED` and unknown session/update frames raise `E_ACP_PROTOCOL`. Does **not** close #105.
+- `validate_receipt` requires `initialized is True` (JSON boolean only). Missing, `false`, `0`, `1`, strings, and other truthy non-bools fail closed even when `receipt_sha256` is recomputed over the forged body; `build_receipt_from_dict` no longer coerces missing/`1`/`"true"` to True. Does **not** close #105.
+- Buffered/frame overflow is classified before process-poll/`E_ACP_EOF` so an exited peer with an oversized complete or incomplete leftover yields `E_ACP_OVERFLOW` (never `E_ACP_EOF`, never a receipt). Handshake absorb + all-frames check run before the post-quiet exit poll. Does **not** close #105.
+- Pre-receipt absorb always nonblocking-probes even when leftover ends on NL and drains every currently-ready pipe chunk; a resume/allowed frame ending exactly at the 4096-byte read chunk plus a queued >300 KiB suffix at `quiet_window_s=0` is `E_ACP_OVERFLOW`. Partial-suffix EOF is `E_ACP_EOF` even if `poll()` is still `None` (overflow still wins). Complete-frame EOF lets F9 classify replay/malformed/unknown first, then `E_ACP_EOF` before receipt. Deadline/no-ready with an incomplete suffix is `E_ACP_TIMEOUT` (never a silent return + receipt). Does **not** close #105.
+- Pre-receipt absorb waits for a partial suffix in cancel-poll slices (0.05s), not the full remaining handshake deadline; `chunk is None` is not EOF (only `b""` is). Cancel raises `E_ACP_CANCELLED` before any receipt. Does **not** close #105.
+- Handshake `cancel_event` is threaded through `_read_line` / every pre-receipt read; select waits are bounded by 0.05s; `b""` is EOF and `None` is not; overflow still beats cancel. Does **not** close #105.
+- Handshake/env tests prove `OMG_ACP_FAKE_SUFFIX_BYTES` forwarding with a non-default value and an exact allowlist assert so the fixture default cannot hide a missing allowlist entry. Does **not** close #105.
+- Handshake cumulative-total test now derives `max_total_bytes` from the actual serialized initialize/resume response frames plus the chosen leftover suffix (no magic 220), and a direct expired-deadline leftover check covers both buffered caps before timeout return. Does **not** close #105.
+- session/resume request is sessionId+cwd only; result allowlist modes/models/configOptions/_meta; {} valid; unknown keys and wrong container types fail closed; identity is JSON-RPC id + request hashes; padding not in result. Does **not** close #105.
 - **#159 ralplan staged-proposal mtime freshness flake:**
   `_validate_v2_proposal` no longer treats filesystem `st_mtime` vs
   invocation wall-clock as authorization. Coarse timestamps / clock
