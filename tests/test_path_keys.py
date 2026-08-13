@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import stat
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -178,6 +180,165 @@ def test_managed_read_required_mode_uses_same_fd(tmp_path: Path) -> None:
         read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE)
     with pytest.raises(ValueError, match="required_mode"):
         read_managed_regular_bytes(path, required_mode=True)  # type: ignore[arg-type]
+
+
+def _rename_leaf_and_plant(lexical: Path, body: bytes, mode: int) -> Path:
+    """Move the opened inode aside and plant a new inode at the lexical path."""
+    relocated = lexical.with_name(lexical.name + ".opened-inode")
+    lexical.rename(relocated)
+    planted = os.open(str(lexical), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(planted, body)
+        os.fchmod(planted, mode)
+    finally:
+        os.close(planted)
+    return relocated
+
+
+def _install_replace_after_leaf_fd_open(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    leaf_name: str,
+    replace: Callable[[], None],
+) -> dict:
+    """Replace the lexical leaf immediately after its O_NOFOLLOW fd opens."""
+    import omg_cli.contracts.path_keys as pk
+
+    real_open = pk.os.open
+    real_fstat = pk.os.fstat
+    seen: dict = {
+        "opened": False,
+        "flags": None,
+        "fd": None,
+        "before": None,
+        "fstats": [],
+    }
+
+    def wrapping_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        directory = getattr(os, "O_DIRECTORY", 0)
+        if (
+            not seen["opened"]
+            and kwargs.get("dir_fd") is not None
+            and os.path.basename(str(path)) == leaf_name
+            and flags & os.O_NOFOLLOW
+            and not (flags & directory)
+            and not (flags & os.O_CREAT)
+        ):
+            seen["opened"] = True
+            seen["flags"] = flags
+            seen["fd"] = fd
+            seen["before"] = real_fstat(fd)
+            replace()
+        return fd
+
+    def wrapping_fstat(fd):
+        st = real_fstat(fd)
+        if seen["fd"] is not None and fd == seen["fd"]:
+            seen["fstats"].append(
+                (
+                    st.st_dev,
+                    st.st_ino,
+                    st.st_nlink,
+                    st.st_size,
+                    st.st_mtime_ns,
+                    st.st_ctime_ns,
+                    stat.S_IMODE(st.st_mode),
+                )
+            )
+        return st
+
+    monkeypatch.setattr(pk.os, "open", wrapping_open)
+    monkeypatch.setattr(pk.os, "fstat", wrapping_fstat)
+    return seen
+
+
+def _assert_same_fd_pin(seen: dict, *, required_mode: int | None = None) -> None:
+    assert seen["opened"] is True
+    assert seen["flags"] & os.O_NOFOLLOW
+    assert not (seen["flags"] & getattr(os, "O_DIRECTORY", 0))
+    before = seen["before"]
+    assert before is not None
+    assert before.st_nlink == 1
+    assert stat.S_ISREG(before.st_mode)
+    if required_mode is not None:
+        assert stat.S_IMODE(before.st_mode) == required_mode
+    assert len(seen["fstats"]) >= 2
+    assert seen["fstats"][0] == seen["fstats"][-1]
+    # Rename-after-open may bump ctime; pin identity is the product pre/post pair
+    # plus the same (dev, ino, nlink, size) as the inode that was opened.
+    assert seen["fstats"][0][:4] == (
+        before.st_dev,
+        before.st_ino,
+        before.st_nlink,
+        before.st_size,
+    )
+
+
+def test_managed_read_same_fd_keeps_opened_inode_bytes_after_leaf_replace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Replacement after leaf open cannot change the bytes or hash of that inode."""
+    path = tmp_path / ".omg" / "receipts" / "pin.json"
+    original = b'{"ok":true}'
+    planted = b'{"no":true}'
+    assert len(original) == len(planted)
+    atomic_write_bytes(path, original, replace=False)
+    original_stat = path.stat()
+
+    def replace() -> None:
+        relocated = _rename_leaf_and_plant(path, planted, DATA_FILE_MODE)
+        assert relocated.stat().st_ino == original_stat.st_ino
+
+    seen = _install_replace_after_leaf_fd_open(
+        monkeypatch, leaf_name=path.name, replace=replace
+    )
+    body = read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE)
+    _assert_same_fd_pin(seen, required_mode=DATA_FILE_MODE)
+    assert body == original
+    assert hashlib.sha256(body).hexdigest() == hashlib.sha256(original).hexdigest()
+    assert path.read_bytes() == planted
+    assert stat.S_IMODE(path.stat().st_mode) == DATA_FILE_MODE
+    assert (path.stat().st_dev, path.stat().st_ino) != (
+        original_stat.st_dev,
+        original_stat.st_ino,
+    )
+    assert (seen["before"].st_dev, seen["before"].st_ino) == (
+        original_stat.st_dev,
+        original_stat.st_ino,
+    )
+
+
+def test_managed_read_same_fd_rejects_opened_0644_after_0600_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mode check is on the opened inode, not a later 0600 plant at the path."""
+    path = tmp_path / ".omg" / "receipts" / "mode-pin.json"
+    original = b'{"ok":true}'
+    planted = b'{"no":true}'
+    atomic_write_bytes(path, original, replace=False)
+    os.chmod(path, 0o644)
+    opened_stat = path.stat()
+    assert stat.S_IMODE(opened_stat.st_mode) == 0o644
+
+    def replace() -> None:
+        _rename_leaf_and_plant(path, planted, DATA_FILE_MODE)
+
+    seen = _install_replace_after_leaf_fd_open(
+        monkeypatch, leaf_name=path.name, replace=replace
+    )
+    with pytest.raises(ContractPathError, match="mode must be 0600"):
+        read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE)
+    assert seen["opened"] is True
+    assert seen["flags"] & os.O_NOFOLLOW
+    assert seen["before"].st_nlink == 1
+    assert stat.S_IMODE(seen["before"].st_mode) == 0o644
+    assert (seen["before"].st_dev, seen["before"].st_ino) == (
+        opened_stat.st_dev,
+        opened_stat.st_ino,
+    )
+    assert path.read_bytes() == planted
+    assert stat.S_IMODE(path.stat().st_mode) == DATA_FILE_MODE
 
 
 def test_locked_jsonl_uses_one_complete_canonical_line_per_record(

@@ -110,6 +110,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Handshake/env tests prove `OMG_ACP_FAKE_SUFFIX_BYTES` forwarding with a non-default value and an exact allowlist assert so the fixture default cannot hide a missing allowlist entry. Does **not** close #105.
 - Handshake cumulative-total test now derives `max_total_bytes` from the actual serialized initialize/resume response frames plus the chosen leftover suffix (no magic 220), and a direct expired-deadline leftover check covers both buffered caps before timeout return. Does **not** close #105.
 - session/resume request is sessionId+cwd only; result allowlist modes/models/configOptions/_meta; {} valid; unknown keys and wrong container types fail closed; identity is JSON-RPC id + request hashes; padding not in result. Does **not** close #105.
+- **#146 / PR #156 F16 lexical leaf + exact schema:** supervisor
+  admission never `Path.resolve()`s the descriptor leaf. Only parent
+  directories are resolved; `read_managed_regular_bytes` opens the
+  original leaf with `O_NOFOLLOW`. Publish and `build_supervisor_prefix`
+  store/embed that lexical path. Provider descriptor, prepublish, and
+  authoritative `team.json` schema versions reject `bool`, strings, and
+  floats (`True` / `"1"` / `1.0` no longer admit as schema 1). Present
+  prepublish defects with `team.json` present fail closed and do not
+  fall through; only true ENOENT uses the published path. Same-FD
+  pinning tests replace the lexical path immediately after the leaf fd
+  opens.
+
 - **#146 / PR #156 prepublish same-FD admit:** supervisor admission
   authenticates the CLI prepublish record first (confinement /
   `O_NOFOLLOW`, regular single-link file, mode 0600, schema / writer /

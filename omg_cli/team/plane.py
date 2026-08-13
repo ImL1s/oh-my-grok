@@ -574,7 +574,11 @@ def load_authoritative_team_meta(
     """
     data = load_team_meta(root, run_id)
     schema = data.get("schema_version")
-    if schema not in {LEGACY_TEAM_META_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if (
+        isinstance(schema, bool)
+        or not isinstance(schema, int)
+        or schema not in {LEGACY_TEAM_META_SCHEMA_VERSION, SCHEMA_VERSION}
+    ):
         raise TeamError(f"team.json schema_version unsupported: {schema!r}")
     meta_run = str(data.get("run_id") or "").strip()
     if meta_run != run_id:
@@ -1184,9 +1188,12 @@ def build_supervisor_prefix(descriptor_path: Path | str) -> str:
     import shlex
     import sys
 
+    from omg_cli.team.supervisor import _lexical_descriptor_path
+
     repo_root = Path(__file__).resolve().parents[2]
     py_path = shlex.quote(str(repo_root))
-    desc = shlex.quote(str(Path(descriptor_path).resolve()))
+    lexical = _lexical_descriptor_path(descriptor_path)
+    desc = shlex.quote(str(lexical))
     supervisor = shlex.join(
         [
             sys.executable,
@@ -1195,12 +1202,12 @@ def build_supervisor_prefix(descriptor_path: Path | str) -> str:
             "team",
             "supervisor",
             "--descriptor",
-            str(Path(descriptor_path).resolve()),
+            str(lexical),
         ]
     )
     # Portable env prefix (dash/sh/bash/zsh) — avoid bash-only ${var:+…}.
     # ``desc`` is already embedded via shlex.join; keep py_path explicit.
-    _ = desc  # path validated via resolve above
+    _ = desc  # confined to resolved parent + exact leaf (no leaf follow)
     return f"PYTHONPATH={py_path}:$PYTHONPATH {supervisor}"
 
 

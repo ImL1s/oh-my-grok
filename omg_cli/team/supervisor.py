@@ -245,7 +245,7 @@ def _parse_provider_descriptor_bytes(raw: bytes) -> dict[str, Any]:
         raise SupervisorError(f"provider descriptor unreadable: {exc}") from exc
     if not isinstance(data, dict):
         raise SupervisorError("provider descriptor must be a JSON object")
-    if data.get("schema_version") != DESCRIPTOR_SCHEMA_VERSION:
+    if not _is_exact_nonbool_int(data.get("schema_version"), DESCRIPTOR_SCHEMA_VERSION):
         raise SupervisorError("provider descriptor schema_version mismatch")
     if data.get("kind") != DESCRIPTOR_KIND:
         raise SupervisorError("provider descriptor kind mismatch")
@@ -310,13 +310,14 @@ def publish_supervisor_authority(
             "supervisor prepublish requires non-empty owner_token",
             exit_code=2,
         )
-    desc = Path(descriptor_path).resolve()
-    if not desc.is_file():
+    desc = _lexical_descriptor_path(descriptor_path)
+    try:
+        digest = descriptor_content_digest(desc)
+    except SupervisorError as exc:
         raise SupervisorError(
             "supervisor prepublish requires an existing descriptor file",
             exit_code=2,
-        )
-    digest = descriptor_content_digest(desc)
+        ) from exc
     if (
         isinstance(generation, bool)
         or not isinstance(generation, int)
@@ -546,7 +547,7 @@ def _load_prepublish_authority(
             "supervisor prepublish authority must be a JSON object",
             exit_code=2,
         )
-    if data.get("schema_version") != PREPUBLISH_SCHEMA_VERSION:
+    if not _is_exact_nonbool_int(data.get("schema_version"), PREPUBLISH_SCHEMA_VERSION):
         raise SupervisorError(
             "supervisor prepublish schema_version mismatch",
             exit_code=2,
@@ -566,6 +567,21 @@ def _load_prepublish_authority(
     return data
 
 
+def _lexical_descriptor_path(path: Path | str) -> Path:
+    src = Path(path)
+    leaf = src.name
+    if not leaf or leaf in {".", ".."} or Path(leaf).name != leaf:
+        raise SupervisorError("supervisor descriptor path not resolvable", exit_code=2)
+    try:
+        parent = src.parent.resolve()
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor descriptor path not resolvable",
+            exit_code=2,
+        ) from exc
+    return parent / leaf
+
+
 def _require_resolved_descriptor_path(
     actual: Path,
     expected: Path,
@@ -573,15 +589,9 @@ def _require_resolved_descriptor_path(
     label: str,
     mismatch: str | None = None,
 ) -> Path:
-    try:
-        actual_res = Path(actual).resolve()
-        expected_res = Path(expected).resolve()
-    except OSError as exc:
-        raise SupervisorError(
-            "supervisor descriptor path not resolvable",
-            exit_code=2,
-        ) from exc
-    if actual_res != expected_res:
+    actual_lex = _lexical_descriptor_path(actual)
+    expected_lex = _lexical_descriptor_path(expected)
+    if actual_lex != expected_lex:
         raise SupervisorError(
             mismatch
             or (
@@ -590,7 +600,7 @@ def _require_resolved_descriptor_path(
             ),
             exit_code=2,
         )
-    return expected_res
+    return expected_lex
 
 
 def _validate_prepublish_identity(
