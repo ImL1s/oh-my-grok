@@ -19,6 +19,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   mkdir/write. Hermetic coverage in `tests/test_state_root.py`.
   Docs: `docs/state-root.md`, `docs/project-root.md`. **Refs #74
   (does not close)**.
+- **#76 PR1 versioned hash-anchored edit core:** library-only
+  `omg_cli.hash_edit` with a strict V1 descriptor
+  (`parse_hash_edit_descriptor`), a pure planner (`plan_hash_edit`;
+  caller-supplied current bytes; exact text+context only), and confined
+  atomic apply (`apply_hash_edit`; workspace-root fd walk, parent-dir
+  flock, `atomic_write_bytes_at` + readback, preserve `stat.S_IMODE`).
+  This **supplements** host-native edits; it does **not** make unobserved
+  host edits hash-anchored. No public CLI, Team/read-only authority,
+  comment hygiene, MCP, or `.omg/state` writer. A protocol claim requires
+  a successful `apply_hash_edit` result. Docs: `docs/hash-edit.md`.
+  Hermetic coverage in `tests/test_hash_edit_descriptor.py`,
+  `tests/test_hash_edit_planner.py`, `tests/test_hash_edit_apply.py`.
+  Refs #76 (does not close).
 
 ### Fixed
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
