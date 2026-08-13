@@ -21,6 +21,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (does not close)**.
 
 ### Fixed
+- **#138 Slice A:** Consultation v1 rejects `qualified` on attempt/receipt/view, rejects structured output and advisor synthesis (harnesses unproven), requires `succeeded` ⇒ `exit_class=ok`, binds every duplicated attempt/receipt fact, and derives view output from `response_digest`. Exit-0 empty output is allowed. Does not close #138.
 - **#138 Slice A:** Capabilities lock binds the canonical advisor registry (`advisor_catalog` from the six unproven specs) and isolates `providers.py` structured-verdict routing under `legacy_ask_execution` (not qualification/support). Registry byte drift fails `--check`. Does not close #138.
 - **#138 Slice A:** `omg ask list-advisors` / `explain` reject every ask execution option by explicit presence (including explicit defaults) in either ordering, reject `--` extras, emit JSON `E_USAGE` on usage exit 2, and include `E_ADVISOR_NOT_FOUND` on human unknown. Does not close #138.
 - **#138 Slice A:** Council receipt and view share one count/status invariant helper: lane_count is the exact digest count, `0<=success_count<=lane_count`, `1<=minimum_successes<=lane_count`; succeeded iff all lanes, mixed iff threshold met but not all, fail-family only below threshold; queued/running may be 0..lane_count. Does not close #138.

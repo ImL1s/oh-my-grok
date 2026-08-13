@@ -444,6 +444,186 @@ def test_view_rejects_integer_attempt_mismatch() -> None:
         consultation_view_from_receipt(receipt, attempt=2)
 
 
+@pytest.mark.parametrize(
+    "parser,factory",
+    [
+        (parse_consultation_attempt_v1, _valid_attempt),
+        (parse_consultation_receipt_v1, _valid_receipt),
+    ],
+)
+def test_v1_rejects_qualified_on_attempt_and_receipt(parser, factory) -> None:
+    with pytest.raises(ContractValidationError, match="qualified"):
+        parser(factory(read_only_qualification="qualified"))
+
+
+def test_v1_rejects_qualified_on_view() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    view = consultation_view_from_receipt(receipt, attempt=_bound_attempt(receipt))
+    view["read_only_qualification"] = "qualified"
+    with pytest.raises(ContractValidationError, match="qualified"):
+        parse_consultation_view_v1(view)
+
+
+def test_request_rejects_structured_verdict_without_support() -> None:
+    with pytest.raises(ContractValidationError, match="structured_verdict_v1"):
+        parse_consultation_request_v1(
+            _valid_request(requested_output="structured_verdict_v1")
+        )
+
+
+def test_council_rejects_advisor_synthesis_when_unproven() -> None:
+    with pytest.raises(ContractValidationError, match="unproven"):
+        parse_council_request_v1(
+            _valid_council_request(synthesis_mode="advisor:claude-cli")
+        )
+    with pytest.raises(ContractValidationError, match="unproven"):
+        parse_council_receipt_v1(
+            _valid_council_receipt(synthesis_mode="advisor:claude-cli")
+        )
+    parsed = parse_council_request_v1(
+        _valid_council_request(synthesis_mode="native:compose")
+    )
+    assert parsed["synthesis_mode"] == "native:compose"
+
+
+@pytest.mark.parametrize("exit_class", ["error", "timeout", "cancelled", "usage", "missing"])
+def test_succeeded_rejects_non_ok_exit_class(exit_class: str) -> None:
+    with pytest.raises(ContractValidationError, match="succeeded"):
+        parse_consultation_attempt_v1(_valid_attempt(exit_class=exit_class))
+    with pytest.raises(ContractValidationError, match="succeeded"):
+        parse_consultation_receipt_v1(_valid_receipt(exit_class=exit_class))
+
+
+@pytest.mark.parametrize("exit_class", ["policy", "config", "auth"])
+def test_policy_config_auth_are_not_v1_exit_classes(exit_class: str) -> None:
+    with pytest.raises(ContractValidationError, match="exit_class"):
+        parse_consultation_attempt_v1(_valid_attempt(exit_class=exit_class))
+    with pytest.raises(ContractValidationError, match="exit_class"):
+        parse_consultation_receipt_v1(_valid_receipt(exit_class=exit_class))
+
+
+def test_output_present_equals_response_digest_presence() -> None:
+    with pytest.raises(ContractValidationError, match="output_present"):
+        parse_consultation_attempt_v1(
+            _valid_attempt(output_present=True, response_digest=None)
+        )
+    with pytest.raises(ContractValidationError, match="output_present"):
+        parse_consultation_attempt_v1(
+            _valid_attempt(output_present=False, response_digest=DIGEST_C)
+        )
+
+
+def test_output_truncated_requires_output_present() -> None:
+    with pytest.raises(ContractValidationError, match="output_truncated"):
+        parse_consultation_attempt_v1(
+            _valid_attempt(
+                output_present=False,
+                output_truncated=True,
+                response_digest=None,
+            )
+        )
+    parsed = parse_consultation_attempt_v1(
+        _valid_attempt(output_present=True, output_truncated=True)
+    )
+    assert parsed["output_truncated"] is True
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    view = consultation_view_from_receipt(receipt, attempt=1)
+    view["output_present"] = False
+    view["output_truncated"] = True
+    with pytest.raises(ContractValidationError, match="output_truncated"):
+        parse_consultation_view_v1(view)
+
+
+def test_receipt_response_digest_matches_response_artifact() -> None:
+    with pytest.raises(ContractValidationError, match="response_digest"):
+        parse_consultation_receipt_v1(_valid_receipt(response_digest=None))
+    with pytest.raises(ContractValidationError, match="response_digest"):
+        parse_consultation_receipt_v1(_valid_receipt(response_digest=DIGEST_A))
+    empty = parse_consultation_receipt_v1(
+        _valid_receipt(response_digest=None, artifact_descriptors=[])
+    )
+    assert empty["response_digest"] is None
+    assert empty["artifact_descriptors"] == []
+
+
+def test_canonical_success_and_exit_0_empty_output() -> None:
+    success = parse_consultation_receipt_v1(_valid_receipt())
+    assert success["status"] == "succeeded"
+    assert success["exit_class"] == "ok"
+    assert success["response_digest"] == DIGEST_C
+    empty = parse_consultation_receipt_v1(
+        _valid_receipt(response_digest=None, artifact_descriptors=[])
+    )
+    assert empty["status"] == "succeeded"
+    assert empty["exit_class"] == "ok"
+    assert empty["response_digest"] is None
+    empty_attempt = parse_consultation_attempt_v1(
+        _valid_attempt(output_present=False, response_digest=None)
+    )
+    assert empty_attempt["output_present"] is False
+    view = consultation_view_from_receipt(
+        empty, attempt=_bound_attempt(empty, output_present=False, response_digest=None)
+    )
+    assert view["output_present"] is False
+    assert view["output_truncated"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("read_only_qualification", "unsupported"),
+        ("job_id", "job-other"),
+        ("started_at", "2026-08-12T18:00:00Z"),
+        ("terminal_at", "2026-08-12T20:00:00Z"),
+        ("status", "failed"),
+        ("response_digest", DIGEST_A),
+    ],
+)
+def test_view_rejects_one_field_attempt_receipt_mismatch(
+    field: str, value: object
+) -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    kwargs = {field: value}
+    if field == "status":
+        kwargs["exit_class"] = "error"
+    attempt = _bound_attempt(receipt, **kwargs)
+    with pytest.raises(ContractValidationError, match=field):
+        consultation_view_from_receipt(receipt, attempt=attempt)
+
+
+def test_view_rejects_exit_class_mismatch_on_failed_receipt() -> None:
+    receipt = parse_consultation_receipt_v1(
+        _valid_receipt(
+            status="failed",
+            exit_class="error",
+            response_digest=None,
+            artifact_descriptors=[],
+        )
+    )
+    attempt = _bound_attempt(
+        receipt,
+        status="failed",
+        exit_class="timeout",
+        output_present=False,
+        response_digest=None,
+    )
+    with pytest.raises(ContractValidationError, match="exit_class"):
+        consultation_view_from_receipt(receipt, attempt=attempt)
+
+
+def test_view_derives_output_flags_from_receipt_digest() -> None:
+    receipt = parse_consultation_receipt_v1(_valid_receipt())
+    attempt = _bound_attempt(receipt, output_truncated=True)
+    view = consultation_view_from_receipt(receipt, attempt=attempt)
+    assert view["output_present"] is True
+    assert view["output_truncated"] is True
+    assert view["status"] == receipt["status"]
+    assert view["read_only_qualification"] == receipt["read_only_qualification"]
+    assert view["job_id"] == receipt["job_id"]
+    assert view["started_at"] == receipt["started_at"]
+    assert view["terminal_at"] == receipt["terminal_at"]
+
+
 def test_council_request_nested_parse_unique_harness_and_agy_not_gemini() -> None:
     parsed = parse_council_request_v1(_valid_council_request())
     harness_ids = [item["harness_id"] for item in parsed["advisor_requests"]]

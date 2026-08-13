@@ -320,7 +320,10 @@ def _require_synthesis_mode(value: Any, *, label: str) -> str:
             raise ContractValidationError(
                 f"{label} advisor harness must be a canonical harness id"
             )
-        return text
+        raise ContractValidationError(
+            f"{label} advisor synthesis is unsupported; "
+            "schema_version=1 harnesses are unproven"
+        )
     raise ContractValidationError(f"{label} is not a valid synthesis_mode")
 
 
@@ -328,6 +331,18 @@ def _require_exit_class(value: Any, *, label: str) -> str | None:
     if value is None:
         return None
     return _require_enum(value, label=label, allowed=EXIT_CLASSES)
+
+
+def _require_requested_output(value: Any) -> str:
+    text = _require_enum(
+        value, label="requested_output", allowed=REQUESTED_OUTPUTS
+    )
+    if text == "structured_verdict_v1":
+        raise ContractValidationError(
+            "requested_output=structured_verdict_v1 is unsupported; "
+            "schema_version=1 harnesses are unproven"
+        )
+    return text
 
 
 def validate_council_count_invariants(
@@ -376,6 +391,60 @@ def validate_council_count_invariants(
             )
         return
     raise ContractValidationError(f"unknown council status {status!r}")
+
+
+def _reject_v1_qualified(value: Any, *, label: str) -> str:
+    text = _require_enum(value, label=label, allowed=ADVISOR_READ_ONLY_STATES)
+    # schema_version=1 has no pinned evidence; keep qualified in the enum.
+    if text == "qualified":
+        raise ContractValidationError(
+            f"{label}=qualified requires pinned identity/version/behavior "
+            "evidence; schema_version=1 has none"
+        )
+    return text
+
+
+def _enforce_output_digest_consistency(
+    *,
+    output_present: bool,
+    output_truncated: bool,
+    response_digest: str | None = None,
+    check_digest: bool = True,
+) -> None:
+    if check_digest and output_present != (response_digest is not None):
+        raise ContractValidationError(
+            "output_present must equal response_digest presence"
+        )
+    if output_truncated and not output_present:
+        raise ContractValidationError("output_truncated requires output_present")
+
+
+def _enforce_succeeded_exit(*, status: str, exit_class: str | None) -> None:
+    """succeeded requires exit_class=ok. Empty output with ok is allowed."""
+
+    if status != "succeeded":
+        return
+    if exit_class != "ok":
+        raise ContractValidationError("succeeded requires exit_class=ok")
+
+
+def _enforce_receipt_response_digest(
+    artifacts: Sequence[Mapping[str, Any]],
+    response_digest: str | None,
+) -> None:
+    response_shas = [
+        item["sha256"] for item in artifacts if item["kind"] == "response"
+    ]
+    if response_digest is None:
+        if response_shas:
+            raise ContractValidationError(
+                "response artifact requires response_digest"
+            )
+        return
+    if response_digest not in response_shas:
+        raise ContractValidationError(
+            "response_digest must match a response artifact sha256"
+        )
 
 
 def _enforce_terminal_rules(
@@ -584,10 +653,8 @@ def parse_consultation_request_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         "requested_model": _require_model_token(
             payload["requested_model"], label="requested_model"
         ),
-        "requested_output": _require_enum(
-            payload["requested_output"],
-            label="requested_output",
-            allowed=REQUESTED_OUTPUTS,
+        "requested_output": _require_requested_output(
+            payload["requested_output"]
         ),
         "cwd_descriptor": parse_workspace_descriptor(payload["cwd_descriptor"]),
         "attachment_descriptors": _parse_artifact_list(
@@ -629,6 +696,21 @@ def parse_consultation_attempt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
     _enforce_terminal_rules(
         status=status, terminal_at=terminal_at, exit_class=exit_class
     )
+    _enforce_succeeded_exit(status=status, exit_class=exit_class)
+    output_present = _require_bool(
+        payload["output_present"], label="output_present"
+    )
+    output_truncated = _require_bool(
+        payload["output_truncated"], label="output_truncated"
+    )
+    response_digest = _optional_sha256(
+        payload["response_digest"], label="response_digest"
+    )
+    _enforce_output_digest_consistency(
+        output_present=output_present,
+        output_truncated=output_truncated,
+        response_digest=response_digest,
+    )
     return {
         "schema_version": 1,
         "attempt": require_integer(payload["attempt"], label="attempt", minimum=1),
@@ -637,10 +719,9 @@ def parse_consultation_attempt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         ),
         "harness_version": None,
         "platform": "unspecified",
-        "read_only_qualification": _require_enum(
+        "read_only_qualification": _reject_v1_qualified(
             payload["read_only_qualification"],
             label="read_only_qualification",
-            allowed=ADVISOR_READ_ONLY_STATES,
         ),
         "prompt_transport": _require_enum(
             payload["prompt_transport"],
@@ -652,15 +733,9 @@ def parse_consultation_attempt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         "terminal_at": terminal_at,
         "status": status,
         "exit_class": exit_class,
-        "output_present": _require_bool(
-            payload["output_present"], label="output_present"
-        ),
-        "output_truncated": _require_bool(
-            payload["output_truncated"], label="output_truncated"
-        ),
-        "response_digest": _optional_sha256(
-            payload["response_digest"], label="response_digest"
-        ),
+        "output_present": output_present,
+        "output_truncated": output_truncated,
+        "response_digest": response_digest,
         "receipt_digest": require_sha256(
             payload["receipt_digest"], label="receipt_digest"
         ),
@@ -685,6 +760,7 @@ def parse_consultation_receipt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
     _enforce_terminal_rules(
         status=status, terminal_at=terminal_at, exit_class=exit_class
     )
+    _enforce_succeeded_exit(status=status, exit_class=exit_class)
     parsed = {
         "schema_version": 1,
         "consultation_id": require_safe_id(
@@ -701,10 +777,9 @@ def parse_consultation_receipt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         ),
         "attempt": require_integer(payload["attempt"], label="attempt", minimum=1),
         "status": status,
-        "read_only_qualification": _require_enum(
+        "read_only_qualification": _reject_v1_qualified(
             payload["read_only_qualification"],
             label="read_only_qualification",
-            allowed=ADVISOR_READ_ONLY_STATES,
         ),
         "role_id": _optional_safe_id(payload["role_id"], label="role_id"),
         "requested_model": _require_model_token(
@@ -731,6 +806,9 @@ def parse_consultation_receipt_v1(raw: Mapping[str, Any] | None) -> dict[str, An
         "auto_apply": flags["auto_apply"],
         "worker_eligible": flags["worker_eligible"],
     }
+    _enforce_receipt_response_digest(
+        parsed["artifact_descriptors"], parsed["response_digest"]
+    )
     return parsed
 
 
@@ -749,6 +827,17 @@ def parse_consultation_view_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     )
     terminal_at = _optional_iso8601(payload["terminal_at"], label="terminal_at")
     _enforce_terminal_rules(status=status, terminal_at=terminal_at, exit_class=None)
+    output_present = _require_bool(
+        payload["output_present"], label="output_present"
+    )
+    output_truncated = _require_bool(
+        payload["output_truncated"], label="output_truncated"
+    )
+    _enforce_output_digest_consistency(
+        output_present=output_present,
+        output_truncated=output_truncated,
+        check_digest=False,
+    )
     parsed = {
         "schema_version": 1,
         "consultation_id": require_safe_id(
@@ -763,21 +852,16 @@ def parse_consultation_view_v1(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         "role_id": _optional_safe_id(payload["role_id"], label="role_id"),
         "status": status,
         "attempt": require_integer(payload["attempt"], label="attempt", minimum=1),
-        "read_only_qualification": _require_enum(
+        "read_only_qualification": _reject_v1_qualified(
             payload["read_only_qualification"],
             label="read_only_qualification",
-            allowed=ADVISOR_READ_ONLY_STATES,
         ),
         "model": _require_model_token(payload["model"], label="model"),
         "job_id": _optional_safe_id(payload["job_id"], label="job_id"),
         "started_at": require_iso8601(payload["started_at"], label="started_at"),
         "terminal_at": terminal_at,
-        "output_present": _require_bool(
-            payload["output_present"], label="output_present"
-        ),
-        "output_truncated": _require_bool(
-            payload["output_truncated"], label="output_truncated"
-        ),
+        "output_present": output_present,
+        "output_truncated": output_truncated,
         "receipt_digest": require_sha256(
             payload["receipt_digest"], label="receipt_digest"
         ),
@@ -803,20 +887,26 @@ def consultation_view_from_receipt(
     expected_digest = consultation_receipt_digest(parsed_receipt)
     if isinstance(attempt, Mapping):
         parsed_attempt = parse_consultation_attempt_v1(attempt)
-        if parsed_attempt["harness_id"] != parsed_receipt["harness_id"]:
-            raise ContractValidationError(
-                "consultation attempt harness_id does not match the supplied receipt"
-            )
-        if parsed_attempt["attempt"] != parsed_receipt["attempt"]:
-            raise ContractValidationError(
-                "consultation attempt number does not match the supplied receipt"
-            )
+        for field in (
+            "harness_id",
+            "attempt",
+            "read_only_qualification",
+            "job_id",
+            "started_at",
+            "terminal_at",
+            "status",
+            "exit_class",
+            "response_digest",
+        ):
+            if parsed_attempt[field] != parsed_receipt[field]:
+                raise ContractValidationError(
+                    f"consultation attempt {field} does not match the supplied receipt"
+                )
         if parsed_attempt["receipt_digest"] != expected_digest:
             raise ContractValidationError(
                 "consultation attempt receipt_digest does not match the supplied receipt"
             )
         attempt_number = parsed_attempt["attempt"]
-        output_present = parsed_attempt["output_present"]
         output_truncated = parsed_attempt["output_truncated"]
     else:
         attempt_number = require_integer(attempt, label="attempt", minimum=1)
@@ -824,8 +914,8 @@ def consultation_view_from_receipt(
             raise ContractValidationError(
                 "consultation attempt number does not match the supplied receipt"
             )
-        output_present = parsed_receipt["response_digest"] is not None
         output_truncated = False
+    output_present = parsed_receipt["response_digest"] is not None
     model = parsed_receipt["selected_model"]
     if model is None:
         model = parsed_receipt["requested_model"]
