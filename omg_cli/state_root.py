@@ -387,7 +387,10 @@ def _discover_project(
 def _git_ids_for_root(project_root: Path, discovered: tuple[Path, Path] | None) -> tuple[Path, Path] | None:
     if discovered is not None and discovered[0] == project_root:
         return discovered
-    return _git_worktree_and_common(project_root)
+    probed = _git_worktree_and_common(project_root)
+    if probed is not None and probed[0] == project_root:
+        return probed
+    return None
 
 
 def _central_state_dir(central: Path, project_key: str) -> Path:
@@ -490,9 +493,12 @@ def resolve_state_root(
         workspace = _find_workspace_marker(start, home_path)
         if workspace is not None:
             project_key = _opaque_key("workspace", str(workspace))
+            state_dir = workspace / ".omg"
+            if os.path.lexists(state_dir) and os.path.islink(state_dir):
+                raise StateRootError("workspace state directory may not be a symlink")
             return StateRootResolution(
                 project_root=project_root,
-                state_dir=workspace / ".omg",
+                state_dir=state_dir,
                 source="workspace_marker",
                 scope=SCOPE_WORKSPACE,
                 project_key=project_key,

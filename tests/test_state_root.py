@@ -241,6 +241,37 @@ def test_centralized_sibling_projects_isolated(tmp_path: Path) -> None:
     assert ra.state_dir.parent == rb.state_dir.parent == central.resolve()
 
 
+def test_centralized_nested_projects_under_one_git_repo_stay_isolated(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_git(repo)
+    a = repo / "pkg-a"
+    b = repo / "pkg-b"
+    for project in (a, b):
+        project.mkdir()
+        (project / ".omg").mkdir()
+    central = tmp_path / "central"
+    central.mkdir()
+    env = {ENV_STATE_DIR: str(central)}
+    home = _home(tmp_path)
+
+    discovered_a = resolve_state_root(cwd=a, env=env, home=home)
+    discovered_b = resolve_state_root(cwd=b, env=env, home=home)
+    assert discovered_a.project_root == a.resolve()
+    assert discovered_b.project_root == b.resolve()
+    assert discovered_a.diagnostics["identity_kind"] == "project_root"
+    assert discovered_b.diagnostics["identity_kind"] == "project_root"
+    assert discovered_a.project_key != discovered_b.project_key
+    assert discovered_a.state_dir != discovered_b.state_dir
+
+    here_a = resolve_state_root(cwd=a, env=env, home=home, here=True)
+    here_b = resolve_state_root(cwd=b, env=env, home=home, here=True)
+    assert here_a.diagnostics["identity_kind"] == "project_root"
+    assert here_b.diagnostics["identity_kind"] == "project_root"
+    assert here_a.project_key != here_b.project_key
+
+
 def test_linked_worktrees_distinct_per_worktree_shared_when_central(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +303,11 @@ def test_home_and_filesystem_root_not_implicit_state(tmp_path: Path) -> None:
     home = _home(tmp_path)
     with pytest.raises(StateRootError, match="implicit"):
         resolve_state_root(cwd=home, env={}, home=home)
+    nested = home / "nested"
+    nested.mkdir()
+    (home / ".omg").mkdir()
+    with pytest.raises(StateRootError, match="implicit"):
+        resolve_state_root(cwd=nested, env={}, home=home)
     with pytest.raises(StateRootError, match="implicit"):
         resolve_state_root(cwd=Path("/"), env={}, home=home)
 
@@ -354,6 +390,26 @@ def test_marker_symlink_hardlink_fifo_socket(tmp_path: Path) -> None:
     with pytest.raises(StateRootError, match="FIFO"):
         resolve_state_root(cwd=repo, env=env, home=home)
     marker.unlink()
+
+    marker.mkdir()
+    with pytest.raises(StateRootError, match="regular file"):
+        resolve_state_root(cwd=repo, env=env, home=home)
+
+
+def test_workspace_state_directory_symlink_is_rejected(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    repo = ws / "repo"
+    repo.mkdir(parents=True)
+    (ws / ".omg-workspace").write_text('{"version":1}', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (ws / ".omg").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(StateRootError, match="workspace state directory.*symlink"):
+        resolve_state_root(
+            cwd=repo,
+            env={ENV_WORKSPACE_MARKER: "1"},
+            home=_home(tmp_path),
+        )
 
 
 def test_reject_marker_device_and_socket_stat() -> None:

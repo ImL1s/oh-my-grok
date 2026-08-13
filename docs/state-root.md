@@ -42,9 +42,12 @@ There is no `omg --state-dir` (or similar) flag.
 - Storage only. Never replaces `project_root`.
 - Sibling projects get distinct `project_key` directories under the same
   central root.
-- Linked worktrees share `project_key` via the filesystem git **common
-  dir** (`diagnostics.identity_kind=git_common`). Without git, identity
-  is the project root.
+- Linked worktrees whose `project_root` is the worktree root share
+  `project_key` via the filesystem git **common dir**
+  (`diagnostics.identity_kind=git_common`). An explicit / `here` /
+  nearest-`.omg` project nested inside a larger Git worktree keeps its own
+  `project_root` identity, so sibling nested projects cannot collide.
+  Without an exact worktree-root match, identity is the project root.
 - Per-worktree (no central env) still isolates each worktree:
   `<worktree>/.omg`.
 
@@ -161,6 +164,7 @@ Git discovery **in this resolver** is filesystem-only (no subprocess):
 | Existing non-symlink parent of a planned central path | Canonicalized (`.resolve()`); missing children appended, not created |
 | Central store is filesystem root | Reject |
 | Existing `<project_root>/.omg` symlink (per-worktree) | Reject |
+| Existing `<workspace_root>/.omg` symlink (workspace-shared) | Reject |
 | Existing `central / project_key` symlink | Reject |
 
 `project_key` reuses `path_keys.safe_path_key`. This module does **not**
