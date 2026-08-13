@@ -39,8 +39,12 @@ import pytest
 
 from tests.stock_host_medley_absent_support import (
     EXPECTED_DOCTOR_HOST_IDENTITY,
+    EXPECTED_LIVE_CAPABILITY_SOURCES,
+    EXPECTED_LIVE_SESSION_CAPS,
+    HOST_FIXTURE,
     ISOLATION_GROK_IDENTITY,
     ISOLATION_PYTHON3_IDENTITY,
+    LIVE_PROBE_VERSION_OBSERVATION,
     REQUIRED_DOCTOR_CHECKS,
     ROOT,
     SMOKE_IMPORTED,
@@ -62,6 +66,7 @@ from tests.stock_host_medley_absent_support import (
     _runtime_sys_path,
     assert_blocker_raises,
     doctor_host_identity_matches,
+    doctor_host_live_session_matches,
 )
 
 BOOTSTRAP = Path(__file__).resolve().parent / "stock_host_medley_absent_smoke_bootstrap.py"
@@ -420,6 +425,28 @@ def test_doctor_host_identity_requires_exact_grok_binary() -> None:
     assert doctor_host_identity_matches([]) is False
 
 
+def test_doctor_host_live_session_matches_requires_observation_and_sources() -> None:
+    good = {
+        **EXPECTED_DOCTOR_HOST_IDENTITY,
+        "capabilities": dict(EXPECTED_LIVE_SESSION_CAPS),
+        "capability_sources": dict(EXPECTED_LIVE_CAPABILITY_SOURCES),
+        "observations": [LIVE_PROBE_VERSION_OBSERVATION],
+        "gates": {key: {"state": "AVAILABLE"} for key in EXPECTED_LIVE_SESSION_CAPS},
+    }
+    assert doctor_host_live_session_matches(good) is True
+
+    missing_obs = dict(good)
+    missing_obs["observations"] = ["unrelated"]
+    assert doctor_host_live_session_matches(missing_obs) is False
+
+    wrong_source = dict(good)
+    wrong_source["capability_sources"] = {
+        **EXPECTED_LIVE_CAPABILITY_SOURCES,
+        "session_resume": "behavior",
+    }
+    assert doctor_host_live_session_matches(wrong_source) is False
+
+
 def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
     here = Path(__file__)
     assert _module_level_omg_cli_imports(here) == []
@@ -470,8 +497,86 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
         assert payload["captured_real_popen_guarded"] is True
     else:
         assert payload["captured_real_popen_guarded"] is None
+    assert payload["live_canonical_host_probe"] is True
+    assert payload["live_session_caps_ok"] is True
+    assert payload["capability_sources"] == dict(EXPECTED_LIVE_CAPABILITY_SOURCES)
     assert IMPORT_PROBE_MODULE not in sys.modules
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
+
+
+def test_bootstrap_does_not_replace_canonical_host_probe() -> None:
+    src = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "probe_host_from_fixture" not in src
+    assert "doctor._canonical_host_probe" not in src
+    tree = ast.parse(src)
+    assigned: list[str] = []
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "_canonical_host_probe":
+                    assigned.append(target.attr)
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Attribute) and target.attr == "_canonical_host_probe":
+                assigned.append(target.attr)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                calls.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                calls.add(func.attr)
+    assert assigned == []
+    assert "run_doctor" in calls
+    assert "probe_host" in calls
+
+
+def test_fixture_shaped_host_fails_live_session_check() -> None:
+    from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
+
+    host = host_report_for_doctor(probe_host_from_fixture(HOST_FIXTURE))
+    assert doctor_host_identity_matches(host) is True
+    assert doctor_host_live_session_matches(host) is False
+
+
+def test_live_probe_medley_import_fails_rather_than_passing(
+    monkeypatch, tmp_path, tmp_path_factory
+) -> None:
+    _isolate_stock_host(monkeypatch, tmp_path)
+    _install_import_blocker(monkeypatch)
+    _inject_fake_medley_package(monkeypatch, tmp_path_factory)
+    _assert_blocker_raises()
+    import omg_cli.host_probe as host_probe
+
+    real_collect = host_probe._live_collect
+
+    def _collect_with_medley(*args: object, **kwargs: object):
+        importlib.import_module("medley")
+        return real_collect(*args, **kwargs)
+
+    monkeypatch.setattr(host_probe, "_live_collect", _collect_with_medley)
+    with pytest.raises(ModuleNotFoundError, match=_BLOCKER_MSG):
+        host_probe.probe_host()
+
+
+def test_failed_live_probe_does_not_match_expected_host(monkeypatch, tmp_path) -> None:
+    _isolate_stock_host(monkeypatch, tmp_path)
+    from omg_cli.host_probe import HostProbeInputs, host_report_for_doctor, probe_host
+    import omg_cli.host_probe as host_probe
+
+    monkeypatch.setattr(
+        host_probe,
+        "_live_collect",
+        lambda **_k: HostProbeInputs(
+            binary="grok",
+            binary_found=True,
+            version_text=None,
+            version_json=None,
+        ),
+    )
+    host = host_report_for_doctor(probe_host())
+    assert doctor_host_identity_matches(host) is False
+    assert doctor_host_live_session_matches(host) is False
 
 
 def test_ambient_site_packages_and_pythonpath_are_not_inherited(

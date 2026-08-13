@@ -89,15 +89,12 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         from omg_cli import doctor
-        from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
         from omg_cli.setup_cmd import compute_package_identity, run_setup
         from omg_cli.team.roles import CANONICAL_ROLES
         from omg_cli.workflows.schema import compile_workflow
         import omg_cli.state as _st
-
-        def _fake_host_report(host_fixture: Path):
-            report = probe_host_from_fixture(host_fixture)
-            return report, host_report_for_doctor(report)
+        from omg_cli.host_models import HostProbeReport
+        from omg_cli.host_probe import host_report_for_doctor, probe_host
 
         captured_system_popen_guarded = _popen_is_guarded(_st._SYSTEM_POPEN)
         if not captured_system_popen_guarded:
@@ -142,8 +139,14 @@ def main(argv: list[str] | None = None) -> int:
         if not (project / ".omg").is_dir():
             return _fail("run_setup did not create .omg")
 
-        host_fixture = root / "tests" / "fixtures" / "host" / "0.2.121.json"
-        doctor._canonical_host_probe = lambda: _fake_host_report(host_fixture)
+        # Isolation fake grok: version fallback only; inspect remains unexpected.
+        live_report = probe_host()
+        if not isinstance(live_report, HostProbeReport):
+            return _fail(f"probe_host type={type(live_report)!r}")
+        live_host = host_report_for_doctor(live_report)
+        if not support.doctor_host_live_session_matches(live_host):
+            return _fail(f"live host session mismatch: {live_host!r}")
+
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = doctor.run_doctor(strict=False, project_root=project, json_output=True)
@@ -156,6 +159,22 @@ def main(argv: list[str] | None = None) -> int:
         host = payload.get("host") or {}
         if not support.doctor_host_identity_matches(host):
             return _fail(f"doctor host identity mismatch: {host!r}")
+        if not support.doctor_host_live_session_matches(host):
+            return _fail(f"doctor host live session mismatch: {host!r}")
+        for key in (
+            "binary",
+            "version",
+            "compatibility",
+            "binary_found",
+            "schema",
+            "capabilities",
+            "capability_sources",
+        ):
+            if live_host.get(key) != host.get(key):
+                return _fail(
+                    f"live vs doctor host {key} mismatch: "
+                    f"{live_host.get(key)!r} != {host.get(key)!r}"
+                )
         blob = out.lower()
         for banned in support._REQUIRE_MEDLEY_CLAIMS:
             if banned in blob:
@@ -232,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
             "madmax_imported": "omg_cli.madmax" in sys.modules,
             "integrate_imported": integrate_imported,
             "captured_real_popen_guarded": captured_real_popen_guarded,
+            "live_canonical_host_probe": True,
+            "live_session_caps_ok": True,
+            "capability_sources": dict(support.EXPECTED_LIVE_CAPABILITY_SOURCES),
         }
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

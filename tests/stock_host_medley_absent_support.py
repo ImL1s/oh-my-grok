@@ -66,8 +66,9 @@ SMOKE_IMPORTED = (
     "omg_cli.workflows.schema",
 )
 
-# Exact identity fields from tests/fixtures/host/0.2.121.json as they appear
-# on the doctor host block (host_report_for_doctor). Extra host keys are ok.
+# Identity fields still match the 0.2.121 fixture-contract, but smoke now
+# proves them via isolation fake grok live collect (version fallback;
+# inspect stays unexpected). Extra host keys are ok.
 EXPECTED_DOCTOR_HOST_IDENTITY = {
     "binary": "grok",
     "version": "0.2.121",
@@ -77,6 +78,20 @@ EXPECTED_DOCTOR_HOST_IDENTITY = {
     "binary_found": True,
     "schema": "omg-host-capabilities/v1",
 }
+
+EXPECTED_LIVE_SESSION_CAPS = {
+    "session_resume": True,
+    "session_close": True,
+    "restore_code_explicit": True,
+    "uuid_search": True,
+}
+EXPECTED_LIVE_CAPABILITY_SOURCES = {
+    "session_resume": "version",
+    "session_close": "version",
+    "restore_code_explicit": "version",
+    "uuid_search": "version",
+}
+LIVE_PROBE_VERSION_OBSERVATION = "version from CLI version --json"
 
 
 def doctor_host_identity_matches(host: object) -> bool:
@@ -89,6 +104,47 @@ def doctor_host_identity_matches(host: object) -> bool:
         host.get(key) == expected
         for key, expected in EXPECTED_DOCTOR_HOST_IDENTITY.items()
     )
+
+
+def doctor_host_live_session_matches(host: object) -> bool:
+    """True when identity plus live version-fallback session caps match."""
+    if not doctor_host_identity_matches(host):
+        return False
+    if not isinstance(host, Mapping):
+        return False
+    caps = host.get("capabilities")
+    if not isinstance(caps, Mapping):
+        return False
+    if not all(
+        caps.get(key) == expected
+        for key, expected in EXPECTED_LIVE_SESSION_CAPS.items()
+    ):
+        return False
+    sources = host.get("capability_sources")
+    if not isinstance(sources, Mapping):
+        return False
+    if not all(
+        sources.get(key) == expected
+        for key, expected in EXPECTED_LIVE_CAPABILITY_SOURCES.items()
+    ):
+        return False
+    raw_obs = host.get("observations")
+    if isinstance(raw_obs, (list, tuple)):
+        blob = " ".join(str(item) for item in raw_obs)
+    elif isinstance(raw_obs, str):
+        blob = raw_obs
+    else:
+        return False
+    if LIVE_PROBE_VERSION_OBSERVATION not in blob:
+        return False
+    gates = host.get("gates")
+    if isinstance(gates, Mapping):
+        for key in EXPECTED_LIVE_SESSION_CAPS:
+            gate = gates.get(key)
+            if not isinstance(gate, Mapping) or gate.get("state") != "AVAILABLE":
+                return False
+    return True
+
 
 _CREDENTIAL_MARKERS = (
     "API_KEY",
