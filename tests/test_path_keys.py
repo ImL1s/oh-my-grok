@@ -169,6 +169,17 @@ def test_managed_read_rejects_same_size_mutation(
         read_managed_regular_bytes(path)
 
 
+def test_managed_read_required_mode_uses_same_fd(tmp_path: Path) -> None:
+    path = tmp_path / ".omg" / "receipts" / "mode.json"
+    atomic_write_bytes(path, b'{"ok":true}', replace=False)
+    assert read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE) == b'{"ok":true}'
+    os.chmod(path, 0o644)
+    with pytest.raises(ContractPathError, match="mode must be 0600"):
+        read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE)
+    with pytest.raises(ValueError, match="required_mode"):
+        read_managed_regular_bytes(path, required_mode=True)  # type: ignore[arg-type]
+
+
 def test_locked_jsonl_uses_one_complete_canonical_line_per_record(
     tmp_path: Path,
 ) -> None:

@@ -1474,3 +1474,343 @@ def test_start_team_dry_run_stamps_task_descriptor_digest(
     assert len(digest) == 64
     desc = team_dir(tmp_path, str(meta["run_id"])) / "w1.provider.json"
     assert descriptor_content_digest(desc) == digest
+
+
+def _rewrite_prepublish(path: Path, mutate) -> None:
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    mutate(data)
+    body = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+
+
+def test_supervisor_prepublish_symlink_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        admit_pane_supervisor,
+        supervisor_prepublish_path,
+    )
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-symlink"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    forged = tmp_path / "forged-prepublish.json"
+    forged.write_text(auth.read_text(encoding="utf-8"), encoding="utf-8")
+    auth.unlink()
+    auth.symlink_to(forged)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="symlink|not usable"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+    assert supervisor_prepublish_path(leader, run_id, "w1").is_symlink()
+
+
+def test_supervisor_prepublish_hardlink_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-hardlink"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    extra = tmp_path / "prepublish-hardlink.json"
+    extra.hardlink_to(auth)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="single-link|not usable"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_prepublish_unsafe_mode_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-mode"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    os.chmod(auth, 0o644)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="mode must be 0600|not usable"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_prepublish_corrupt_and_foreign_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-corrupt"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    atomic_write_bytes(auth, b"not-json\n", mode=DATA_FILE_MODE, replace=True)
+    with pytest.raises(SupervisorError, match="unreadable"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    _rewrite_prepublish(auth, lambda data: data.__setitem__("writer", "agent"))
+    with pytest.raises(SupervisorError, match="CLI writer"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_prepublish_generation_and_attempt_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-gen"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    _rewrite_prepublish(auth, lambda data: data.__setitem__("generation", True))
+    with pytest.raises(SupervisorError, match="generation"):
+        admit_pane_supervisor(desc)
+    _rewrite_prepublish(auth, lambda data: data.__setitem__("generation", 0))
+    _rewrite_prepublish(auth, lambda data: data.__setitem__("attempt", 0))
+    with pytest.raises(SupervisorError, match="attempt"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_prepublish_descriptor_replaced_after_authority_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replace descriptor inode after authority FD bind — refuse, no sleep."""
+    from omg_cli.team import supervisor as sup
+    from omg_cli.team.supervisor import SupervisorError, admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-race-desc"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('good')"],
+    )
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    real = sup.read_managed_regular_bytes
+
+    def replace_descriptor_after_authority(path, *args, **kwargs):
+        body = real(path, *args, **kwargs)
+        if "supervisor-authority" in Path(path).parts:
+            write_provider_descriptor(
+                desc,
+                provider="fixture",
+                argv=[sys.executable, "-c", "print('evil')"],
+            )
+        return body
+
+    monkeypatch.setattr(
+        sup, "read_managed_regular_bytes", replace_descriptor_after_authority
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="digest mismatch"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+
+
+def test_supervisor_prepublish_authority_replaced_after_open_binds_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path replacement after the authority FD is open cannot change the bind."""
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.team import supervisor as sup
+    from omg_cli.team.supervisor import admit_pane_supervisor
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-race-auth"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print('good')"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    real = sup.read_managed_regular_bytes
+
+    def replace_authority_after_open(path, *args, **kwargs):
+        body = real(path, *args, **kwargs)
+        if "supervisor-authority" in Path(path).parts:
+            forged = json.loads(body.decode("utf-8"))
+            forged["descriptor_sha256"] = "0" * 64
+            forged["writer"] = "agent"
+            atomic_write_bytes(
+                Path(path),
+                (json.dumps(forged) + "\n").encode("utf-8"),
+                mode=DATA_FILE_MODE,
+                replace=True,
+            )
+        return body
+
+    monkeypatch.setattr(sup, "read_managed_regular_bytes", replace_authority_after_open)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    rid, _tid, wid, _root = admit_pane_supervisor(desc)
+    assert rid == run_id and wid == "w1"
+    # On-disk authority is now forged; a path re-read would refuse.
+    on_disk = json.loads(auth.read_text(encoding="utf-8"))
+    assert on_disk["writer"] == "agent"
+
+
+def test_supervisor_prepublish_does_not_reread_by_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.supervisor import admit_pane_supervisor, supervisor_prepublish_path
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-no-reread"
+    desc = write_provider_descriptor(
+        leader / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    auth = _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    reads: list[str] = []
+    real_read_text = Path.read_text
+
+    def spy_read_text(self, *args, **kwargs):
+        reads.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    admit_pane_supervisor(desc)
+    auth_resolved = str(supervisor_prepublish_path(leader, run_id, "w1").resolve())
+    assert str(auth.resolve()) == auth_resolved
+    assert not any(Path(item).resolve() == auth.resolve() for item in reads)
+
+
+def test_supervisor_team_json_symlink_prepublish_does_not_fall_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Present-but-unsafe prepublish must not fall through to team.json bind."""
+    from omg_cli.team.supervisor import SupervisorError, supervisor_prepublish_path
+
+    result = None
+    try:
+        result = _admit_with_team_meta(
+            tmp_path,
+            monkeypatch,
+            run_id="run-pre-symlink-fall",
+            publish_prepublish=True,
+        )
+    except SupervisorError:
+        raise AssertionError("baseline with valid prepublish must admit")
+    _admitted, desc, leader = result
+    auth = supervisor_prepublish_path(leader, "run-pre-symlink-fall", "w1")
+    forged = tmp_path / "fallthrough-prepublish.json"
+    forged.write_text(auth.read_text(encoding="utf-8"), encoding="utf-8")
+    auth.unlink()
+    auth.symlink_to(forged)
+    from omg_cli.team.supervisor import admit_pane_supervisor
+
+    with pytest.raises(SupervisorError, match="symlink|not usable"):
+        admit_pane_supervisor(desc)
+
+
+def test_supervisor_prepublish_and_published_digest_must_agree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.evidence import CLI_WRITER
+    from omg_cli.team.plane import _atomic_write_json, team_dir, team_meta_path
+    from omg_cli.team.supervisor import (
+        SupervisorError,
+        admit_pane_supervisor,
+        descriptor_content_digest,
+    )
+
+    leader = _leader_root(tmp_path / "leader")
+    run_id = "run-pre-pub-mismatch"
+    tdir = team_dir(leader, run_id)
+    tdir.mkdir(parents=True, exist_ok=True)
+    desc = write_provider_descriptor(
+        tdir / "w1.provider.json",
+        provider="fixture",
+        argv=[sys.executable, "-c", "print(1)"],
+    )
+    digest = descriptor_content_digest(desc)
+    _atomic_write_json(
+        team_meta_path(leader, run_id),
+        {
+            "writer": CLI_WRITER,
+            "run_id": run_id,
+            "team_id": "team",
+            "owner_token": "owner-token-test",
+            "schema_version": 1,
+            "tasks": [{"task_id": "w1", "descriptor_sha256": "a" * 64}],
+        },
+    )
+    _publish_test_authority(
+        leader, run_id=run_id, worker_id="w1", descriptor=desc
+    )
+    monkeypatch.chdir(tmp_path)
+    _bind_supervisor_env(monkeypatch, leader, run_id=run_id)
+    clear_resolved_project_root()
+    with pytest.raises(SupervisorError, match="digest mismatch"):
+        admit_pane_supervisor(desc)
+    _assert_no_supervisor_side_effects(leader, run_id=run_id)
+    assert digest != "a" * 64

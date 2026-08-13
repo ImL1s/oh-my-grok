@@ -110,6 +110,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - Handshake/env tests prove `OMG_ACP_FAKE_SUFFIX_BYTES` forwarding with a non-default value and an exact allowlist assert so the fixture default cannot hide a missing allowlist entry. Does **not** close #105.
 - Handshake cumulative-total test now derives `max_total_bytes` from the actual serialized initialize/resume response frames plus the chosen leftover suffix (no magic 220), and a direct expired-deadline leftover check covers both buffered caps before timeout return. Does **not** close #105.
 - session/resume request is sessionId+cwd only; result allowlist modes/models/configOptions/_meta; {} valid; unknown keys and wrong container types fail closed; identity is JSON-RPC id + request hashes; padding not in result. Does **not** close #105.
+- **#146 / PR #156 prepublish same-FD admit:** supervisor admission
+  authenticates the CLI prepublish record first (confinement /
+  `O_NOFOLLOW`, regular single-link file, mode 0600, schema / writer /
+  run / worker / generation / attempt from that FD) and only then opens
+  the referenced descriptor the same way. `descriptor_sha256` must match
+  the authority and, when `team.json` is present, the published task
+  bind. Path `stat` / `read_text` / reopen cannot authorize a replacement
+  inode. Present-but-unsafe prepublish (symlink, hardlink, bad mode,
+  corrupt) is refused and does not fall through to the published
+  descriptor path.
+
 - **#146 / PR #156 `command -v`/`-V` discovery:** PreToolUse no longer
   peels `command -v`/`-V` (or `-pv`/`-vp`/`-pV`/`-p -v`) as an execution
   wrapper, so `command -v claude` / `command -v omc` stay Allow — the

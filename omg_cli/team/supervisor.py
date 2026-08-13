@@ -7,6 +7,7 @@ readiness so read-only workers do not need mailbox ACK.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -130,24 +131,31 @@ def admit_pane_supervisor_binding(
     ``omg team supervisor --descriptor …``. That worker marker must **not** be
     treated as nested-team launch refusal. This admission path instead requires:
 
-    1. A present, schema-valid provider descriptor loaded **once** (O_NOFOLLOW
-       regular file, mode 0600). The SHA-256 of those exact bytes is the bind.
-    2. Run / team / worker identity plus a validated canonical leader root
+    1. Run / team / worker identity plus a validated canonical leader root
        (``bootstrap_env_identity`` / ``validate_canonical_leader_root``).
-    3. Durable CLI authority:
+    2. Durable CLI authority **before** trusting descriptor bytes:
+       - When ``team.json`` is absent (ENOENT only): open the CLI prepublish
+         record with confinement / ``O_NOFOLLOW``, validate regular-file
+         identity, mode 0600, schema, writer, run/team/worker, generation,
+         and attempt from that same FD/inode, then open the referenced
+         descriptor the same way. ``descriptor_sha256`` must match the
+         authority. Path ``stat`` / ``read_text`` / reopen must never
+         authorize a replacement inode.
        - When authoritative ``team.json`` exists: load it only through the
          canonical secure reader (O_NOFOLLOW, regular file, mode 0600, CLI
          writer, known schema, exact run/team, published owner token). Bind
-         the worker as an active published task, then the per-worker
-         CLI-published descriptor path **and** ``descriptor_sha256`` on that
-         task (or a surviving prepublish digest record). A shared owner
-         token alone must never authorize an arbitrary schema-valid
-         descriptor, unknown worker id, or inactive worker. A present but
-         invalid team.json never falls back to prepublish.
-       - When ``team.json`` is absent (ENOENT only): require a CLI-prepublished
-         supervisor authority record binding root/run/team/worker, owner
-         token, and the exact descriptor path + content digest. Metadata
-         absence never authorizes execution.
+         the worker as an active published task. A surviving prepublish
+         record is authenticated first (same FD rules); its digest must
+         also match the published task ``descriptor_sha256``. Unsafe
+         present prepublish (symlink / hardlink / bad mode / corrupt) is
+         refused — it does not fall through. Only ENOENT uses the
+         published descriptor path + task digest. A shared owner token
+         alone must never authorize an arbitrary schema-valid descriptor,
+         unknown worker id, or inactive worker. A present but invalid
+         team.json never falls back to prepublish.
+    3. The referenced provider descriptor is loaded **once** (confinement,
+       ``O_NOFOLLOW``, regular single-link file, mode 0600). The SHA-256
+       of those exact bytes is the bind.
 
     The returned :class:`PaneSupervisorAdmission` carries the immutable
     parsed descriptor. Spawn must use that mapping and must not reopen a
@@ -166,13 +174,11 @@ def admit_pane_supervisor_binding(
             "omg team supervisor: --descriptor PATH required",
             exit_code=2,
         )
-    # Identity + leader root first (no writes).
+    # Identity + leader root first (no writes). Authenticate authority
+    # before trusting any descriptor inode.
     run_id, team_id, worker_id, leader = bootstrap_env_identity(env)
-    # One secure read: schema + digest of the exact bytes that may spawn.
-    raw, digest = _read_provider_descriptor_bytes(descriptor_path)
-    parsed = _parse_provider_descriptor_bytes(raw)
     source = env if env is not None else os.environ
-    _validate_supervisor_team_binding(
+    parsed, digest = _admit_bound_descriptor(
         leader,
         run_id=run_id,
         team_id=team_id,
@@ -180,7 +186,6 @@ def admit_pane_supervisor_binding(
         descriptor_path=Path(descriptor_path),
         env=source,
         owner_token_env=TEAM_OWNER_TOKEN_ENV,
-        actual_digest=digest,
     )
     return PaneSupervisorAdmission(
         run_id=run_id,
@@ -214,43 +219,21 @@ def supervisor_prepublish_path(
 
 
 def _read_provider_descriptor_bytes(path: Path | str) -> tuple[bytes, str]:
-    """Read descriptor bytes once (O_NOFOLLOW regular file, mode 0600).
+    """Read descriptor bytes once (confinement, O_NOFOLLOW, mode 0600).
 
     Returns ``(raw_bytes, sha256_hex)`` of the exact bytes that must be
-    parsed and, if admitted, spawned. Replacement after this read cannot
+    parsed and, if admitted, spawned. Mode, identity, and digest come
+    from the same opened FD/inode. Replacement after this read cannot
     change the returned digest.
     """
     target = Path(path)
     try:
-        raw = read_managed_regular_bytes(target)
+        raw = read_managed_regular_bytes(target, required_mode=DATA_FILE_MODE)
     except (OSError, ValueError, ContractPathError) as exc:
         raise SupervisorError(
             f"provider descriptor unreadable for digest: {exc}",
             exit_code=2,
         ) from exc
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(target, flags)
-    except OSError as exc:
-        raise SupervisorError(
-            f"provider descriptor secure open refused: {exc}",
-            exit_code=2,
-        ) from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise SupervisorError(
-                "provider descriptor must be a regular non-symlink file",
-                exit_code=2,
-            )
-        if stat.S_IMODE(info.st_mode) != DATA_FILE_MODE:
-            raise SupervisorError(
-                "provider descriptor mode must be "
-                f"{DATA_FILE_MODE:04o}, got {stat.S_IMODE(info.st_mode):04o}",
-                exit_code=2,
-            )
-    finally:
-        os.close(descriptor)
     return raw, hashlib.sha256(raw).hexdigest()
 
 
@@ -492,29 +475,68 @@ def clear_attempt_supervisor_prepublish_authorities(
     return errors
 
 
+def _require_prepublish_generation(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SupervisorError(
+            "supervisor prepublish generation missing or malformed",
+            exit_code=2,
+        )
+    return value
+
+
+def _require_prepublish_attempt(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SupervisorError(
+            "supervisor prepublish attempt missing or malformed",
+            exit_code=2,
+        )
+    return value
+
+
+def _prepublish_absent_error() -> SupervisorError:
+    return SupervisorError(
+        "supervisor prepublish authority missing "
+        "(team.json absent; forged env+descriptor cannot authorize)",
+        exit_code=2,
+    )
+
+
+def _is_missing_managed_path(exc: BaseException) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return True
+    if isinstance(exc, OSError) and exc.errno == errno.ENOENT:
+        return True
+    return False
+
+
 def _load_prepublish_authority(
     leader: Path,
     *,
     run_id: str,
     worker_id: str,
-) -> dict[str, Any]:
+    required: bool,
+) -> dict[str, Any] | None:
+    """Open prepublish once (confinement / O_NOFOLLOW / mode 0600).
+
+    ``None`` is returned only for ENOENT when ``required`` is false.
+    Symlink, hardlink, unsafe mode, corrupt, or foreign records fail
+    closed — they never look like absence.
+    """
     path = supervisor_prepublish_path(leader, run_id, worker_id)
     try:
-        if not path.is_file() or path.is_symlink():
-            raise SupervisorError(
-                "supervisor prepublish authority missing "
-                "(team.json absent; forged env+descriptor cannot authorize)",
-                exit_code=2,
-            )
-    except OSError as exc:
+        raw = read_managed_regular_bytes(path, required_mode=DATA_FILE_MODE)
+    except (OSError, ValueError, ContractPathError) as exc:
+        if _is_missing_managed_path(exc):
+            if required:
+                raise _prepublish_absent_error() from exc
+            return None
         raise SupervisorError(
-            "supervisor prepublish authority not usable",
+            f"supervisor prepublish authority not usable: {exc}",
             exit_code=2,
         ) from exc
     try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SupervisorError(
             "supervisor prepublish authority unreadable",
             exit_code=2,
@@ -539,22 +561,50 @@ def _load_prepublish_authority(
             "supervisor prepublish lacks CLI writer authority",
             exit_code=2,
         )
+    _require_prepublish_generation(data.get("generation"))
+    _require_prepublish_attempt(data.get("attempt"))
     return data
 
 
-def _validate_prepublish_authority(
-    leader: Path,
+def _require_resolved_descriptor_path(
+    actual: Path,
+    expected: Path,
     *,
+    label: str,
+    mismatch: str | None = None,
+) -> Path:
+    try:
+        actual_res = Path(actual).resolve()
+        expected_res = Path(expected).resolve()
+    except OSError as exc:
+        raise SupervisorError(
+            "supervisor descriptor path not resolvable",
+            exit_code=2,
+        ) from exc
+    if actual_res != expected_res:
+        raise SupervisorError(
+            mismatch
+            or (
+                f"{label} descriptor_path mismatch "
+                "(stale or forged pane authority)"
+            ),
+            exit_code=2,
+        )
+    return expected_res
+
+
+def _validate_prepublish_identity(
+    data: Mapping[str, Any],
+    *,
+    leader: Path,
     run_id: str,
     team_id: str,
     worker_id: str,
     descriptor_path: Path,
     env: Mapping[str, str],
     owner_token_env: str,
-    actual_digest: str,
-) -> None:
-    """Fail-closed when team.json is absent: require matching prepublish."""
-    data = _load_prepublish_authority(leader, run_id=run_id, worker_id=worker_id)
+) -> Path:
+    """Bind prepublish identity fields; return the referenced descriptor path."""
     if str(data.get("run_id") or "").strip() != run_id:
         raise SupervisorError(
             "supervisor prepublish run_id mismatch "
@@ -595,30 +645,68 @@ def _validate_prepublish_authority(
             "(stale or forged pane authority)",
             exit_code=2,
         )
-    try:
-        desc_resolved = str(Path(descriptor_path).resolve())
-    except OSError as exc:
-        raise SupervisorError(
-            "supervisor descriptor path not resolvable",
-            exit_code=2,
-        ) from exc
     auth_desc = str(data.get("descriptor_path") or "").strip()
-    if not auth_desc or auth_desc != desc_resolved:
+    if not auth_desc:
         raise SupervisorError(
             "supervisor prepublish descriptor_path mismatch "
             "(stale or forged pane authority)",
             exit_code=2,
         )
-    expected_digest = _require_descriptor_digest(
+    return _require_resolved_descriptor_path(
+        descriptor_path,
+        Path(auth_desc),
+        label="supervisor prepublish",
+    )
+
+
+def _admit_via_prepublish(
+    leader: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    descriptor_path: Path,
+    env: Mapping[str, str],
+    owner_token_env: str,
+    data: Mapping[str, Any],
+    published_digest: str | None,
+    published_path: Path | None,
+) -> tuple[dict[str, Any], str]:
+    """Trust prepublish bytes already opened, then the referenced descriptor."""
+    referenced = _validate_prepublish_identity(
+        data,
+        leader=leader,
+        run_id=run_id,
+        team_id=team_id,
+        worker_id=worker_id,
+        descriptor_path=descriptor_path,
+        env=env,
+        owner_token_env=owner_token_env,
+    )
+    if published_path is not None:
+        _require_resolved_descriptor_path(
+            referenced,
+            published_path,
+            label="supervisor published worker",
+        )
+    raw, digest = _read_provider_descriptor_bytes(referenced)
+    expected = _require_descriptor_digest(
         data.get("descriptor_sha256"),
         label="supervisor prepublish",
     )
-    if actual_digest != expected_digest:
+    if digest != expected:
         raise SupervisorError(
             "supervisor prepublish descriptor digest mismatch "
             "(tampered or stale descriptor)",
             exit_code=2,
         )
+    if published_digest is not None and digest != published_digest:
+        raise SupervisorError(
+            "supervisor published descriptor digest mismatch "
+            "(tampered or stale descriptor)",
+            exit_code=2,
+        )
+    return _parse_provider_descriptor_bytes(raw), digest
 
 
 def _require_active_published_worker(
@@ -667,71 +755,54 @@ def _published_worker_descriptor_path(
     return team_dir(leader, rid) / f"{wid}.provider.json"
 
 
-def _validate_published_worker_descriptor(
+def _admit_published_worker_descriptor(
     leader: Path,
     *,
     run_id: str,
     worker_id: str,
     descriptor_path: Path,
     meta: Mapping[str, Any],
-    actual_digest: str,
-) -> None:
+) -> tuple[dict[str, Any], str]:
     """After team.json publication, bind worker_id + CLI-published descriptor.
 
     A depth-1 worker that holds the shared owner token must not be able to
     spawn an arbitrary schema-valid descriptor (or a nonexistent worker id).
     Authority reduces to the exact path the CLI wrote under the team tree for
-    this worker, the published task digest, and optionally the task list.
-    Replacement of those bytes after publication must never execute.
+    this worker, the published task digest, and the bytes opened from that
+    inode. Replacement of those bytes after publication must never execute.
     """
     try:
-        expected = _published_worker_descriptor_path(
-            leader, run_id, worker_id
-        ).resolve()
+        expected = _published_worker_descriptor_path(leader, run_id, worker_id)
     except (OSError, ValueError, TypeError) as exc:
         raise SupervisorError(
             f"supervisor published descriptor path invalid: {exc}",
             exit_code=2,
         ) from exc
-    try:
-        actual = Path(descriptor_path).resolve()
-    except OSError as exc:
-        raise SupervisorError(
-            "supervisor descriptor path not resolvable",
-            exit_code=2,
-        ) from exc
-    if actual != expected:
-        raise SupervisorError(
+    referenced = _require_resolved_descriptor_path(
+        descriptor_path,
+        expected,
+        label="supervisor published worker",
+        mismatch=(
             "supervisor descriptor_path is not the CLI-published worker "
-            "descriptor (forged or foreign provider argv)",
-            exit_code=2,
-        )
-    try:
-        if not expected.is_file() or expected.is_symlink():
-            raise SupervisorError(
-                "CLI-published worker provider descriptor missing "
-                "(stale or forged pane authority)",
-                exit_code=2,
-            )
-    except OSError as exc:
-        raise SupervisorError(
-            "CLI-published worker provider descriptor not usable",
-            exit_code=2,
-        ) from exc
+            "descriptor (forged or foreign provider argv)"
+        ),
+    )
     matching = _require_active_published_worker(meta, worker_id=worker_id)
     expected_digest = _require_descriptor_digest(
         matching.get("descriptor_sha256"),
         label="supervisor published task",
     )
-    if actual_digest != expected_digest:
+    raw, digest = _read_provider_descriptor_bytes(referenced)
+    if digest != expected_digest:
         raise SupervisorError(
             "supervisor published descriptor digest mismatch "
             "(tampered or stale descriptor)",
             exit_code=2,
         )
+    return _parse_provider_descriptor_bytes(raw), digest
 
 
-def _validate_supervisor_team_binding(
+def _admit_bound_descriptor(
     leader: Path,
     *,
     run_id: str,
@@ -740,9 +811,8 @@ def _validate_supervisor_team_binding(
     descriptor_path: Path,
     env: Mapping[str, str],
     owner_token_env: str,
-    actual_digest: str,
-) -> None:
-    """Require team.json binding or fail-closed prepublish authority."""
+) -> tuple[dict[str, Any], str]:
+    """Authenticate authority, then open the referenced descriptor once."""
     # Lazy import avoids plane↔supervisor import cycles at module load.
     from omg_cli.team.plane import (
         TeamError,
@@ -758,8 +828,12 @@ def _validate_supervisor_team_binding(
             exit_code=2,
         ) from exc
     if meta_stat is None:
-        # Metadata absence never authorizes — require CLI prepublish.
-        _validate_prepublish_authority(
+        data = _load_prepublish_authority(
+            leader, run_id=run_id, worker_id=worker_id, required=True
+        )
+        if data is None:
+            raise _prepublish_absent_error()
+        return _admit_via_prepublish(
             leader,
             run_id=run_id,
             team_id=team_id,
@@ -767,17 +841,18 @@ def _validate_supervisor_team_binding(
             descriptor_path=descriptor_path,
             env=env,
             owner_token_env=owner_token_env,
-            actual_digest=actual_digest,
+            data=data,
+            published_digest=None,
+            published_path=None,
         )
-        return
     try:
-        data = load_authoritative_team_meta(leader, run_id, team_id=team_id)
+        meta = load_authoritative_team_meta(leader, run_id, team_id=team_id)
     except TeamError as exc:
         raise SupervisorError(
             f"supervisor team meta refused: {exc}",
             exit_code=2,
         ) from exc
-    meta_token = str(data.get("owner_token") or "").strip()
+    meta_token = str(meta.get("owner_token") or "").strip()
     env_token = (env.get(owner_token_env) or "").strip()
     if not env_token or env_token != meta_token:
         raise SupervisorError(
@@ -788,17 +863,25 @@ def _validate_supervisor_team_binding(
     # Token + secure meta is still insufficient: worker must be an
     # active published task. Stale prepublish cannot revive scaled-down
     # / stopped / cancelled workers.
-    _require_active_published_worker(data, worker_id=worker_id)
-    # Prefer a surviving prepublish record (stronger digest bind); else
-    # require CLI-published ``{worker_id}.provider.json`` **and** the
-    # task-row ``descriptor_sha256`` under team.json.
-    try:
-        prepub = supervisor_prepublish_path(leader, run_id, worker_id)
-        prepub_present = prepub.is_file() and not prepub.is_symlink()
-    except (OSError, ValueError, TypeError):
-        prepub_present = False
-    if prepub_present:
-        _validate_prepublish_authority(
+    matching = _require_active_published_worker(meta, worker_id=worker_id)
+    prepub = _load_prepublish_authority(
+        leader, run_id=run_id, worker_id=worker_id, required=False
+    )
+    if prepub is not None:
+        published_digest = _require_descriptor_digest(
+            matching.get("descriptor_sha256"),
+            label="supervisor published task",
+        )
+        try:
+            published_path = _published_worker_descriptor_path(
+                leader, run_id, worker_id
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            raise SupervisorError(
+                f"supervisor published descriptor path invalid: {exc}",
+                exit_code=2,
+            ) from exc
+        return _admit_via_prepublish(
             leader,
             run_id=run_id,
             team_id=team_id,
@@ -806,16 +889,16 @@ def _validate_supervisor_team_binding(
             descriptor_path=descriptor_path,
             env=env,
             owner_token_env=owner_token_env,
-            actual_digest=actual_digest,
+            data=prepub,
+            published_digest=published_digest,
+            published_path=published_path,
         )
-        return
-    _validate_published_worker_descriptor(
+    return _admit_published_worker_descriptor(
         leader,
         run_id=run_id,
         worker_id=worker_id,
         descriptor_path=descriptor_path,
-        meta=data,
-        actual_digest=actual_digest,
+        meta=meta,
     )
 
 
