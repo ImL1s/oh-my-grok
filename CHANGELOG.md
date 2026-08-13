@@ -47,6 +47,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#138 Slice A:** Council receipt and view share one count/status invariant helper: lane_count is the exact digest count, `0<=success_count<=lane_count`, `1<=minimum_successes<=lane_count`; succeeded iff all lanes, mixed iff threshold met but not all, fail-family only below threshold; queued/running may be 0..lane_count. Does not close #138.
 - **#138 Slice A:** ConsultationView rejects an injected ConsultationAttempt whose harness_id, attempt, or receipt_digest does not match the supplied receipt (consultation_id bound via that receipt). Does not close #138.
 - **#138 Slice A:** AdvisorHarnessSpecV1 rejects `advisor_read_only=qualified` without pinned identity/version/behavior evidence (schema v1 has none). Does not close #138.
+- **#146 / PR #156 wrapper option peeling:** PreToolUse consumes `env -`/`-C`/`--chdir`, `sudo -u`/`--user`, `xargs -n`/`--max-args`, and `exec -a` operands before classifying the executable head; budget-exhausted foreign/first-party heads fail closed instead of false-green on truncated wrapper tails. Refs #146 (does not close).
 - **#164 supervisor signal-forwarding publication race:** Team supervisors now
   install forwarding to the provider wrapper process group immediately after
   spawn, refine the target after provider-child resolution, and only then
