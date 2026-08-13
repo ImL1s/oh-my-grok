@@ -694,6 +694,7 @@ def test_cli_recover_all_partial_and_wait_recovery_required(
     from datetime import datetime, timedelta, timezone
 
     from omg_cli.jobs.lease import format_lease_ts
+    from omg_cli.jobs.ownership import wait_until_gone
     from omg_cli.jobs.store import job_lock, read_job_record, write_job_record
 
     prompt = project / "task.md"
@@ -712,32 +713,42 @@ def test_cli_recover_all_partial_and_wait_recovery_required(
     )
     assert rc == 0
     job_id = _out(capsys)["job_id"]
+    pid = int(read_job_record(project, job_id).pid)
 
-    with job_lock(project, job_id):
-        rec = read_job_record(project, job_id)
-        past = datetime.now(timezone.utc) - timedelta(seconds=120)
-        lease = dict(rec.owner_lease)
-        lease["acquired_at"] = format_lease_ts(past)
-        lease["heartbeat_at"] = format_lease_ts(past)
-        lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
-        rec.owner_lease = lease
-        write_job_record(project, rec)
-
-    # Live runner → wait should return recovery required
-    rc = main(["--json", "job", "wait", job_id, "--timeout", "2"])
-    assert rc == 1
-    waited = _out(capsys)
-    assert waited["error"]["code"] == "E_JOB_RECOVERY_REQUIRED"
-
-    # Kill then recover --all
     try:
-        os.kill(int(read_job_record(project, job_id).pid), signal.SIGKILL)
-    except OSError:
-        pass
-    rc = main(["--json", "job", "recover", "--all"])
-    assert rc == 0
-    body = _out(capsys)
-    assert body["ok"] is True
+        with job_lock(project, job_id):
+            rec = read_job_record(project, job_id)
+            past = datetime.now(timezone.utc) - timedelta(seconds=120)
+            lease = dict(rec.owner_lease)
+            lease["acquired_at"] = format_lease_ts(past)
+            lease["heartbeat_at"] = format_lease_ts(past)
+            lease["expires_at"] = format_lease_ts(past + timedelta(seconds=30))
+            rec.owner_lease = lease
+            write_job_record(project, rec)
+
+        # Live runner → wait should return recovery required
+        rc = main(["--json", "job", "wait", job_id, "--timeout", "2"])
+        assert rc == 1
+        waited = _out(capsys)
+        assert waited["error"]["code"] == "E_JOB_RECOVERY_REQUIRED"
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        assert wait_until_gone(pid, timeout_s=2.0), (
+            f"runner pid={pid} still live after SIGKILL; recover would false-refuse"
+        )
+        rc = main(["--json", "job", "recover", "--all"])
+        assert rc == 0
+        body = _out(capsys)
+        assert body["ok"] is True
+    finally:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        wait_until_gone(pid, timeout_s=2.0)
 
 
 # ---------------------------------------------------------------------------

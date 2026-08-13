@@ -25,6 +25,51 @@ def _stub_process_starttime(monkeypatch, starttime: str = "fake-start") -> None:
     )
 
 
+def _install_mock_popen_lifecycle(
+    monkeypatch, mock_proc, *, starttime: str = "fake-start"
+):
+    """Stub Popen + identity so the mock is live only until wait() returns.
+
+    Other PIDs keep real liveness/starttime (execution-owner probes must
+    still work). A real OS process at ``mock_proc.pid`` must not look like
+    a matching leader after the mocked grok has exited.
+    """
+    import omg_cli.state as state_mod
+
+    live = {"on": False}
+    real_alive = state_mod._pid_alive
+    real_start = state_mod.process_starttime
+    real_popen = subprocess.Popen
+    mock_pid = int(mock_proc.pid)
+
+    def wait_and_exit(*_a, **_k):
+        live["on"] = False
+        return 0
+
+    mock_proc.wait.side_effect = wait_and_exit
+
+    def fake_popen(*_a, **_k):
+        live["on"] = True
+        return mock_proc
+
+    popen = MagicMock(side_effect=_selective_popen(real_popen, fake_popen))
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    def pid_alive(pid: int):
+        if int(pid) == mock_pid:
+            return bool(live["on"])
+        return real_alive(pid)
+
+    def process_starttime(pid: int):
+        if int(pid) == mock_pid:
+            return starttime
+        return real_start(pid)
+
+    monkeypatch.setattr(state_mod, "_pid_alive", pid_alive)
+    monkeypatch.setattr(state_mod, "process_starttime", process_starttime)
+    return popen
+
+
 def test_build_launch_argv_no_yolo_by_default():
     argv = build_grok_argv(mode="ulw", goal="fix tests", yolo=False, cwd="/tmp/proj")
     assert argv[0] == "grok"
@@ -300,10 +345,7 @@ def test_ralph_dry_run_writes_prd_and_no_verified(monkeypatch, tmp_path):
 def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     mock_proc = MagicMock()
     mock_proc.pid = 4242
-    mock_proc.wait.return_value = 0
-
-    _stub_process_starttime(monkeypatch)
-    monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=mock_proc))
+    _install_mock_popen_lifecycle(monkeypatch, mock_proc)
 
     rc = run_mode("ralph", "no accept yet", root=tmp_path, max_iter=2, dry_run=False)
     # require_acceptance default → non-zero exit when never verified
@@ -325,6 +367,52 @@ def test_ralph_doesnt_set_verified_without_acceptance(monkeypatch, tmp_path):
     pid_path = tmp_path / ".omg" / "state" / "runs" / run["run_id"] / "pid"
     assert pid_path.is_file()
     assert pid_path.read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_ralph_unrelated_live_pid_does_not_block_second_iteration(
+    monkeypatch, tmp_path
+):
+    """Occupant of the old hardcoded 4242 must not fake a live leader."""
+    import omg_cli.state as state_mod
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9_000_001
+    _install_mock_popen_lifecycle(monkeypatch, mock_proc)
+
+    inner_alive = state_mod._pid_alive
+    inner_start = state_mod.process_starttime
+
+    def pid_alive(pid: int):
+        if int(pid) == 4242:
+            return True
+        return inner_alive(pid)
+
+    def process_starttime(pid: int):
+        if int(pid) == 4242:
+            return "fake-start"
+        return inner_start(pid)
+
+    monkeypatch.setattr(state_mod, "_pid_alive", pid_alive)
+    monkeypatch.setattr(state_mod, "process_starttime", process_starttime)
+
+    rc = run_mode(
+        "ralph", "collision-proof mock pid", root=tmp_path, max_iter=2, dry_run=False
+    )
+    assert rc == 1
+    run = load_active_run(tmp_path)
+    assert run is not None
+    assert run["verified"] is False
+    assert run["status"] == "blocked"
+    assert run["blocker"]["code"] == "not_verified"
+    grok_calls = [
+        c
+        for c in subprocess.Popen.call_args_list
+        if c.args and c.args[0] and c.args[0][0] == "grok"
+    ]
+    assert len(grok_calls) == 2
+    pid_path = tmp_path / ".omg" / "state" / "runs" / run["run_id"] / "pid"
+    assert pid_path.is_file()
+    assert pid_path.read_text(encoding="utf-8").strip() == "9000001"
 
 
 def test_existing_v1_ralph_keeps_legacy_completed_terminal_semantics(
