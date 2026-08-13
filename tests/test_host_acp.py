@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import sys
@@ -90,6 +91,36 @@ def _first_leftover_after_resume(session_id: str) -> tuple[bytes, int]:
     return resume_frame, first_leftover
 
 
+def _padded_resume_frame(
+    session_id: str, *, rpc_id: int = 2, target_len: int = _STDOUT_READ_CHUNK
+) -> bytes:
+    """Match fixture compact resume padding (exact NL-terminated length)."""
+
+    def _encode(pad: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "result": {
+                        "sessionId": session_id,
+                        "resumed": True,
+                        "pad": pad,
+                    },
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    empty = _encode("")
+    need = target_len - len(empty)
+    assert need > 0
+    out = _encode("p" * need)
+    assert len(out) == target_len
+    return out
+
+
 def _pipe_proc():
     r_fd, w_fd = os.pipe()
     r_file = os.fdopen(r_fd, "rb", buffering=0)
@@ -105,6 +136,47 @@ def _pipe_proc():
             return None
 
     return _FakeProc(), r_file, w_file
+
+
+def _handshake_pipe_session(session_id: str, extra: bytes = b""):
+    """Preload init+resume[+extra] then close stdout; poll stays None."""
+    r_fd, w_fd = os.pipe()
+    r_file = os.fdopen(r_fd, "rb", buffering=0)
+    w_file = os.fdopen(w_fd, "wb", buffering=0)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = r_file
+            self.stdin = io.BytesIO()
+            self.pid = None
+
+        def poll(self) -> None:
+            return None
+
+    init = _peer_response_frame(
+        rpc_id=1,
+        result={"protocolVersion": 1, "agentInfo": {"name": "fake-acp"}},
+    )
+    resume = _peer_response_frame(
+        rpc_id=2, result={"sessionId": session_id, "resumed": True}
+    )
+    w_file.write(init + resume + extra)
+    w_file.flush()
+    w_file.close()
+    proc = _FakeProc()
+    sess = AcpStdioSession(
+        proc=proc,
+        argv=("fake",),
+        session_id=session_id,
+        cwd=".",
+        job_id="20260101T000000Z-deadbeef",
+        attempt=1,
+        parent_run_id="run-1",
+        session_id_hash=hash_session_id(session_id),
+        cwd_hash=hash_cwd("."),
+        quiet_window_s=0,
+    )
+    return sess, r_file
 
 
 def test_acp_initialize_precedes_session_resume(tmp_path: Path) -> None:
@@ -1533,15 +1605,21 @@ def test_absorb_pending_continuation_line_cap_boundary() -> None:
     try:
         w_file.write(b"x" * tail)
         w_file.flush()
-        w_file.close()
-        _absorb_pending_continuation(
-            proc,
-            budget,
-            rx_buf,
-            max_line_bytes=max_line,
-            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
-            deadline=time.monotonic() + 5.0,
-        )
+        # Keep writer open so exact-cap drain is not classified as EOF.
+        # Expired deadline: drain the ready tail, then leftover stays
+        # incomplete → E_ACP_TIMEOUT (not overflow, not EOF).
+        with pytest.raises(AcpError) as ei0:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=max_line,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() - 1.0,
+            )
+        assert ei0.value.code == "E_ACP_TIMEOUT"
+        assert ei0.value.code != "E_ACP_EOF"
+        assert ei0.value.code != "E_ACP_OVERFLOW"
         assert len(rx_buf) == max_line
         _raise_if_buffered_limits(
             budget,
@@ -1551,6 +1629,7 @@ def test_absorb_pending_continuation_line_cap_boundary() -> None:
             include_complete_frames=True,
         )
     finally:
+        w_file.close()
         r_file.close()
 
     proc, r_file, w_file = _pipe_proc()
@@ -1589,17 +1668,20 @@ def test_absorb_pending_continuation_partial_beyond_first_chunk() -> None:
     try:
         w_file.write(b"x" * (suffix_len - first_leftover))
         w_file.flush()
-        w_file.close()
+        # Keep writer open so leftover partial is not classified as EOF.
         t0 = time.monotonic()
-        _absorb_pending_continuation(
-            proc,
-            budget,
-            rx_buf,
-            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
-            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
-            deadline=time.monotonic() + 5.0,
-        )
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() - 1.0,
+            )
         elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_TIMEOUT"
+        assert ei.value.code != "E_ACP_EOF"
         assert elapsed < 1.0
         assert bytes(rx_buf) == b"x" * suffix_len
         assert budget[0] == 0
@@ -1611,10 +1693,11 @@ def test_absorb_pending_continuation_partial_beyond_first_chunk() -> None:
             include_complete_frames=True,
         )
     finally:
+        w_file.close()
         r_file.close()
 
 
-def test_absorb_pending_continuation_expired_deadline_returns_quickly() -> None:
+def test_absorb_pending_continuation_expired_deadline_is_timeout() -> None:
     sid = str(uuid.uuid4())
     _, first_leftover = _first_leftover_after_resume(sid)
     proc, r_file, w_file = _pipe_proc()
@@ -1622,25 +1705,20 @@ def test_absorb_pending_continuation_expired_deadline_returns_quickly() -> None:
     budget = [0]
     try:
         t0 = time.monotonic()
-        _absorb_pending_continuation(
-            proc,
-            budget,
-            rx_buf,
-            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
-            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
-            deadline=time.monotonic() - 1.0,
-        )
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() - 1.0,
+            )
         elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_TIMEOUT"
         assert elapsed < 0.5
         assert bytes(rx_buf) == b"x" * first_leftover
         assert first_leftover < DEFAULT_MAX_LINE_BYTES
-        _raise_if_buffered_limits(
-            budget,
-            rx_buf,
-            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
-            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
-            include_complete_frames=True,
-        )
     finally:
         w_file.close()
         r_file.close()
@@ -1942,3 +2020,307 @@ def test_read_line_exited_peer_incomplete_oversize_is_overflow_not_eof() -> None
         assert "line overflow" in str(ei.value)
     finally:
         r_file.close()
+
+
+def test_absorb_nl_terminated_probes_queued_overflow() -> None:
+    """F12: buffer ending on NL must still drain queued ready bytes."""
+    max_line = 256
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b'{"a":1}\n')
+    budget = [0]
+    try:
+        w_file.write(b"x" * (max_line + 1))
+        w_file.flush()
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=max_line,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 5.0,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_partial_eof_poll_none_is_eof() -> None:
+    """F12: empty read with under-limit partial is EOF even if poll is None."""
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    try:
+        w_file.write(b"def")
+        w_file.flush()
+        w_file.close()
+        assert proc.poll() is None
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 5.0,
+            )
+        assert ei.value.code == "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        assert bytes(rx_buf) == b"abcdef"
+    finally:
+        r_file.close()
+
+
+def test_absorb_complete_frames_eof_returns_true() -> None:
+    """F12: EOF after only complete frames returns True for F9-then-EOF."""
+    proc, r_file, w_file = _pipe_proc()
+    frame = b'{"a":1}\n'
+    rx_buf = bytearray(frame)
+    budget = [0]
+    try:
+        w_file.close()
+        assert proc.poll() is None
+        saw_eof = _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() + 5.0,
+        )
+        assert saw_eof is True
+        assert bytes(rx_buf) == frame
+        assert budget[0] == 0
+    finally:
+        r_file.close()
+
+
+def test_absorb_partial_expired_deadline_is_timeout() -> None:
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"abc")
+    budget = [0]
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() - 1.0,
+            )
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_TIMEOUT"
+        assert elapsed < 0.5
+        assert bytes(rx_buf) == b"abc"
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_nl_expired_deadline_returns_false() -> None:
+    proc, r_file, w_file = _pipe_proc()
+    frame = b'{"a":1}\n'
+    rx_buf = bytearray(frame)
+    budget = [0]
+    try:
+        t0 = time.monotonic()
+        saw_eof = _absorb_pending_continuation(
+            proc,
+            budget,
+            rx_buf,
+            max_line_bytes=DEFAULT_MAX_LINE_BYTES,
+            max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+            deadline=time.monotonic() - 1.0,
+        )
+        elapsed = time.monotonic() - t0
+        assert saw_eof is False
+        assert elapsed < 0.5
+        assert bytes(rx_buf) == frame
+    finally:
+        w_file.close()
+        r_file.close()
+
+
+def test_absorb_oversize_partial_eof_is_overflow_not_eof() -> None:
+    max_line = 256
+    proc, r_file, w_file = _pipe_proc()
+    rx_buf = bytearray(b"x" * 200)
+    budget = [0]
+    try:
+        w_file.write(b"x" * 100)
+        w_file.flush()
+        w_file.close()
+        with pytest.raises(AcpError) as ei:
+            _absorb_pending_continuation(
+                proc,
+                budget,
+                rx_buf,
+                max_line_bytes=max_line,
+                max_total_bytes=DEFAULT_DRAIN_MAX_BYTES,
+                deadline=time.monotonic() + 5.0,
+            )
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert ei.value.code != "E_ACP_EOF"
+        assert "line overflow" in str(ei.value)
+        assert len(rx_buf) == 300
+    finally:
+        r_file.close()
+
+
+def test_handshake_zero_quiet_resume_exact_chunk_plus_300k_is_overflow(
+    tmp_path: Path,
+) -> None:
+    """F12: resume frame exactly 4096 bytes + queued 300 KiB at quiet=0."""
+    sid = str(uuid.uuid4())
+    resume_frame = _padded_resume_frame(sid)
+    assert len(resume_frame) == _STDOUT_READ_CHUNK
+    assert resume_frame.endswith(b"\n")
+    proc, argv = _spawn(
+        "resume_exact_chunk_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "300000"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0, session_id=sid)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        elapsed = time.monotonic() - t0
+        assert ei.value.code == "E_ACP_OVERFLOW"
+        assert "line overflow" in str(ei.value)
+        assert "byte overflow" not in str(ei.value)
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert elapsed < 2.0
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_partial_suffix_exit_is_eof_poll_race(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn(
+        "resume_plus_under_limit_suffix_then_exit",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "50"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_complete_chrome_then_exit_is_eof() -> None:
+    """F12: F9 accepts chrome, then EOF before receipt even if poll is None."""
+    sid = str(uuid.uuid4())
+    chrome = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "current_mode_update",
+                        "mode": "default",
+                    }
+                },
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    sess, r_file = _handshake_pipe_session(sid, extra=chrome)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_REPLAY"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert sess.proc.poll() is None
+    finally:
+        sess.close()
+        r_file.close()
+
+
+def test_handshake_zero_quiet_replay_then_exit_is_replay_not_eof(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("resume_plus_replay_coalesced_then_exit", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_REPLAY"
+        assert ei.value.code != "E_ACP_EOF"
+        assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()
+
+
+def test_handshake_zero_quiet_exit_after_resume_is_eof() -> None:
+    """F12: complete-frame EOF is E_ACP_EOF before receipt if poll is None."""
+    sid = str(uuid.uuid4())
+    sess, r_file = _handshake_pipe_session(sid)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_EOF"
+        assert ei.value.code != "E_ACP_OVERFLOW"
+        assert sess._receipt is None
+        assert sess._ready is False
+        assert sess.proc.poll() is None
+    finally:
+        sess.close()
+        r_file.close()
+
+
+def test_handshake_partial_suffix_expired_deadline_is_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli import host_acp as host_acp_mod
+
+    proc, argv = _spawn(
+        "resume_plus_oversize_suffix",
+        tmp_path,
+        env={"OMG_ACP_FAKE_SUFFIX_BYTES": "50"},
+    )
+    sess = _session(proc, argv, tmp_path, quiet=0)
+    orig_await = sess._await_result
+    jump = {"on": False}
+
+    def _await_wrapper(*args: object, **kwargs: object):
+        result = orig_await(*args, **kwargs)
+        expect_id = args[0] if args else kwargs.get("expect_id")
+        if expect_id == 2:
+            jump["on"] = True
+        return result
+
+    monkeypatch.setattr(sess, "_await_result", _await_wrapper)
+    real_mono = host_acp_mod.time.monotonic
+
+    def _jumped_mono() -> float:
+        now = real_mono()
+        if jump["on"]:
+            return now + 10.0
+        return now
+
+    monkeypatch.setattr(host_acp_mod.time, "monotonic", _jumped_mono)
+    try:
+        with pytest.raises(AcpError) as ei:
+            sess.handshake(timeout_s=5.0)
+        assert ei.value.code == "E_ACP_TIMEOUT"
+        assert sess._receipt is None
+        assert sess._ready is False
+    finally:
+        sess.close()

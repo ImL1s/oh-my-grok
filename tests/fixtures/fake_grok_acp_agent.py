@@ -21,8 +21,12 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   resume_plus_under_limit_frames — valid resume result + two complete 200-byte chrome frames (combined payload 400 > typical max_line=256; each frame 200 < 256)
   resume_plus_chrome_plus_suffix — valid resume result + chrome session/update + unterminated oversize suffix in one write (OMG_ACP_FAKE_SUFFIX_BYTES, default 400)
   resume_plus_replay_coalesced — valid resume result + forbidden agent_message_chunk in one write
+  resume_plus_replay_coalesced_then_exit — resume_plus_replay_coalesced then exit
   resume_plus_malformed_coalesced — valid resume result + non-JSON complete frame in one write
   resume_plus_unknown_coalesced — valid resume result + unknown session/update in one write
+  resume_exact_chunk_plus_oversize_suffix — resume JSON padded to exactly 4096 bytes + unterminated suffix (OMG_ACP_FAKE_SUFFIX_BYTES)
+  resume_plus_under_limit_suffix_then_exit — resume + small unterminated suffix then exit
+  resume_plus_chrome_then_exit — resume + complete current_mode_update chrome then exit
   session_id_mismatch — resume result sessionId ≠ requested UUID
   resume_missing_flag — resume result omits resumed
   session_id_alias — resume result uses session_id alias only
@@ -91,6 +95,49 @@ def _padded_chrome_frame(pad_char: str, payload_len: int) -> bytes:
     if len(out) != payload_len:
         raise RuntimeError(
             f"padded chrome frame len {len(out)} != target {payload_len}"
+        )
+    return out
+
+
+def _close_stdout() -> None:
+    """Publish pipe EOF before process teardown (no poll-reap race)."""
+    try:
+        sys.stdout.buffer.flush()
+        sys.stdout.buffer.close()
+    except (BrokenPipeError, ValueError, OSError):
+        return
+
+
+def _padded_resume_frame(rpc_id: object, session_id: str, target_len: int) -> bytes:
+    """Compact resume result whose full NL-terminated frame is *target_len*."""
+
+    def _encode(pad: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "result": {
+                        "sessionId": session_id,
+                        "resumed": True,
+                        "pad": pad,
+                    },
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    empty = _encode("")
+    need = target_len - len(empty)
+    if need < 0:
+        raise RuntimeError(
+            f"resume frame empty len {len(empty)} exceeds target {target_len}"
+        )
+    out = _encode("p" * need)
+    if len(out) != target_len:
+        raise RuntimeError(
+            f"padded resume frame len {len(out)} != target {target_len}"
         )
     return out
 
@@ -312,6 +359,88 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if scenario == "resume_exact_chunk_plus_oversize_suffix":
+        try:
+            n = int(os.environ.get("OMG_ACP_FAKE_SUFFIX_BYTES") or "400")
+        except ValueError:
+            n = 400
+        payload = _padded_resume_frame(resume["id"], sid, 4096) + b"x" * max(0, n)
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        time.sleep(60)
+        return 0
+
+    if scenario == "resume_plus_under_limit_suffix_then_exit":
+        try:
+            n = int(os.environ.get("OMG_ACP_FAKE_SUFFIX_BYTES") or "50")
+        except ValueError:
+            n = 50
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + b"x" * max(0, n)
+        )
+        sys.stdout.buffer.write(payload)
+        _close_stdout()
+        return 0
+
+    if scenario == "resume_plus_chrome_then_exit":
+        chrome = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {"sessionUpdate": "current_mode_update", "mode": "default"}
+            },
+        }
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + json.dumps(chrome).encode("utf-8")
+            + b"\n"
+        )
+        sys.stdout.buffer.write(payload)
+        _close_stdout()
+        return 0
+
+    if scenario == "resume_plus_replay_coalesced_then_exit":
+        replay = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "SECRET_REPLAY_BODY"},
+                }
+            },
+        }
+        payload = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": resume["id"],
+                    "result": {"sessionId": sid, "resumed": True},
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + json.dumps(replay).encode("utf-8")
+            + b"\n"
+        )
+        sys.stdout.buffer.write(payload)
+        _close_stdout()
+        return 0
+
     if scenario == "resume_plus_replay_coalesced":
         replay = {
             "jsonrpc": "2.0",
@@ -473,6 +602,7 @@ def main() -> int:
         _notify_update("session_info_update", title="t")
 
     if scenario == "exit_after_resume":
+        _close_stdout()
         return 0
 
     # Stay alive; drain stdin until EOF; emit periodic chrome.

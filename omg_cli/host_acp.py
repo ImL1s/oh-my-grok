@@ -416,13 +416,21 @@ def _absorb_pending_continuation(
     max_total_bytes: int,
     deadline: float,
     cancel_event: threading.Event | None = None,
-) -> None:
-    """Drain pending incomplete-frame bytes still in the OS pipe.
+) -> bool:
+    """Drain currently-ready pipe chunks; wait only for a partial suffix.
 
-    Stops on overflow, leftover completion (empty or NL-terminated),
-    stdout EOF, or handshake deadline after a non-blocking drain of
-    already-queued bytes. Does not extract frames or increment
-    *byte_budget*.
+    Never returns just because *rx_buf* ends on NL. When there is no
+    incomplete suffix, nonblocking-probes and drains every chunk already
+    readable on stdout. When a partial suffix exists, waits only until
+    *deadline*. Does not extract frames or increment *byte_budget*.
+
+    Overflow of any complete or incomplete frame is classified before
+    EOF or timeout. An empty read while a partial suffix remains is
+    ``E_ACP_EOF`` even if ``proc.poll()`` is still ``None``. An empty
+    read after only complete frames returns ``True`` so the caller can
+    F9-drain then fail ``E_ACP_EOF``. Deadline / no-ready with a
+    partial suffix is ``E_ACP_TIMEOUT`` (never a silent return).
+    Returns ``False`` when the probe finds no further ready data.
     """
     if proc.stdout is None:
         raise AcpError("ACP stdout missing", code="E_ACP_IO")
@@ -438,10 +446,12 @@ def _absorb_pending_continuation(
             max_total_bytes=max_total_bytes,
             include_complete_frames=True,
         )
-        if _incomplete_line_len(rx_buf) == 0:
-            return
-        remaining = deadline - time.monotonic()
-        timeout = remaining if remaining > 0 else 0.0
+        has_partial = _incomplete_line_len(rx_buf) > 0
+        if has_partial:
+            remaining = deadline - time.monotonic()
+            timeout = remaining if remaining > 0 else 0.0
+        else:
+            timeout = 0.0
         try:
             ready, _, _ = select.select([proc.stdout], [], [], timeout)
             if not ready:
@@ -452,7 +462,11 @@ def _absorb_pending_continuation(
                     max_total_bytes=max_total_bytes,
                     include_complete_frames=True,
                 )
-                return
+                if has_partial:
+                    raise AcpError("ACP read timed out", code="E_ACP_TIMEOUT")
+                if proc.poll() is not None:
+                    return True
+                return False
             chunk = proc.stdout.read(_STDOUT_READ_CHUNK)
         except (OSError, ValueError) as exc:
             raise AcpError(f"ACP read failed: {exc}", code="E_ACP_IO") from exc
@@ -464,7 +478,11 @@ def _absorb_pending_continuation(
                 max_total_bytes=max_total_bytes,
                 include_complete_frames=True,
             )
-            return
+            if has_partial:
+                raise AcpError(
+                    "ACP EOF with incomplete frame", code="E_ACP_EOF"
+                )
+            return True
         rx_buf.extend(chunk)
 
 
@@ -727,7 +745,9 @@ class AcpStdioSession:
         # Absorb + overflow BEFORE poll→EOF. An exited peer may have
         # already written an oversized complete or incomplete leftover;
         # classifying exit first would mask E_ACP_OVERFLOW as E_ACP_EOF.
-        self._absorb_pending_continuation(
+        # Absorb also reports stdout EOF (empty read) so a poll race
+        # cannot issue a receipt after F9 classifies leftover frames.
+        stdout_eof = self._absorb_pending_continuation(
             deadline=deadline, cancel_event=cancel_event
         )
         self._raise_if_rx_over_limits(include_complete_frames=True)
@@ -735,10 +755,11 @@ class AcpStdioSession:
         # Quiet loop is skipped when quiet_window_s=0 (or already
         # exhausted). A peer may coalesce the resume result plus a
         # complete notification in one os.write; leftover complete
-        # frames must be parsed before any receipt.
+        # frames must be parsed before any receipt. F9 first, then
+        # EOF — replay/malformed/unknown beat a poll-racy E_ACP_EOF.
         self._drain_complete_buffered_frames(phase="pre-receipt")
 
-        if self.proc.poll() is not None:
+        if self.proc.poll() is not None or stdout_eof:
             raise AcpError(
                 "ACP process exited before readiness (transient handshake)",
                 code="E_ACP_EOF",
@@ -867,8 +888,8 @@ class AcpStdioSession:
         *,
         deadline: float,
         cancel_event: threading.Event | None,
-    ) -> None:
-        _absorb_pending_continuation(
+    ) -> bool:
+        return _absorb_pending_continuation(
             self.proc,
             self._byte_budget,
             self._rx_buf,
