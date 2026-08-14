@@ -335,7 +335,10 @@
         ]
       },
       "omg_paths": [
-        "agents/"
+        "agents/",
+        "agents/catalog.json",
+        "omg_cli/agents_catalog.py",
+        "docs/parity/projections/antigravity/agents/"
       ],
       "runtime_owner": "omg",
       "maturity": {
@@ -343,7 +346,8 @@
       },
       "evidence": {
         "tests": [
-          "tests/test_skill_inventory.py"
+          "tests/test_skill_inventory.py",
+          "tests/test_agents_catalog.py"
         ],
         "docs": [
           "docs/skills.md"
@@ -354,7 +358,7 @@
         "#71",
         "#79"
       ],
-      "gap": "Grok plugin agents exist; OMC-style dynamic tier routing is not fully mirrored."
+      "gap": "Machine catalog of 13 omg-* agents landed (#71: tiers, spawn policy, Grok+AG projection targets). OMC-style dynamic tier routing runtime is not mirrored (#131/#79)."
     },
     {
       "id": "omc.skills.catalog_aliases",
@@ -974,9 +978,11 @@
       },
       "omg_paths": [
         "agents/",
+        "agents/catalog.json",
         "agents/omg-code-reviewer.md",
         "agents/omg-security-reviewer.md",
-        "agents/omg-critic.md"
+        "agents/omg-critic.md",
+        "omg_cli/agents_catalog.py"
       ],
       "runtime_owner": "omg",
       "maturity": {
@@ -984,7 +990,8 @@
       },
       "evidence": {
         "tests": [
-          "tests/test_skill_inventory.py"
+          "tests/test_skill_inventory.py",
+          "tests/test_agents_catalog.py"
         ],
         "docs": [
           "docs/skills.md"
@@ -995,7 +1002,7 @@
         "#71",
         "#79"
       ],
-      "gap": "Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#71/#79)."
+      "gap": "Machine catalog landed including reviewer roles (#71). OMX product-catalog breadth and dynamic routing remain partial (#131/#79)."
     },
     {
       "id": "omx.goal.stop_lock_recovery",
@@ -1147,6 +1154,8 @@
       },
       "omg_paths": [
         "agents/",
+        "agents/catalog.json",
+        "omg_cli/agents_catalog.py",
         "plugin.json"
       ],
       "runtime_owner": "omg",
@@ -1155,7 +1164,8 @@
       },
       "evidence": {
         "tests": [
-          "tests/test_skill_inventory.py"
+          "tests/test_skill_inventory.py",
+          "tests/test_agents_catalog.py"
         ],
         "docs": [
           "docs/skills.md"
@@ -1166,7 +1176,7 @@
         "#71",
         "#79"
       ],
-      "gap": "Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#71)."
+      "gap": "Machine catalog of 13 omg-* agents landed (#71). OmO discipline/category routing engine is not mirrored (#131)."
     },
     {
       "id": "omo.rules.intent_gate",
@@ -1561,6 +1571,9 @@
       },
       "omg_paths": [
         "agents/",
+        "agents/catalog.json",
+        "omg_cli/agents_catalog.py",
+        "docs/parity/projections/antigravity/agents/",
         "plugin.json"
       ],
       "runtime_owner": "omg",
@@ -1570,18 +1583,21 @@
       },
       "evidence": {
         "tests": [
-          "tests/test_skill_inventory.py"
+          "tests/test_skill_inventory.py",
+          "tests/test_agents_catalog.py"
         ],
         "docs": [
-          "docs/skills.md"
+          "docs/skills.md",
+          "docs/parity/projections/antigravity/agents/README.md"
         ],
         "live": []
       },
       "issues": [
         "#67",
+        "#71",
         "#79"
       ],
-      "gap": "Grok plugin markdown agents exist (historical #67). Antigravity-native agent catalog wiring is near-1:1 follow-up under #79, not a closed-#67 blocker."
+      "gap": "Grok plugin markdown agents exist (historical #67). Static Antigravity agent.md projections landed under docs/parity/projections/antigravity/agents/ (#71). This is not an installed AG plugin and not live AG evidence. Native AG catalog wiring and live projection install remain open (#79/#77)."
     },
     {
       "id": "antigravity.skills.hooks_subagents_plugins_mcp",
@@ -1939,7 +1955,7 @@
         "omo.quality.comment_hygiene",
         "omo.goal.todo_continuation"
       ],
-      "summary": "Near-1:1 leftovers (typed AG host-owned controls, Antigravity-native catalog/history, optional research/edit/hygiene, host_impossible todo-continuation) belong to #79. Not #78 close work."
+      "summary": "Static Antigravity agent.md projections landed under docs/parity/projections/antigravity/agents/ (#71; not an installed AG plugin, not live evidence). Remaining near-1:1 leftovers (typed AG host-owned controls, live AG catalog install/history, optional research/edit/hygiene, host_impossible todo-continuation) belong to #79/#131. Not #78 close work."
     }
   ]
 }

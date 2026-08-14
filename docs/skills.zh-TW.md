@@ -468,7 +468,7 @@ find_references/symbols/diagnostics）、
 | `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
-| `omg capabilities` / `omg native-status` | 分開的 capability tiers；不探測私有 sidecar。 |
+| `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`；不探測私有 sidecar。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
 
 Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subagent`、傳入
@@ -490,8 +490,12 @@ Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subag
 | `omg-security-reviewer` | `read-only` | OWASP / secrets / 不安全模式 |
 | `omg-qa-tester` / `omg-analyst` | 見 taxonomy | QA 情境 / interview 分析 |
 
-團隊路由用的 posture / class 地板在 `omg_cli/team/roles.py`
-（`role_posture`、`role_class`、`is_reviewer_or_verifier`）。
+機器可讀插件 agent 目錄：[`agents/catalog.json`](../agents/catalog.json)
+（loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 檢視）。
+[`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
+下的 Antigravity `agent.md` **只是投影** — 不是已安裝的 AG 插件，也不是 live AG 證據。
+團隊路由地板仍在 `omg_cli/team/roles.py`，直到 dual-host routing（#131）消費此目錄。
+`omg agents` 仍是 contract-only（未註冊）。
 Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
 
 ---

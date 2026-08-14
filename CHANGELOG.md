@@ -9,6 +9,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Added
+- **#71 agent catalog (PR slice):** read-only machine catalog
+  `agents/catalog.json` (13 `omg-*` agents: id, file, capability_mode,
+  permission_mode, tier, spawn policy, Grok plugin + Antigravity
+  `agent.md` projection targets). Fail-closed loader
+  `omg_cli/agents_catalog.py` (missing agent, duplicate id, capability_mode
+  outside `{read-only, read-write}`; never `execute`/`all`). `omg
+  capabilities` inspects `agents_catalog` (does not register `omg agents`).
+  Static Antigravity projections under
+  `docs/parity/projections/antigravity/agents/` are **not** an installed AG
+  plugin and **not** live AG evidence. Dual-host routing (#131) must consume
+  this catalog. OmO discipline routing engine and live AG projection install
+  remain open. Refs #71 (does not close).
 
 ### Fixed
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global

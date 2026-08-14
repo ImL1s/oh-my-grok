@@ -12,7 +12,7 @@
 | `omx.workflow.deep_interview_ralplan` | runtime_orchestration | omg_native | grok=catalogued | catalogued | Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial. |
 | `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only. Near-1:1 leftover owned by #79, not #78. |
 | `omx.team.worker_mailbox_question` | team | omg_native | grok=catalogued | catalogued | Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69. |
-| `omx.agents.reviewer_product_catalog` | agents_routing | omg_native | grok=catalogued | catalogued | Plugin reviewer agents exist; OMX product-catalog breadth and dynamic routing remain partial (#71/#79). |
+| `omx.agents.reviewer_product_catalog` | agents_routing | omg_native | grok=catalogued | catalogued | Machine catalog landed including reviewer roles (#71). OMX product-catalog breadth and dynamic routing remain partial (#131/#79). |
 | `omx.goal.stop_lock_recovery` | runtime_orchestration | omg_native | grok=catalogued | catalogued | Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#69/#74/#79). |
 | `omx.plugin.setup_update_migrate` | install_update | omg_native | grok=catalogued | catalogued | omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#77). |
 | `omx.quality.visual_modes` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#75/#79). |

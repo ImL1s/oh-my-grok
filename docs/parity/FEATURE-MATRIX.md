@@ -40,7 +40,7 @@
 | `omo.ulw.ultrawork_loop` | runtime_orchestration | omg_native | grok=catalogued | catalogued | #69, #70, #79 |
 | `omo.compat.tmux_plugin` | team | omg_native | grok=catalogued | catalogued | #69, #79 |
 | `antigravity.headless.structured_execution` | antigravity | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #67, #69 |
-| `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #79 |
+| `antigravity.agents.markdown_custom` | agents_routing | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #71, #79 |
 | `antigravity.skills.hooks_subagents_plugins_mcp` | skills | omg_native | antigravity=catalogued, grok=catalogued | catalogued | #67, #79 |
 | `antigravity.jobs.background_tasks` | jobs | optional_unclaimed | antigravity=catalogued, grok=catalogued | optional_unclaimed | #68, #69 |
 | `antigravity.runtime.model_effort_mode_perms` | antigravity | host_owned | antigravity=catalogued, grok=catalogued | catalogued | #79 |

@@ -264,25 +264,15 @@ def check_skills_omg_prefix() -> tuple[str, bool, str]:
 
 
 def check_agents_present() -> tuple[str, bool, str]:
-    agents_dir = plugin_root() / "agents"
-    if not agents_dir.is_dir():
-        return _check("agents", False, "agents/ missing")
-    expected = [
-        "omg-orchestrator.md",
-        "omg-executor.md",
-        "omg-critic.md",
-        "omg-verifier.md",
-        "omg-analyst.md",
-        "omg-code-reviewer.md",
-        "omg-architect.md",
-        "omg-qa-tester.md",
-    ]
-    missing = [n for n in expected if not (agents_dir / n).is_file()]
-    if missing:
-        return _check("agents", False, f"missing: {', '.join(missing)}")
-    # Count all agent markdown files for honesty (core + optional)
-    total = len([p for p in agents_dir.glob("*.md") if p.is_file()])
-    return _check("agents", True, f"{len(expected)} required present ({total} total)")
+    """Require the #71 machine catalog to match ``agents/omg-*.md`` on disk."""
+    from omg_cli.agents_catalog import AgentsCatalogError, load_agents_catalog
+
+    try:
+        catalog = load_agents_catalog(plugin_root())
+    except AgentsCatalogError as exc:
+        return _check("agents", False, str(exc)[:240])
+    n = len(catalog.agents)
+    return _check("agents", True, f"{n} catalogued present ({n} total)")
 
 
 def check_deny_importable() -> tuple[str, bool, str]:
