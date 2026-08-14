@@ -194,12 +194,19 @@ def _install_live_tmux(
 
     def run(args: Any, **_kw: Any) -> MagicMock:
         command = list(args)
+        sock = _kw.get("socket_path")
         # Strip leading tmux binary if present (_tmux_run includes it).
         if command and command[0] == "tmux":
             command = command[1:]
-        commands.append(list(command))
+        recorded = list(command)
+        if isinstance(sock, str) and sock:
+            recorded = ["-S", sock, *command]
+        commands.append(recorded)
         if len(command) >= 2 and command[0] == "-S":
             command = command[2:]
+        elif isinstance(sock, str) and sock:
+            # Product _tmux_run pins -S via kwarg, not argv[0].
+            pass
         result = MagicMock(returncode=0, stdout="", stderr="")
         if not command:
             return result

@@ -117,19 +117,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `coverage_digest` values only after gap.team.v3 +
   `omo.team.hyperplan_security` text update for fixture-backed composition
   execution (no policy/mapping/status changes). Refs #69 (does not close).
-- **#147 Codex review:** interactive Grok argv now honors ``--safe`` /
-  ``--yolo`` the same way as headless D1 (default no longer injects
-  ``bypassPermissions``), passes the routed model, refuses symlink inbox /
-  exec-wrapper destinations, snapshots those artifacts for ``--run`` rollback,
-  and threads ``ExactPaneProof.tmux_socket_path`` through liveness probes
-  (not only the final ``send-keys``). Real-Grok ``TUI_READY`` / PROVIDER_ECHO
+- **#147 Codex review:** `omg team scale --add` refuses interactive TTY
+  teams until scale-up materializes the same I/O mode (it currently
+  stamps headless supervisor panes). Refs #147.
+- **#147 Codex review:** interactive Grok argv now honors `--safe` /
+  `--yolo` the same way as headless D1 (default no longer injects
+  `bypassPermissions`), passes the routed model, refuses symlink inbox /
+  exec-wrapper destinations, snapshots those artifacts for `--run` rollback,
+  and threads `ExactPaneProof.tmux_socket_path` through liveness probes
+  (not only the final `send-keys`). Real-Grok `TUI_READY` / PROVIDER_ECHO
   remains open #147 work. Refs #147.
 - **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
   and ignore CSI-only/empty lines before treating a TTY read as provider
-  consume, so ``PROVIDER_ECHO`` is the operator payload. After echo the
-  fixture lingers (``OMG_TEAM_PROVIDER_LINGER_S``, default 5s) so macOS
+  consume, so `PROVIDER_ECHO` is the operator payload. After echo the
+  fixture lingers (`OMG_TEAM_PROVIDER_LINGER_S`, default 5s) so macOS
   tmux 3.7 can still capture the marker before the pane is destroyed.
-  Status/resume liveness mocks accept ``socket_path``. Refs #147.
+  Status/resume liveness mocks accept `socket_path`. Refs #147.
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
   PreToolUse hard check now smoke-allows first-party `omg team` (bare and
   path-prefixed) so a pre-fix hook that still classifies Team as an external

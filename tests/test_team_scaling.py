@@ -4413,7 +4413,7 @@ def test_relaunch_skips_malformed_pane_dead_as_unknown(
     )
     first = live["tasks"][0]
 
-    def fake_tmux(args: list[str]):
+    def fake_tmux(args: list[str], **_kwargs):
         from types import SimpleNamespace
 
         if args[0] == "display-message":
