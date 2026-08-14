@@ -11,6 +11,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 
 ### Fixed
+- **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
+  PreToolUse hard check now smoke-allows first-party `omg team` (bare and
+  path-prefixed) so a pre-fix hook that still classifies Team as an external
+  CLI cannot pass. Isolated install + PATH-basename `omg team` tests prove
+  slash-skill → bare CLI routing, nested-launch zero side effects, and
+  foreign CLI deny. Refs #146.
 - **#169 PR1 identity-safe release upload:** publish no longer uses
   `gh release upload --clobber`. `scripts/release_upload_assets.py` +
   `omg_cli.release_upload.plan_release_asset_upload` skip only when remote

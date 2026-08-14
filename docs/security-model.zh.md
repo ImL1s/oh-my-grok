@@ -179,7 +179,7 @@ python3 scripts/canary_pretool.py --live
 1. **Wire 契约** — grok 不论 exit code 都会尊重 stdout `{"decision":"deny"}`，并把非 `{0,2}` 的 exit 当 fail-open。因此 standalone **只**用 stdout JSON 表达 deny，且 **永远 exit 0** — 非零 exit（尤其是 2）绝不能来自我们。
 2. **Launcher** — 安装成 `python3 -I -S "<abs>" || true`。`-I -S` 隔离直译器（无 `PYTHONPATH`／user-site／sibling-module 注入）；`|| true` 把任何直译器／启动失败（例如 rc 2“打不开档”）正规成 rc 0 → fail-open。
 3. **In-code** — 整段 `try/except`，任何错误预设 allow。
-4. **doctor** — realpath 必须在 `$GROK_HOME` 下 + 真的 `open()` + 行为性子行程 smoke（allow／deny）+ installed-vs-committed hash（过期则 WARN）。不要信任 `os.access`（它查 permission bits，不是 TCC）。
+4. **doctor** — realpath 必须在 `$GROK_HOME` 下 + 真的 `open()` + 行为性子行程 smoke（allow `ls`、allow 第一方 `omg team` 裸命令与路径前缀、deny `claude`、deny 未加 scope 的 `spawn_subagent`）+ installed-vs-committed hash（过期则 WARN；`--strict` 失败）。仍把 `omg team` 当成外部 CLI 的旧 hook 会硬失败，修复命令是 `omg install-hook`。不要信任 `os.access`（它查 permission bits，不是 TCC）。
 
 迁移：既有 checkout-path json 会在 `omg setup`／`install-hook` 时自动修复；若无法替换则**隔离**成非 `.json` 名称（grok 只发现 `*.json`），使它不能再 deny 每个工具。这一切在 hook timeout／崩溃时仍是 **fail-open**；主要隔离仍是实作者没有 Execute 的 `capability_mode`。
 

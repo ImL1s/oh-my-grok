@@ -351,7 +351,9 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
     FAIL when: json missing / malformed / has ≠1 command hook (a 2nd could exit 2) /
     matcher missing shell or spawn / script escapes ``$GROK_HOME`` (checkout or
     symlink) / not a readable regular file / a neutral-cwd behavioral smoke returns
-    the wrong allow/deny decisions.
+    the wrong allow/deny decisions. First-party ``omg team`` (bare and
+    path-prefixed) must smoke-allow so a pre-fix hook that still denies Team
+    cannot pass doctor.
     """
     from omg_cli.hook_install import (
         MATCHER,
@@ -439,8 +441,13 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
     # Behavioral smoke through the ACTUAL shell command (exercises -I -S + || true).
     # EVERY probe must exit 0 (a nonzero exit — esp. 2 — is grok's explicit deny) and
     # return the right JSON decision. Parse the decision; never substring-match.
+    # First-party Team must be allowed on the installed hook (#146). A pre-fix
+    # standalone that still classifies ``omg team`` as an external CLI fails here
+    # with the exact remediation ``omg install-hook``.
     probes = (
         ("allow", '{"tool_name":"run_terminal_command","tool_input":{"command":"ls -la"}}'),
+        ("allow", '{"tool_name":"run_terminal_command","tool_input":{"command":"omg team start --goal x"}}'),
+        ("allow", '{"tool_name":"run_terminal_command","tool_input":{"command":"/opt/omg/bin/omg team launch --goal x"}}'),
         ("deny", '{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}'),
         ("deny", '{"tool_name":"spawn_subagent","tool_input":{"subagent_type":"explore"}}'),
     )
@@ -460,7 +467,12 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
         except Exception:
             return _check(name, False, f"hook smoke emitted non-decision JSON: {out!r}")
         if got != want:
-            return _check(name, False, f"hook smoke decision {got!r} (want {want!r}) for {payload}")
+            return _check(
+                name,
+                False,
+                f"hook smoke decision {got!r} (want {want!r}) for {payload} "
+                "(pre-fix/stale hook? run: omg install-hook)",
+            )
 
     return _check(name, True, f"{path} → {resolved} (canonical launcher; smoke rc0 allow/deny/spawn ok)")
 
