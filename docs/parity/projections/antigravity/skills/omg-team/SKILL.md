@@ -44,6 +44,12 @@ unspawned provider. Auth/trust prompts → `blocked_start`. Timeout:
 exits non-zero and leaves state for diagnosis — never silent dry-run/ULW
 fallback. Explicit `--no-wait` → `unverified_start` only.
 
+`--io-mode interactive` does **not** wait for supervisor ACK receipts. The
+leader polls the pane TTY (same timeout) for `TUI_READY:<nonce>`, then
+CLI-promotes `input_ready`. Timeout fails closed (no silent headless
+downgrade). Workers/descriptors never self-promote from stdout scrape.
+Default/`auto` remain headless. `LIVE_TEAM_INTERACTIVE_TTY_OK` is not claimed.
+
 ## HARD RULES
 - Launch authority is **only** the `omg team …` CLI. Do not fake team with
   `spawn_subagent`, and do not hand-write `passes` / `verified`.

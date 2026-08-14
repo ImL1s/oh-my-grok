@@ -133,6 +133,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `focused=true` when `$TMUX` is a different server than
   `proof.tmux_socket_path`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains
   open #147 work. Refs #147.
+- **#147 AG skill projection:** regenerate
+  `docs/parity/projections/antigravity/skills/omg-team/SKILL.md` after
+  `--io-mode` skill text (static #70 projection; not live AG evidence).
+  Refs #147.
 - **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
   and ignore CSI-only/empty lines before treating a TTY read as provider
   consume, so `PROVIDER_ECHO` is the operator payload. After echo the
