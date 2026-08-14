@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -174,3 +175,106 @@ def test_setup_cli_flags_exist() -> None:
     ns = parser.parse_args(["setup", "--runtime", "both", "--scope", "user"])
     assert ns.setup_runtime == "both"
     assert ns.setup_scope == "user"
+
+
+def test_inspect_hash_mismatch_is_stale_not_user_owned(tmp_path: Path) -> None:
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is True
+    assert payload.get("drift") == []
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.write_text("totally different user text\n", encoding="utf-8")
+    drifted = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert drifted["ok"] is False
+    assert any(row["class"] == "stale" for row in drifted["drift"])
+
+
+def test_force_replaces_symlink_without_following(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    try:
+        dest.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    manifest = build_manifest(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        transaction_id="c" * 32,
+        plugin=ROOT,
+    )
+    apply_manifest(manifest, project_root=tmp_path, force=True, plugin=ROOT)
+    assert dest.is_symlink() is False
+    assert "OMG:MANAGED" in dest.read_text(encoding="utf-8")
+    assert outside.read_text(encoding="utf-8") == "secret\n"
+
+
+def test_rollback_unlinks_created_artifact(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("new\n", encoding="utf-8")
+    tx = tmp_path / ".omg" / "install" / "tx" / ("d" * 32)
+    tx.mkdir(parents=True)
+    (tx / "art.prev.json").write_text(
+        json.dumps({"target": str(dest), "kind": "created"}), encoding="utf-8"
+    )
+    marker = tmp_path / ".omg" / "install" / "tx" / "current.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "transaction_id": "d" * 32,
+                "backup_dir": str(tx),
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = rollback_interrupted("project", tmp_path)
+    assert dest.exists() is False
+    assert str(dest) in out["removed"]
+
+
+def test_user_scope_setup_skips_project_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.main import main
+    from omg_cli.project_root import ProjectRootError
+
+    def boom(*_args, **_kwargs):
+        raise ProjectRootError("stale OMG_PROJECT_ROOT")
+
+    monkeypatch.setattr("omg_cli.project_root.resolve_project_root", boom)
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.run_scoped_setup",
+        lambda **_kwargs: {"manifest": "x", "written": []},
+    )
+    rc = main(["setup", "--scope", "user", "--runtime", "antigravity"])
+    assert rc == 0
+
+
+def test_antigravity_runtime_skips_legacy_grok_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.main import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        "omg_cli.commands.install.project_root", lambda: tmp_path
+    )
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.run_scoped_setup",
+        lambda **_kwargs: {"manifest": "x", "written": [], "skipped": []},
+    )
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.refuse_home_project", lambda *_a, **_k: None
+    )
+    rc = main(["setup", "--runtime", "antigravity", "--here"])
+    assert rc == 0
+    assert "omg_cli.setup_cmd" not in sys.modules

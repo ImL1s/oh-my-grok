@@ -15,7 +15,6 @@ from omg_cli.cli_util import project_root
 def cmd_setup(args: argparse.Namespace) -> int:
     from omg_cli import __version__
     from omg_cli.install_manifest import InstallManifestError, refuse_home_project, run_scoped_setup
-    from omg_cli.setup_cmd import run_setup
 
     runtime = getattr(args, "setup_runtime", None) or "grok"
     scope = getattr(args, "setup_scope", None) or "project"
@@ -36,13 +35,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
             return 0
         root = project_root()
         refuse_home_project(root, here=here)
-        rc = run_setup(
-            root,
-            install_rules=not getattr(args, "no_global_rules", False),
-            install_hook=not getattr(args, "no_global_hook", False),
-        )
-        if rc != 0:
-            return rc
+        if runtime in {"grok", "both"}:
+            from omg_cli.setup_cmd import run_setup
+
+            rc = run_setup(
+                root,
+                install_rules=not getattr(args, "no_global_rules", False),
+                install_hook=not getattr(args, "no_global_hook", False),
+            )
+            if rc != 0:
+                return rc
         result = run_scoped_setup(
             runtime=runtime,
             scope="project",

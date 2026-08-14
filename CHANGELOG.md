@@ -111,6 +111,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#77 Codex review:** inspect compares recorded ``content_hash`` (hash
+  mismatch is stale, not user_owned false-green); rollback unlinks files
+  created in a failed transaction; ``--force`` replaces symlinks instead of
+  following them; ``omg setup --scope user`` skips project-root discovery;
+  ``--runtime antigravity`` does not run legacy Grok global setup. Refs #77.
 - **#73 Codex review:** MCP `capability_mode` cannot escalate above the
   server ceiling; hover/definition/rename forward `--line`/`--character`;
   `didOpen` is per URI; missing `--lsp-command` raises `E_LSP_COMMAND`.

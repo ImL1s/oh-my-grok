@@ -276,14 +276,47 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         return {"ok": True, "rolled_back": False}
     backups = Path(state.get("backup_dir") or "")
     restored = []
+    created_removed = []
     if backups.is_dir():
+        for prev in backups.glob("*.prev.json"):
+            try:
+                meta = json.loads(prev.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            target = Path(meta.get("target") or "")
+            kind = meta.get("kind")
+            if kind == "created":
+                if target.is_symlink() or target.is_file():
+                    target.unlink(missing_ok=True)
+                created_removed.append(str(target))
+            elif kind == "symlink":
+                target.unlink(missing_ok=True)
+                link = meta.get("link")
+                if isinstance(link, str) and link:
+                    target.symlink_to(link)
+                restored.append(str(target))
+            elif kind == "file":
+                bak = Path(meta.get("backup") or "")
+                if bak.is_file():
+                    target.write_bytes(bak.read_bytes())
+                    restored.append(str(target))
         for backup in backups.glob("*.bak"):
-            meta = json.loads(backup.with_suffix(".json").read_text(encoding="utf-8"))
+            meta_path = backup.with_suffix(".json")
+            if not meta_path.is_file():
+                continue
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             target = Path(meta["target"])
+            if any(row == str(target) for row in restored):
+                continue
             target.write_bytes(backup.read_bytes())
             restored.append(str(target))
     marker.unlink(missing_ok=True)
-    return {"ok": True, "rolled_back": True, "restored": restored}
+    return {
+        "ok": True,
+        "rolled_back": True,
+        "restored": restored,
+        "removed": created_removed,
+    }
 
 
 def apply_manifest(
@@ -324,7 +357,20 @@ def apply_manifest(
                 skipped.append({"target": str(target), "class": klass})
                 continue
             _mkdir(target.parent)
-            if target.is_file() and not target.is_symlink():
+            prev = backup_dir / f"{row['id']}.prev.json"
+            if target.is_symlink():
+                prev.write_text(
+                    json.dumps(
+                        {
+                            "target": str(target),
+                            "kind": "symlink",
+                            "link": os.readlink(target),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                target.unlink()
+            elif target.is_file():
                 data = target.read_bytes()
                 if len(data) <= MAX_BACKUP_BYTES:
                     bak = backup_dir / f"{row['id']}.bak"
@@ -332,6 +378,21 @@ def apply_manifest(
                     bak.with_suffix(".json").write_text(
                         json.dumps({"target": str(target)}), encoding="utf-8"
                     )
+                    prev.write_text(
+                        json.dumps(
+                            {
+                                "target": str(target),
+                                "kind": "file",
+                                "backup": str(bak),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+            else:
+                prev.write_text(
+                    json.dumps({"target": str(target), "kind": "created"}),
+                    encoding="utf-8",
+                )
             target.write_bytes(body)
             written.append(str(target))
         dest = (
@@ -399,9 +460,27 @@ def inspect_install_manifest(
             "error": f"malformed manifest: {exc}",
         }
     drift = []
+    plugin = plugin_root()
     for row in raw.get("artifacts") or []:
+        if not isinstance(row, dict):
+            continue
         target = Path(row.get("target") or "")
-        klass = classify_path(target)
+        claimed = row.get("content_hash")
+        if target.is_symlink():
+            klass = "foreign"
+        elif isinstance(claimed, str) and claimed:
+            if not target.is_file():
+                klass = "missing"
+            else:
+                try:
+                    digest = _sha256_bytes(target.read_bytes())
+                except OSError:
+                    klass = "malformed"
+                else:
+                    klass = "exact" if digest == claimed else "stale"
+        else:
+            body = _desired_body(row, plugin=plugin)
+            klass = classify_path(target, desired=body)
         if klass in {"stale", "missing", "malformed"}:
             drift.append({"id": row.get("id"), "class": klass, "target": str(target)})
     return {
