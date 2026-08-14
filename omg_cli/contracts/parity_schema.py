@@ -641,6 +641,9 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "command_registry.py",
                 "package_release.py",
                 "project_root.py",
+                "release_bundle.py",
+                "release_evidence.py",
+                "release_upload.py",
             ),
         )
         + ["omg_cli/jobs/**", "docs/durable-jobs.md"]
@@ -690,6 +693,8 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
             "scripts/check_version_consistency.py",
             "scripts/generate_cli_commands_doc.py",
             "scripts/package_release.py",
+            "scripts/release_github_facts.py",
+            "scripts/release_upload_assets.py",
             "scripts/static_checks.sh",
             "scripts/test_platform_contracts.sh",
             "scripts/live_autopilot_smoke.sh",
@@ -779,6 +784,9 @@ OMG_OWNER_PATTERNS: dict[str, tuple[str, ...]] = {
                 "test_compat.py",
                 "test_package_release.py",
                 "test_platform_host.py",
+                "test_release_bundle.py",
+                "test_release_evidence.py",
+                "test_release_upload.py",
                 "test_project_root.py",
                 "test_safe_yolo_flags.py",
                 "test_static_checks.py",

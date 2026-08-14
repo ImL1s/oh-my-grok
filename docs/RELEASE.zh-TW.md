@@ -83,9 +83,17 @@ omg parity run verify --path .omg/state/runs/RUN_ID/run-manifest.json --root .
     SHA256SUMS
 ```
 
-manifest 綁定候選 commit／tree、toolchain、環境 allowlist、source date epoch、archive hash／長度、精確 checksum 位元組，以及公開上傳順序。任何網路寫入前先驗證：
+manifest 綁定候選 commit／tree、toolchain、環境 allowlist、source date epoch、archive hash／長度、精確 checksum 位元組，以及公開上傳順序。用正規命令產生（不要手寫）：
 
 ```bash
+omg parity release-bundle \
+  --run-id RUN_ID \
+  --archive dist/release-bundle/oh-my-grok-0.8.0.tar.gz \
+  --checksums dist/release-bundle/SHA256SUMS \
+  --candidate-commit COMMIT \
+  --candidate-tree TREE \
+  --live-receipt \
+  --write
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
@@ -102,15 +110,20 @@ python3 scripts/release_attest.py \
 核准順序：
 
 1. 把凍結候選 push 到核准的 `main` ref 並 readback OID；
-2. 建立／readback 精確的 annotated `v<version>` tag；
-3. 從該 tag 建立 GitHub release；
-4. 上傳 archive，readback hash／長度；
+2. 建立／readback 精確的 annotated `v<version>` tag（`git cat-file -t` 必須是 `tag`）；
+3. 從該 tag 建立 GitHub release，notes 使用對應版本的 CHANGELOG 章節；
+4. 上傳 archive，readback hash／長度（身分安全；絕不 `--clobber`）；
 5. 上傳 `SHA256SUMS`，readback hash／長度；
 6. 設定／readback GitHub latest；
-7. 在乾淨位置驗證公開 latest 安裝；
-8. 持久化 canonical `release-completion-evidence.json`（含 transaction-bound readback chain），再用專用 release finalizer 把 run manifest 從 `release_active` 移到 `closed`。
+7. 在乾淨位置驗證公開 latest 安裝（證據不含憑證或私人路徑）；
+8. 用 `omg parity release-evidence`（唯一 constructor）持久化 canonical `release-completion-evidence.json`，再用專用 release finalizer 把 run manifest 從 `release_active` 移到 `closed`。
 
 ```bash
+python3 scripts/release_github_facts.py notes --version 0.8.0 --output /tmp/notes.md
+python3 scripts/release_github_facts.py tag-identity --tag v0.8.0 --expected-commit COMMIT
+omg parity release-evidence \
+  --facts /tmp/omg-release-facts.json \
+  --output .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-evidence-input.json
 omg parity run finalize-release \
   --path .omg/state/runs/RUN_ID/run-manifest.json \
   --expected-revision REVISION \
@@ -119,7 +132,7 @@ omg parity run finalize-release \
   --evidence .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-evidence-input.json
 ```
 
-通用的 manifest transition 路由**不能**關閉 release。finalizer 會把證據綁到精確的 `release_active` manifest hash、凍結 bundle hash、release nonce、候選 commit，以及必要的 per-channel／asset readback；若不可變的 0400 證據缺失或被改，closed manifest 驗證會失敗。release workflow 可以驗證並準備證據，但不得重建或默默發佈不同位元組。見 [`.github/workflows/release.yml`](../../.github/workflows/release.yml)。
+通用的 manifest transition 路由**不能**關閉 release。finalizer 會把證據綁到精確的 `release_active` manifest hash、凍結 bundle hash、release nonce、候選 commit，以及必要的 per-channel／asset readback；若不可變的 0400 證據缺失或被改，closed manifest 驗證會失敗。tag 觸發的 workflow 會生成並驗證 bundle manifest、annotated tag、CHANGELOG notes、asset／latest readback，以及公開 latest 安裝探針。只有在提供 `release_active` run 與完整 facts 時才會呼叫 `finalize-release`（`.omg/` 被 gitignore，CI checkout 不會捏造 dual-parity run）。facts 的 `run_id` 必須是 dual-parity run，而不是 GitHub Actions run id；`omg parity run finalize-release` 直接跟子命令（`--` 不要寫在 `finalize-release` 前面）。workflow 可以驗證並準備證據，但不得重建或悄悄發布不同位元組。GitHub 資產身份以遠端下載雜湊（`remote_assets`）為準，絕不把本地 bundle 位元組當作成功 readback。branch／tag protection 是外部 settings gate：workflow 把 `gh api` readback 寫入 `release-publication-facts` artifact，API 不可用時絕不宣稱 `configured`。見 [`.github/workflows/release.yml`](../../.github/workflows/release.yml)。
 
 ## 使用者安裝文字
 

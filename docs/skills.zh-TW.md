@@ -467,7 +467,7 @@ find_references/symbols/diagnostics）、
 | `omg compact create\|show\|render` | Lossless guidance checkpoint / restore。 |
 | `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
-| `omg parity run\|release-readback` | 委派 frozen W0 manifest engine，並驗 exact bundle。 |
+| `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
 | `omg capabilities` / `omg native-status` | 分開的 capability tiers；不探測私有 sidecar。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
 

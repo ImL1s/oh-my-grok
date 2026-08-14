@@ -338,7 +338,7 @@ omg {setup,doctor,update,uninstall,note,state,cancel,resume,wiki,hud,lsp,
 | `omg notify status\|send\|process` | Outbound-only, non-authoritative notification queue |
 | `omg workflow install\|list\|show\|plan\|run` | Versioned repository workflows and task-receipt ship gate — [guide](docs/workflows.md) |
 | `omg native-status` / `capabilities` | Public-only host observations and independent configured→verified tiers |
-| `omg parity run` / `parity release-readback` | Exact W0 manifest delegation and prebuilt release-bundle verification |
+| `omg parity run` / `parity release-readback` / `parity release-bundle` / `parity release-evidence` | Exact W0 manifest delegation, canonical bundle/evidence producers, and prebuilt release-bundle verification |
 | `omg wiki` / `hud` / `lsp` | Local markdown wiki · statusline pack · optional language-tool probe |
 | `omg interview …` | Deep-interview requirements gate |
 | `omg goal …` | Hash-chained ultragoal ledger + tail repair (pair with host slash `/goal` for session pressure) |

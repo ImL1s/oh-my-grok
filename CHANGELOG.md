@@ -14,10 +14,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#169 PR1 identity-safe release upload:** publish no longer uses
   `gh release upload --clobber`. `scripts/release_upload_assets.py` +
   `omg_cli.release_upload.plan_release_asset_upload` skip only when remote
-  digest matches; length/digest mismatch fails closed. Does **not** close
-  #169 (manifest / finalize-release / latest install still open).
+  digest matches; length/digest mismatch fails closed.
 
 ### Added
+- **#169 PR2 canonical bundle/evidence producers:** `omg parity release-bundle`
+  writes the documented `release-bundle-manifest.json` layout;
+  `omg parity release-evidence` is the only constructor for
+  `release-evidence-input.json`. Release workflow requires an annotated
+  `vX.Y.Z` tag, versioned CHANGELOG notes, public latest install/doctor
+  probe (no credentials in evidence), hashed GitHub remotes (never local
+  identity fallback), and fail-closed fake-GitHub retry semantics.
+  `finalize-release` still requires a `release_active` run (`.omg/` is
+  gitignored; CI does not invent one). Server-side `main` / `v*` protection
+  is recorded honestly (`claimed=false` when `gh api` is unavailable).
+  Publication facts are uploaded as a workflow artifact. Does **not** close
+  #169 until a tagged publish produces completion evidence and protection
+  readback on `main`.
 - **#147 PR1 Team worker I/O capability (fail-closed):** CLI-authoritative
   `io_mode` / `provider_tty_owner` / `input_ready` / `operator_input_supported`
   / `interaction_evidence` independent of pane/job topology. New supervisor

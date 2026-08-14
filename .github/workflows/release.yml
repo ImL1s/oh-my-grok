@@ -21,6 +21,9 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       archive_name: ${{ steps.meta.outputs.archive_name }}
       archive_sha256: ${{ steps.meta.outputs.archive_sha256 }}
+      run_id: ${{ steps.bundle.outputs.run_id }}
+      candidate_commit: ${{ steps.bundle.outputs.commit }}
+      candidate_tree: ${{ steps.bundle.outputs.tree }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,10 +72,36 @@ jobs:
           python scripts/package_release.py --out dist/release-bundle-b --mtime 0
           cmp dist/release-bundle/*.tar.gz dist/release-bundle-b/*.tar.gz
           cmp dist/release-bundle/SHA256SUMS dist/release-bundle-b/SHA256SUMS
+          rm -rf dist/release-bundle-b
+      - name: Canonical release-bundle-manifest
+        id: bundle
+        env:
+          ARCHIVE_NAME: ${{ steps.meta.outputs.archive_name }}
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse HEAD)
+          TREE=$(git rev-parse 'HEAD^{tree}')
+          RUN_ID="github-${GITHUB_RUN_ID}"
+          PYTHONPATH=. python -m omg_cli.main parity release-bundle \
+            --run-id "$RUN_ID" \
+            --archive "dist/release-bundle/${ARCHIVE_NAME}" \
+            --checksums dist/release-bundle/SHA256SUMS \
+            --candidate-commit "$COMMIT" \
+            --candidate-tree "$TREE" \
+            --live-receipt \
+            --write \
+            --json
+          cp ".omg/artifacts/dual-parity/${RUN_ID}/OMG-W6/release-bundle-manifest.json" \
+            dist/release-bundle-manifest.json
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "tree=$TREE" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: release-bundle
-          path: dist/release-bundle/
+          path: |
+            dist/release-bundle/
+            dist/release-bundle-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -99,7 +128,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-bundle
-          path: dist/release-bundle
+          path: dist
       - name: Verify packaged archive checksums
         env:
           EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
@@ -115,6 +144,25 @@ jobs:
           got = verify_release_archive(archive, sums)
           assert got["asset_sha256"] == os.environ["EXPECT_SHA"]
           print("archive_ok", got["asset_sha256"])
+          PY
+      - name: Verify release-bundle-manifest identity
+        env:
+          EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
+          EXPECT_COMMIT: ${{ needs.package.outputs.candidate_commit }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from omg_cli.contracts.release_transaction import validate_release_bundle_manifest
+          from omg_cli.contracts.release_transaction import expected_bundle_manifest_relative_path
+          manifest = json.loads(Path("dist/release-bundle-manifest.json").read_text())
+          relative = expected_bundle_manifest_relative_path("OMG", manifest["run_id"])
+          validate_release_bundle_manifest(manifest, manifest_relative_path=relative)
+          assert manifest["candidate_commit"] == os.environ["EXPECT_COMMIT"]
+          assert manifest["assets"][0]["sha256"] == os.environ["EXPECT_SHA"]
+          sums = Path("dist/release-bundle/SHA256SUMS").read_bytes()
+          assert manifest["assets"][1]["sha256"] == hashlib.sha256(sums).hexdigest()
+          print("manifest_ok", manifest["release_asset_root"])
           PY
       - name: Frozen parity and generated checks
         run: |
@@ -147,7 +195,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-bundle-verified
-          path: dist/release-bundle/
+          path: |
+            dist/release-bundle/
+            dist/release-bundle-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -163,47 +213,173 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: actions/download-artifact@v4
         with:
           name: release-bundle-verified
-          path: dist/release-bundle
-      - name: Refuse rebuild — identity-safe upload (no blind clobber)
+          path: dist
+      - name: Refuse rebuild — identity-safe upload + transaction evidence
         env:
           EXPECT_SHA: ${{ needs.package.outputs.archive_sha256 }}
           ARCHIVE_NAME: ${{ needs.package.outputs.archive_name }}
+          VERSION: ${{ needs.package.outputs.version }}
           TAG: ${{ github.ref_name }}
+          EXPECT_COMMIT: ${{ needs.package.outputs.candidate_commit }}
         run: |
           set -euo pipefail
+          mkdir -p publication-facts
           ARCHIVE="dist/release-bundle/${ARCHIVE_NAME}"
           SUMS="dist/release-bundle/SHA256SUMS"
           test -f "$ARCHIVE" && test -f "$SUMS"
           ACTUAL=$(sha256sum "$ARCHIVE" | awk '{print $1}')
           test "$ACTUAL" = "$EXPECT_SHA"
+          python3 scripts/release_github_facts.py tag-identity \
+            --tag "$TAG" \
+            --expected-commit "$EXPECT_COMMIT"
+          python3 scripts/release_github_facts.py notes \
+            --version "$VERSION" \
+            --output publication-facts/notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG exists"
           else
-            gh release create "$TAG" --title "$TAG" --notes "Automated release $TAG (exact packaged bytes)."
+            gh release create "$TAG" --title "$TAG" \
+              --notes-file publication-facts/notes.md \
+              --prerelease
           fi
-          # Upload archive then SHA256SUMS without --clobber. Existing assets
-          # must match digest+length or the step fails closed (#169 PR1).
-          python scripts/release_upload_assets.py \
+          python3 scripts/release_upload_assets.py \
             --tag "$TAG" \
             --asset "$ARCHIVE" \
             --asset "$SUMS"
-          # Public hash readback (download API asset bytes).
-          python - <<'PY'
-          import hashlib, os, subprocess, tempfile
+          gh release edit "$TAG" --prerelease=false --latest \
+            --notes-file publication-facts/notes.md
+          READBACK_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          python3 scripts/release_github_facts.py observe \
+            --tag "$TAG" \
+            --expected-commit "$EXPECT_COMMIT" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --archive "$ARCHIVE" \
+            --checksums "$SUMS" \
+            --output publication-facts/observe.json \
+            --readback-at "$READBACK_AT" \
+            --wait-latest-attempts 8 \
+            --wait-latest-seconds 10
+          PUBLIC=$(mktemp -d)
+          export PUBLIC_DIR="$PUBLIC"
+          # Public bytes: no GitHub credentials on the download.
+          env -u GH_TOKEN -u GITHUB_TOKEN curl --fail --silent --show-error \
+            --location --proto '=https' --tlsv1.2 \
+            -o "${PUBLIC}/${ARCHIVE_NAME}" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ARCHIVE_NAME}"
+          env -u GH_TOKEN -u GITHUB_TOKEN curl --fail --silent --show-error \
+            --location --proto '=https' --tlsv1.2 \
+            -o "${PUBLIC}/SHA256SUMS" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/SHA256SUMS"
+          python3 - <<'PY'
+          import hashlib, os
           from pathlib import Path
-          tag = os.environ["TAG"]
           name = os.environ["ARCHIVE_NAME"]
           expect = os.environ["EXPECT_SHA"]
-          with tempfile.TemporaryDirectory() as td:
-              dest = Path(td) / name
-              subprocess.run(
-                  ["gh", "release", "download", tag, "-p", name, "-D", td],
-                  check=True,
-              )
-              got = hashlib.sha256(dest.read_bytes()).hexdigest()
-              assert got == expect, (got, expect)
-              print("public_readback_ok", got)
+          got = hashlib.sha256((Path(os.environ["PUBLIC_DIR"]) / name).read_bytes()).hexdigest()
+          assert got == expect, (got, expect)
+          print("public_readback_ok", got)
           PY
+          INSTALL_HOME=$(mktemp -d)
+          python3 scripts/release_github_facts.py public-install-probe \
+            --tag "$TAG" \
+            --archive "${PUBLIC}/${ARCHIVE_NAME}" \
+            --checksums "${PUBLIC}/SHA256SUMS" \
+            --home "$INSTALL_HOME" \
+            --output publication-facts/install.json
+          python3 scripts/release_github_facts.py protection \
+            --output publication-facts/protection.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          observe = json.loads(Path("publication-facts/observe.json").read_text())
+          install = json.loads(Path("publication-facts/install.json").read_text())
+          protection = json.loads(Path("publication-facts/protection.json").read_text())
+          observe["install"] = install
+          Path("publication-facts/readback.json").write_text(
+              json.dumps(observe, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("readback_facts_ok")
+          print("protection_claimed", protection.get("claimed"))
+          print(json.dumps(protection, indent=2, sort_keys=True))
+          PY
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from omg_cli.release_evidence import (
+              GitHubReleaseObservation,
+              facts_from_mapping,
+              plan_github_publication,
+          )
+          from omg_cli.release_upload import RemoteAssetIdentity
+          raw = json.loads(Path("publication-facts/readback.json").read_text())
+          remotes_raw = raw.get("remote_assets") or []
+          if len(remotes_raw) != 2:
+              raise SystemExit("remote_assets empty or incomplete; GitHub readback is not success")
+          facts = facts_from_mapping(raw)
+          remotes = tuple(
+              RemoteAssetIdentity(
+                  name=row["name"],
+                  byte_length=int(row["byte_length"]),
+                  sha256=row["sha256"],
+              )
+              for row in remotes_raw
+          )
+          plan = plan_github_publication(
+              expected_tag=facts.tag,
+              expected_commit=os.environ["EXPECT_COMMIT"],
+              expected_assets=facts.assets,
+              tag_object_type=facts.tag_object_type,
+              peeled_commit=facts.peeled_commit,
+              observation=GitHubReleaseObservation(
+                  tag=facts.tag,
+                  target_commit=facts.peeled_commit,
+                  draft=facts.draft,
+                  prerelease=facts.prerelease,
+                  is_latest=facts.is_latest,
+                  assets=remotes,
+              ),
+              latest_tag=facts.latest_tag,
+              latest_install=facts.install,
+              require_complete=True,
+              github_target_commitish=str(raw.get("github_target_commitish") or ""),
+              observed_branch_oid=facts.branch_oid,
+          )
+          if plan.status == "refuse":
+              print(plan.code, plan.message, file=sys.stderr)
+              raise SystemExit(2)
+          print("publication_plan_ok", plan.status, plan.message)
+          PY
+          if [ -n "${OMG_RELEASE_FACTS_COMPLETE:-}" ]; then
+            EVIDENCE_RUN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1],encoding='utf-8'))['run_id'])" "${OMG_RELEASE_FACTS_COMPLETE}")
+            PYTHONPATH=. python3 -m omg_cli.main parity release-evidence \
+              --facts "${OMG_RELEASE_FACTS_COMPLETE}" \
+              --output ".omg/artifacts/dual-parity/${EVIDENCE_RUN}/OMG-W6/release-evidence-input.json"
+            if [ -n "${OMG_RELEASE_MANIFEST:-}" ]; then
+              PYTHONPATH=. python3 -m omg_cli.main parity run finalize-release \
+                --path "$OMG_RELEASE_MANIFEST" \
+                --expected-revision "${OMG_RELEASE_REVISION:?}" \
+                --expected-previous-manifest-hash "${OMG_RELEASE_PREV_HASH:?}" \
+                --expected-lease-generation "${OMG_RELEASE_LEASE:?}" \
+                --evidence ".omg/artifacts/dual-parity/${EVIDENCE_RUN}/OMG-W6/release-evidence-input.json"
+            fi
+          else
+            echo "finalize skipped: no release_active run in this checkout"
+            echo "publication facts at publication-facts/readback.json"
+          fi
+      - name: Upload publication facts (no credentials)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-publication-facts
+          path: publication-facts/
+          if-no-files-found: ignore
+          retention-days: 90
