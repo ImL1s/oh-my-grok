@@ -229,15 +229,31 @@ def host_policy_label(view: object) -> str:
     return "baseline"
 
 
+def _requested_extension_state(view: object) -> str | None:
+    extension = getattr(view, "requested_extension", None)
+    if not extension:
+        return None
+    rows = getattr(view, "host_capabilities", ()) or ()
+    for item in rows:
+        if isinstance(item, Mapping) and item.get("capability_id") == extension:
+            state = item.get("state")
+            return str(state) if state is not None else None
+    return None
+
+
 def model_intent_label(view: object, *, band: str) -> str:
     extension = getattr(view, "requested_extension", None)
     candidates = tuple(getattr(view, "candidate_ids", ()) or ())
     mode = str(getattr(view, "baseline_mode", "") or "")
-    facts = getattr(view, "host_facts", {}) or {}
-    outcome = facts.get("medley_capability_outcome") if isinstance(facts, dict) else None
+    outcome = _requested_extension_state(view)
     if extension and candidates:
-        if outcome in {"unsupported", "unavailable", "incompatible"}:
-            return f"{mode} ({outcome})"
+        if outcome != "supported":
+            shown = (
+                outcome
+                if outcome in {"unsupported", "unavailable", "incompatible", "unknown"}
+                else "unsupported"
+            )
+            return f"{mode} ({shown})"
         if band != "narrow":
             shown = " -> ".join(str(item) for item in candidates[:2])
             if len(candidates) > 2:

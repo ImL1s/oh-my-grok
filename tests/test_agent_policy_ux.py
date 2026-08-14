@@ -14,6 +14,7 @@ from omg_cli.agent_policy_ux import (
     display_width,
     format_doctor_routing_human,
     format_presentation_human,
+    model_intent_label,
     pad_display,
     render_explain_human,
     render_list_human,
@@ -120,6 +121,52 @@ def test_list_normal_and_wide_tables() -> None:
     wide = render_list_human(rows, columns=160)
     assert "Source" in wide
     assert "Floor" in wide
+
+
+def test_model_intent_uses_requested_extension_state() -> None:
+    mixed = _view(
+        host_facts={
+            "medley_capability_outcome": "supported",
+            "route_specific_facts": "supported",
+        },
+        host_capabilities=(
+            {
+                "capability_id": "medley.native-ordered-candidates.v1",
+                "state": "unsupported",
+            },
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+            },
+        ),
+    )
+    assert model_intent_label(mixed, band="normal") == "inherit (unsupported)"
+    mixed_text = render_list_human((mixed,), columns=100)
+    assert "inherit (unsupported)" in mixed_text
+    assert "review-primary-example" not in mixed_text
+
+    authorized = _view(
+        host_facts={
+            "medley_capability_outcome": "unavailable",
+            "route_specific_facts": "unavailable",
+        },
+        host_capabilities=(
+            {
+                "capability_id": "medley.native-ordered-candidates.v1",
+                "state": "supported",
+            },
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "unavailable",
+            },
+        ),
+        reasons=(),
+    )
+    assert (
+        model_intent_label(authorized, band="normal")
+        == "review-primary-example -> review-fallback-example"
+    )
+    assert "inherit (unavailable)" not in render_list_human((authorized,), columns=100)
 
 
 def test_explain_progressive_disclosure() -> None:

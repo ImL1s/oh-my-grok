@@ -75,6 +75,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#131 Codex review (follow-up):** `omg agents list` model-intent uses the
+  requested extension's `host_capabilities` state, not the aggregate
+  `medley_capability_outcome`, so mixed Medley caps cannot advertise
+  candidate ids for an unauthorized route. Refs #131 (does not close).
 - **#134 Codex review (follow-up):** `wrap_display` continues oversized tokens
   such as `policy_digest` onto the next line instead of truncating them;
   `omg team status --presentation` uses the stacked layout when the member
