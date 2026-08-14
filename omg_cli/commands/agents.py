@@ -116,7 +116,11 @@ def _intent_cell(row: object) -> str:
     mode = str(getattr(row, "baseline_mode", ""))
     extension = getattr(row, "requested_extension", None)
     candidates = getattr(row, "candidate_ids", ())
+    facts = getattr(row, "host_facts", {}) or {}
+    outcome = facts.get("medley_capability_outcome") if isinstance(facts, dict) else None
     if extension and candidates:
+        if outcome in {"unsupported", "unavailable", "incompatible"}:
+            return f"{mode} ({outcome})"
         shown = " -> ".join(str(item) for item in candidates[:2])
         if len(candidates) > 2:
             shown += " -> …"

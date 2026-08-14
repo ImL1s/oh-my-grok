@@ -35,6 +35,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#131 Codex review:** stock-host `omg agents list` shows inherit (plus
+  unsupported/unavailable) instead of Medley candidate ids; overrides
+  reject unimplemented `models`; external executor routes reject mixed
+  native/unknown fields. Refs #131.
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
   PreToolUse hard check now smoke-allows first-party `omg team` (bare and
   path-prefixed) so a pre-fix hook that still classifies Team as an external
