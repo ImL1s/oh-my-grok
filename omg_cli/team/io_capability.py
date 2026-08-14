@@ -86,6 +86,22 @@ class IoCapabilityRefusal:
     details: dict[str, Any]
 
 
+def interactive_pane_io_defaults() -> WorkerIoCapability:
+    """Defaults after a direct-exec interactive pane is actually materialized.
+
+    ``input_ready`` stays false until the leader proves TUI-ready evidence.
+    ``operator_input_supported`` is true so not-ready refuses use
+    ``E_OPERATOR_INPUT_NOT_READY`` rather than unsupported.
+    """
+    return WorkerIoCapability(
+        io_mode=IO_MODE_INTERACTIVE_TTY,
+        provider_tty_owner=TTY_OWNER_PROVIDER,
+        input_ready=False,
+        operator_input_supported=True,
+        interaction_evidence=None,
+    )
+
+
 def supervisor_pane_io_defaults() -> WorkerIoCapability:
     """Defaults for new/current supervisor-owned headless panes (PR1 writers)."""
     return WorkerIoCapability(

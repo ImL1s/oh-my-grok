@@ -166,7 +166,7 @@ omg accept --yes
 | **何时** | 多 pane ULW + 真实 worktree；测试用 hermetic dry-run / fixture smoke |
 | **闸门** | **默认开启。** 关闭：`OMG_DISABLE_TMUX_TEAM=1`（旧 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也会关） |
 | **Skill** | `omg-team` — session slash **仅** `/oh-my-grok:omg-team`；自然语言 `team N …` |
-| **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
+| **CLI** | `omg team launch`（argv 简写 `N`/`N:role`+goal → launch；`--io-mode auto\|interactive\|headless`）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
 
 **启动就绪（#99）：** pane supervisor 证明 provider 真的可用（`pane_created` →
 `provider_spawned` → `provider_ready` → `task_dispatched`；可选 `mailbox_ack`）。

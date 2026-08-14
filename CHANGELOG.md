@@ -151,6 +151,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Publication facts are uploaded as a workflow artifact. Does **not** close
   #169 until a tagged publish produces completion evidence and protection
   readback on `main`.
+- **#147 PR2 direct-exec interactive pane:** `--io-mode interactive` on
+  `omg team launch`/`start` execs grok or the TTY fixture in the pane (0700
+  wrapper, no `--prompt-file`, no supervisor between pane and provider).
+  Default/`auto`/`headless` stay on the supervisor path. Explicit interactive
+  never silently downgrades (job topology and unqualified providers fail
+  closed). `input_ready` stays false until TUI-ready evidence. Live Grok
+  marker `LIVE_TEAM_INTERACTIVE_TTY_OK` is still optional. Refs #147.
 - **#147 PR1 Team worker I/O capability (fail-closed):** CLI-authoritative
   `io_mode` / `provider_tty_owner` / `input_ready` / `operator_input_supported`
   / `interaction_evidence` independent of pane/job topology. New supervisor

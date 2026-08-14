@@ -428,6 +428,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "view_mode": resolved_view,
                     "detach": detach,
                     "worker_topology": getattr(args, "worker_topology", None) or "pane",
+                    "io_mode": getattr(args, "io_mode", None) or "headless",
                     "note": (
                         "plan-only: no .omg mutation, no worktrees, no tmux "
                         "(#27). Use --dry-run/--materialize-only to materialize "
@@ -454,6 +455,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 detach=detach,
                 view_mode=resolved_view,
                 worker_topology=getattr(args, "worker_topology", None),
+                io_mode=getattr(args, "io_mode", None),
             )
             emit_data(args, "team", meta)
             hint = meta.get("attach_hint")
@@ -537,6 +539,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 force=bool(getattr(args, "force", False)),
                 routing=routing,
                 worker_topology=getattr(args, "worker_topology", None),
+                io_mode=getattr(args, "io_mode", None),
             )
             # #20: same readiness contract as team launch (shared wait service).
             meta = apply_start_readiness(
@@ -2291,6 +2294,17 @@ def register_team_parsers(
             "job (durable Jobs plane; requires fake|antigravity provider)"
         ),
     )
+    p_t_launch.add_argument(
+        "--io-mode",
+        dest="io_mode",
+        choices=("auto", "interactive", "headless"),
+        default="headless",
+        help=(
+            "#147: pane I/O. headless/auto keep the supervisor path. "
+            "interactive execs grok|fixture on the pane TTY and never "
+            "silently downgrades"
+        ),
+    )
     p_t_launch.set_defaults(func=cmd_team, team_action="launch")
 
     p_t_start = team_sub.add_parser(
@@ -2379,6 +2393,17 @@ def register_team_parsers(
         help=(
             "worker execution topology (#69 PR4): pane (default tmux) or "
             "job (durable Jobs plane; requires fake|antigravity provider)"
+        ),
+    )
+    p_t_start.add_argument(
+        "--io-mode",
+        dest="io_mode",
+        choices=("auto", "interactive", "headless"),
+        default="headless",
+        help=(
+            "#147: pane I/O. headless/auto keep the supervisor path. "
+            "interactive execs grok|fixture on the pane TTY and never "
+            "silently downgrades"
         ),
     )
     p_t_start.set_defaults(func=cmd_team, team_action="start")

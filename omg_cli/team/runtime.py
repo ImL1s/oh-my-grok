@@ -1050,6 +1050,7 @@ def launch_team(
     detach: bool = False,
     view_mode: str | None = None,
     worker_topology: str | None = None,
+    io_mode: str | None = None,
 ) -> dict[str, Any]:
     """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
 
@@ -1087,6 +1088,7 @@ def launch_team(
         detach=detach,
         view_mode=view_mode,
         worker_topology=worker_topology,
+        io_mode=io_mode,
     )
     rid = str(meta["run_id"])
     # start_team creates a new run unless --run was supplied.
