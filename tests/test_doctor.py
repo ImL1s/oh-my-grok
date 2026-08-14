@@ -754,6 +754,19 @@ def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
     assert names[0] == "grok host capabilities"
     assert "stop gate timeout" in names
     assert names.index("stop gate timeout") > names.index("plugin version drift")
+    assert "agent model routing" in names
+    assert names.index("agent model routing") > names.index("team plane")
+
+
+def test_check_agent_model_routing_stock_ok() -> None:
+    name, level, detail = doctor.check_agent_model_routing()
+    assert name == "agent model routing"
+    assert level == "ok"
+    assert "tier=original_grok_build" in detail
+    assert "medley_caps=unsupported" in detail
+    assert "requires medley" not in detail.lower()
+    assert "routing-availability" not in detail
+    assert "routing availability" not in detail
 
 
 def test_check_host_capabilities_from_fixture(monkeypatch):

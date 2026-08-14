@@ -28,7 +28,10 @@
 - Medley **absent**／没有 Medley 时，agents / skills / workflows / evidence / acceptance 仍可用。
 - Medley **absent** 的 hermetic 证据见英文页与 [`tests/test_stock_host_medley_absent.py`](../../tests/test_stock_host_medley_absent.py)。本投影不复制测试。
 - 安装 OMG **不会**安装 Medley；安装 Medley **不是**标准 OMG 的前提。
-- 增强 native 路由与 Medley 端 negotiation 为**计划中（#131）**，**尚未出货**。
+- 增强 native 路由的 **Grok 侧** `omg agents list` / `explain` 已出货（read-only）。
+  Medley exact／candidates／receipts 与 `/agents` TUI 仍为**计划中**
+  （[medley#287](https://github.com/ImL1s/medley/issues/287) /
+  [medley#290](https://github.com/ImL1s/medley/issues/290)），**尚未出货**。
 - 现行 `omg doctor` 只回报现行 host/session capabilities，**不决定** Medley 路由可用性。
 - External Team CLI executor（codex、agy、cursor、gemini）是另一组可选依赖，不是 Medley API／access route。
 
@@ -100,8 +103,8 @@ schema 变更需要另一次 versioned migration。
 |------|------|
 | `omg doctor` / `omg doctor --json` | **已出货** — 只回报现行 host/session capabilities；**不决定** Medley 路由可用性 |
 | `omg team status` / `omg team status --json` | **已出货** — 默认 `--json` **没有** `route` / `route.kind` |
-| `omg agents list` | **contract-only**，planned #131/#134，**今日不可运行** |
-| `omg agents explain` | **contract-only**，planned #131/#134，**今日不可运行** |
+| `omg agents list` | **已出货** — Grok baseline inspect；Medley facts 为 unsupported／unavailable |
+| `omg agents explain <agent-or-profile>` | **已出货** — 同上。Medley `/agents` TUI（#290）仍是 **contract-only**，**今日不可运行** |
 
 human+JSON 成对示例（含 stock host 的 unsupported／unavailable）只以英文页为准，见 [CLI / UX surfaces honesty](./agent-model-routing.md#cli--ux-surfaces-honesty)。本投影不复制那四组完整区块。
 

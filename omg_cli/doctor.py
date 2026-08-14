@@ -1248,6 +1248,33 @@ def check_team_plane() -> SoftResult:
         return (name, "warn", f"team plane probe failed ({type(exc).__name__})")
 
 
+def check_agent_model_routing() -> SoftResult:
+    """Soft: dual-host capability registry. Missing Medley is unsupported, not fail."""
+    name = "agent model routing"
+    try:
+        from omg_cli.host_capabilities import (
+            MEDLEY_CAPABILITY_IDS,
+            medley_capability_outcome,
+            stock_grok_snapshot,
+        )
+
+        snap = stock_grok_snapshot()
+        outcome = medley_capability_outcome(snap)
+        medley_states = sorted(
+            f"{cid}={snap.state_of(cid)}" for cid in MEDLEY_CAPABILITY_IDS
+        )
+        detail = (
+            f"tier={snap.host_tier}; "
+            f"inherit={snap.state_of('host.native-inherit-model.v1')}; "
+            f"exact={snap.state_of('host.native-exact-model.v1')}; "
+            f"medley_caps={outcome}; "
+            + ",".join(medley_states)
+        )
+        return (name, "ok", detail)
+    except Exception as exc:
+        return (name, "warn", f"routing registry failed ({type(exc).__name__})")
+
+
 def run_soft_checks(
     *,
     host_report: Any | None = None,
@@ -1266,6 +1293,7 @@ def run_soft_checks(
         check_installed_capabilities_lock(),
         check_installed_release_identity(),
         check_team_plane(),
+        check_agent_model_routing(),
     ]
 
 
@@ -1401,6 +1429,16 @@ def run_doctor(
             },
             "note": SOFT_GATE_FOOTER,
         }
+        try:
+            from omg_cli.host_capabilities import stock_grok_snapshot
+
+            body["routing_capabilities"] = stock_grok_snapshot().to_json()
+        except Exception as exc:
+            body["routing_capabilities"] = {
+                "schema": "omg-host-capability-registry/v1",
+                "host_tier": "unknown",
+                "error": type(exc).__name__,
+            }
         if payload_ok:
             emit_json(success("doctor", **body))
         else:

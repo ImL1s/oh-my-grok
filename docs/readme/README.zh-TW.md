@@ -50,7 +50,7 @@ Workers 只經 Grok **`spawn_subagent`**（depth 1）。
 
 **需求：** [Grok Build CLI](https://github.com/xai-org/grok-build)（`grok` 在 PATH）· Python **3.11+**
 
-**主機相容：** **原版 Grok Build 是必備、first-class baseline。** 沒有 Medley 時，OMG 的 agents / skills / workflows / evidence / acceptance 仍可正常使用。[Medley](https://github.com/ImL1s/medley) 是**可選**相容主機；安裝 OMG **不會**安裝 Medley，Medley **不是** hard dependency。增強 native 路由與 Medley 端 negotiation 為**規劃中**（#131），尚未出貨。現行 `omg doctor` 只回報現行 host/session capabilities，不決定 Medley 路由可用性。Team 外部 CLI executor 是另一組可選依賴。細節見英文 canonical 頁：[`docs/architecture/agent-model-routing.md`](../architecture/agent-model-routing.md)。
+**主機相容：** **原版 Grok Build 是必備、first-class baseline。** 沒有 Medley 時，OMG 的 agents / skills / workflows / evidence / acceptance 仍可正常使用。[Medley](https://github.com/ImL1s/medley) 是**可選**相容主機；安裝 OMG **不會**安裝 Medley，Medley **不是** hard dependency。Grok 側 `omg agents list|explain` 已出貨；Medley exact／receipts 在 stock Grok Build 上為 **unsupported**（[medley#287](https://github.com/ImL1s/medley/issues/287)），**尚未出貨**。現行 `omg doctor` 回報 host/session capabilities 與 routing registry；缺少 Medley **不是**安裝失敗。Team 外部 CLI executor 是另一組可選依賴。細節見英文 canonical 頁：[`docs/architecture/agent-model-routing.md`](../architecture/agent-model-routing.md)。
 
 OMG 有 **兩個表面**：Grok **plugin**（skills/agents/hooks）+ **`omg` CLI**（狀態、accept、verified）。完整產品兩個都要。
 

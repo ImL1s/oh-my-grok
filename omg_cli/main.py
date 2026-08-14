@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 
 from omg_cli.command_registry import KNOWN_SUBCOMMANDS
+from omg_cli.commands.agents import (  # #131 — dual-host agent/model policy
+    cmd_agents,  # noqa: F401 — re-export for tests
+    register_agents_parsers,
+)
 from omg_cli.commands.inspect import (  # #29 Phase 2+4' — inspect family
     cmd_capabilities,  # noqa: F401 — re-export for tests
     cmd_hud,  # noqa: F401
@@ -208,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_inspect_parsers(sub, common, phase="early")
 
+    register_agents_parsers(sub, common)
 
     register_workflow_parsers(sub, common, phase="early")
 

@@ -1,0 +1,157 @@
+{
+  "schema": "omg-agent-model-policy/v1",
+  "kind": "policy_overlay",
+  "note": "Policy overlay on agents/catalog.json (#71). Not a second agent registry. Medley catalog ids are fictional examples and must not be flattened onto stock Grok Build.",
+  "prompt_profile_version": "1",
+  "profiles": {
+    "explore": {
+      "aliases": ["explore"],
+      "category": "planner",
+      "tier": "planner",
+      "capability_mode": "read-only",
+      "spawn_policy": "leaf",
+      "model_policy": {
+        "policy_id": "explore.default",
+        "baseline": { "mode": "inherit" },
+        "prompt_profile": "generic"
+      }
+    },
+    "plan": {
+      "aliases": ["plan"],
+      "category": "planner",
+      "tier": "planner",
+      "capability_mode": "read-only",
+      "spawn_policy": "leaf",
+      "model_policy": {
+        "policy_id": "plan.default",
+        "baseline": { "mode": "inherit" },
+        "prompt_profile": "generic"
+      }
+    },
+    "general-purpose": {
+      "aliases": ["general-purpose", "general_purpose"],
+      "category": "implementer",
+      "tier": "implementer",
+      "capability_mode": "read-write",
+      "spawn_policy": "leaf",
+      "model_policy": {
+        "policy_id": "general-purpose.default",
+        "baseline": { "mode": "inherit" },
+        "prompt_profile": "generic"
+      }
+    }
+  },
+  "agents": {
+    "omg-analyst": {
+      "policy_id": "analyst.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-architect": {
+      "policy_id": "architect.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-code-reviewer": {
+      "policy_id": "code-reviewer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic",
+      "extensions": {
+        "medley.native-ordered-candidates.v1": {
+          "candidates": [
+            {
+              "catalog": "review-primary-example",
+              "prompt_profile": "gpt-family",
+              "reasoning": "xhigh"
+            },
+            {
+              "catalog": "review-fallback-example",
+              "prompt_profile": "gemini-family",
+              "reasoning": "high"
+            }
+          ],
+          "requirements": { "structured_output": true }
+        }
+      }
+    },
+    "omg-critic": {
+      "policy_id": "critic.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic",
+      "extensions": {
+        "medley.native-ordered-candidates.v1": {
+          "candidates": [
+            {
+              "catalog": "review-primary-example",
+              "prompt_profile": "gpt-family",
+              "reasoning": "xhigh"
+            }
+          ],
+          "requirements": { "structured_output": true }
+        }
+      }
+    },
+    "omg-debugger": {
+      "policy_id": "debugger.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-designer": {
+      "policy_id": "designer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-executor": {
+      "policy_id": "executor.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-orchestrator": {
+      "policy_id": "orchestrator.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-qa-tester": {
+      "policy_id": "qa-tester.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-security-reviewer": {
+      "policy_id": "security-reviewer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-test-engineer": {
+      "policy_id": "test-engineer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-verifier": {
+      "policy_id": "verifier.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic",
+      "extensions": {
+        "medley.native-ordered-candidates.v1": {
+          "candidates": [
+            {
+              "catalog": "review-primary-example",
+              "prompt_profile": "gpt-family",
+              "reasoning": "xhigh"
+            },
+            {
+              "catalog": "review-fallback-example",
+              "prompt_profile": "gemini-family",
+              "reasoning": "high"
+            }
+          ],
+          "requirements": { "structured_output": true }
+        }
+      }
+    },
+    "omg-writer": {
+      "policy_id": "writer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    }
+  }
+}
