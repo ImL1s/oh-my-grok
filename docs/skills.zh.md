@@ -478,11 +478,12 @@ find_references/symbols/diagnostics）、
 | `omg notify status\|send\|process` | 只出站、非权威 delivery queue。 |
 | `omg workflow install\|list\|show\|plan\|run` | 不可变 registry、确定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，并产生／验 exact bundle 与 completion evidence。 |
-| `omg capabilities` / `omg native-status` | 分开的 capability tiers，外加只读 `agents_catalog`、`skills_catalog` 与 `hooks_registry`；不探测私有 sidecar。 |
+| `omg capabilities` / `omg native-status` | 分开的 capability tiers，外加只读 `agents_catalog`、`skills_catalog`、`hooks_registry` 与 `tools_sidecar`；不探测私有 sidecar。 |
 | `omg agents list\|explain` | Dual-host agent/model 政策检视（#131）与 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用显式 inherit；Medley caps 为 unsupported（不是安装失败）。不做付费探测。Medley TUI 仍为 #290。 |
 | `omg skill list\|show\|resolve\|resources` | 只读 skill 目录检视（#70）。永不写 `verified`。宿主名 `plan`/`goal` 只作为别名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探测 + 无头执行（#67-A/B）：能力信封、doctor、与 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切换（#67-C）；Team 窗格经 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣称 `live_call_ready`。 |
 | `omg visual compare` | Visual Contract V1 `compare()` 包装（#75）：读取 `--input` JSON，发出 scored/blocked 信封。调用方自行比较 `aggregate` 与 `threshold`。不写入 `passes`/`verified`，不解图像，不调用 agent。Capture、overlay/diff、独立 reviewer、visual-Ralph 仍属后续 #75。见 [visual-contract-v1.md](./visual-contract-v1.md)。 |
+| `omg tools doctor\|serve\|lsp\|ast\|codegraph\|research` | OMG 自有 sidecar（#73）：语义 LSP / AST-grep / CodeGraph / 可选网络研究。**不是** Grok 原生 LSP（`omg lsp` 仍为 host-owned）。**不是** live Antigravity 证据。`omg mcp-server` 仍禁止 `lsp.*`。见 [tools-sidecar.md](./tools-sidecar.md)。 |
 | `omg edit plan\|apply` | Hash-anchored 编辑 CLI（#76）：`plan` 只读；`apply` 走 `apply_hash_edit`（再读、再规划、原子替换）。不写 `passes`/`verified`。不宣称 `omo.edit.hash_anchored` 宿主对等。见 `docs/hash-edit.md`。 |
 
 Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subagent`、传入

@@ -375,6 +375,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     from omg_cli.agents_catalog import inspect_agents_catalog, plugin_root as catalog_root
     from omg_cli.hooks_registry import inspect_hooks_registry
     from omg_cli.skills_catalog import inspect_skills_catalog
+    from omg_cli.tools_sidecar import inspect_tools_sidecar
 
     result = {
         "schema": "omg-capability-status/v1",
@@ -383,6 +384,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
         "agents_catalog": inspect_agents_catalog(catalog_root()),
         "skills_catalog": inspect_skills_catalog(catalog_root()),
         "hooks_registry": inspect_hooks_registry(catalog_root()),
+        "tools_sidecar": inspect_tools_sidecar(root),
         "surfaces": {
             "mcp": {
                 "configured": (root / ".mcp.json").is_file(),

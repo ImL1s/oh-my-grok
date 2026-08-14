@@ -18,6 +18,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [hash-edit.md](./hash-edit.md) | Hash-anchored edit V1 + `omg edit plan\|apply` (supplements host edits; does not hash-anchor unobserved host edits; no `omo.edit.hash_anchored` claim) |
 | [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1 (pure comparison + `omg visual compare`; no approved/passes/verified; no image I/O) |
 | [hooks-lifecycle.md](./hooks-lifecycle.md) | Lifecycle registry (#72): Grok PreToolUse/Stop vs passive hooks; no UserPromptSubmit inject |
+| [tools-sidecar.md](./tools-sidecar.md) | Tools sidecar (#73): `omg tools` LSP/AST-grep/CodeGraph/research; not Grok-native LSP |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | Maintainer release protocol |
 
 ## Skills (quick map)
