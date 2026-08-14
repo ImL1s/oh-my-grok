@@ -18,4 +18,4 @@
 | `omc.session.search_replay` | state_memory_observability | omg_native | grok=catalogued | catalogued | Resume/recovery/workflow replay exist; OMC session-search/observatory breadth is not claimed. |
 | `omc.memory.wiki_hud_notify` | state_memory_observability | omg_native | grok=catalogued | catalogued | Core wiki/HUD/notify paths exist; OMC notepad/shared-memory breadth remains partial. |
 | `omc.goal.ralph_autopilot_ultra` | runtime_orchestration | omg_native | grok=catalogued | catalogued | OMG modes/autopilot substitute OMC goal loops; Stop stickiness remains host-capped. |
-| `omc.quality.visual_release` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial. |
+| `omc.quality.visual_release` | quality_visual_edit_safety | omg_native | grok=catalogued | catalogued | Visual Contract V1 and `omg visual compare` landed; capture, overlay/diff, independent reviewers, screenshot Ralph, and OMC visual-verdict skill breadth remain partial (#75/#79). |

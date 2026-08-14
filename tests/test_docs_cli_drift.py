@@ -112,6 +112,7 @@ def test_docs_all_subcommands_are_real() -> None:
         "notify",
         "workflow",
         "parity",
+        "visual",
     ):
         assert expected in cmds, f"missing expected sub-actioned command: {expected}"
 

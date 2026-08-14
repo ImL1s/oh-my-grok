@@ -24,6 +24,7 @@ def test_command_specs_unique_and_cover_known() -> None:
     assert command_names() == tuple(names)
     assert "install-hook" in KNOWN_SUBCOMMANDS
     assert "autopilot" in KNOWN_SUBCOMMANDS
+    assert "visual" in KNOWN_SUBCOMMANDS
 
 
 def test_job_help_mentions_auto_retry_pr5() -> None:

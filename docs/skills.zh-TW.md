@@ -470,6 +470,7 @@ find_references/symbols/diagnostics）、
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
 | `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`；不探測私有 sidecar。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
+| `omg visual compare` | Visual Contract V1 `compare()` 包裝（#75）：讀取 `--input` JSON，發出 scored/blocked 信封。呼叫端自行比較 `aggregate` 與 `threshold`。不寫入 `passes`/`verified`，不解圖像，不呼叫 agent。Capture、overlay/diff、獨立 reviewer、visual-Ralph 仍屬後續 #75。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
 
 Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subagent`、傳入
 精確 `capability_mode`，再把綁定 task ID 的 receipts 交給 `omg workflow run`。

@@ -22,6 +22,10 @@ from omg_cli.commands.provider import (  # #67-A — provider probe
     cmd_provider,  # noqa: F401 — re-export for tests
     register_provider_parsers,
 )
+from omg_cli.commands.visual import (  # #75 — visual contract CLI
+    cmd_visual,  # noqa: F401 — re-export for tests
+    register_visual_parsers,
+)
 from omg_cli.commands.job import (  # #68 PR1 — durable background jobs
     cmd_job,  # noqa: F401 — re-export for tests
     register_job_parsers,
@@ -207,6 +211,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_provider_parsers(sub, common)
 
+    register_visual_parsers(sub, common)
+
     register_job_parsers(sub, common)
 
     register_workflow_parsers(sub, common, phase="late")
@@ -361,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             "mcp-install",
             "version",  # not a command today; harmless
             "provider",  # global binary/version probe (#67-A); no project root
+            "visual",  # pure compare() wrapper (#75); no project root / state
         }
     )
     command = str(getattr(args, "command", "") or "")

@@ -36,6 +36,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   digest matches; length/digest mismatch fails closed.
 
 ### Added
+- **#75 visual CLI compare:** public `omg visual compare --input <json>` wraps `compare()` only and emits a scored/blocked JSON envelope. Callers compare `aggregate` to `threshold`; the CLI never writes `passes`/`verified`, never decodes images, and never talks to agents. Capture adapters, overlay/diff, independent reviewers, and screenshot Ralph remain later #75 work. Parity `omc.quality.visual_release` / `omx.quality.visual_modes` stay catalogued/partial. Hermetic: `tests/test_visual_cli.py`. Refs #75 (does not close).
 - **#169 PR2 canonical bundle/evidence producers:** `omg parity release-bundle`
   writes the documented `release-bundle-manifest.json` layout;
   `omg parity release-evidence` is the only constructor for

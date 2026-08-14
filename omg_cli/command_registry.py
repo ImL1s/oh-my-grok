@@ -56,6 +56,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
         "inspect",
     ),
     CommandSpec(
+        "visual",
+        "visual contract compare (scored/blocked; #75)",
+        "inspect",
+    ),
+    CommandSpec(
         "job",
         "durable background jobs (start/status/wait/collect/cancel/list/retry/auto-retry/gc/recover; #68 PR1–PR5)",
         "run",
