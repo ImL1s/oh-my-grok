@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
+  `--scope project|user` (defaults remain `grok` + `project`). Versioned
+  `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records
+  managed artifacts, classifies missing/exact/stale/user-owned/foreign, preserves
+  foreign/user-owned unless `--force`, and rolls back interrupted transactions.
+  Refuses to invent project `.omg` in `$HOME` without `--here`. `omg doctor`
+  reports manifest drift; JSON `host` now separates `binary` / `version` /
+  `auth` / `capabilities` / `compatibility` / `live_evidence` (`auth.ok` and
+  `live_evidence` stay false — invalid keys cannot false-green). File copy is
+  not live AG/Grok verification. Refs #77 (does not close).
 - **#73 tools sidecar (first cut):** `omg tools doctor|serve|lsp|ast|codegraph|research`
   is an OMG-owned sidecar (`omg_cli/tools_sidecar.py`). Semantic LSP uses an
   explicit transport (fake protocol or `--lsp-command`); it is **not**

@@ -1252,6 +1252,30 @@ def check_hooks_registry() -> SoftResult:
         return (name, "warn", f"hooks registry probe failed ({type(exc).__name__})")
 
 
+def check_install_manifest() -> SoftResult:
+    """Report install-manifest drift. File copy is never live-verified."""
+    name = "install manifest"
+    try:
+        from omg_cli.cli_util import project_root
+        from omg_cli.install_manifest import inspect_install_manifest
+
+        payload = inspect_install_manifest(project_root=project_root(), scope="project")
+        detail = (
+            f"configured={payload.get('configured')}; "
+            f"installed={payload.get('installed')}; "
+            f"observed={payload.get('observed')}; "
+            f"healthy={payload.get('healthy')}; "
+            f"verified={payload.get('verified')}; "
+            f"runtime={payload.get('runtime')}; "
+            f"drift={len(payload.get('drift') or [])}"
+        )
+        if payload.get("configured") and not payload.get("ok"):
+            return (name, "warn", detail)
+        return (name, "ok", detail)
+    except Exception as exc:
+        return (name, "warn", f"install manifest probe failed ({type(exc).__name__})")
+
+
 def check_team_plane() -> SoftResult:
     """Report experimental team gate, tmux availability, and P0′ API surface."""
     name = "team plane"
@@ -1335,6 +1359,7 @@ def run_soft_checks(
         check_installed_capabilities_lock(),
         check_installed_release_identity(),
         check_hooks_registry(),
+        check_install_manifest(),
         check_team_plane(),
         check_agent_model_routing(),
     ]

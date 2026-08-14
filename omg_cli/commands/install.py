@@ -7,18 +7,57 @@ Parser construction: ``register_install_parsers`` (#29 Phase 4').
 from __future__ import annotations
 
 import argparse
+import sys
 
 from omg_cli.cli_util import project_root
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    from omg_cli import __version__
+    from omg_cli.install_manifest import InstallManifestError, refuse_home_project, run_scoped_setup
     from omg_cli.setup_cmd import run_setup
 
-    return run_setup(
-        project_root(),
-        install_rules=not getattr(args, "no_global_rules", False),
-        install_hook=not getattr(args, "no_global_hook", False),
-    )
+    runtime = getattr(args, "setup_runtime", None) or "grok"
+    scope = getattr(args, "setup_scope", None) or "project"
+    here = bool(getattr(args, "setup_here", False))
+    force = bool(getattr(args, "force", False))
+    try:
+        if scope == "user":
+            result = run_scoped_setup(
+                runtime=runtime,
+                scope="user",
+                force=force,
+                source_version=__version__,
+            )
+            print(f"oh-my-grok user-scope setup (runtime={runtime})")
+            print(f"  manifest: {result.get('manifest')}")
+            print(f"  written: {len(result.get('written') or [])} (not live-verified)")
+            print("  did not create a project .omg")
+            return 0
+        root = project_root()
+        refuse_home_project(root, here=here)
+        rc = run_setup(
+            root,
+            install_rules=not getattr(args, "no_global_rules", False),
+            install_hook=not getattr(args, "no_global_hook", False),
+        )
+        if rc != 0:
+            return rc
+        result = run_scoped_setup(
+            runtime=runtime,
+            scope="project",
+            project_root=root,
+            here=here,
+            force=force,
+            source_version=__version__,
+        )
+        print(f"  install manifest: {result.get('manifest')} (not live-verified)")
+        if result.get("skipped"):
+            print(f"  preserved foreign/user-owned: {len(result['skipped'])}")
+        return 0
+    except InstallManifestError as exc:
+        print(f"omg setup: {exc}", file=sys.stderr)
+        return 2
 
 
 def cmd_install_hook(args: argparse.Namespace) -> int:
@@ -91,6 +130,25 @@ def register_install_parsers(
                 "initialize .omg in the exact current directory (skip git/.omg "
                 "discovery; #22)"
             ),
+        )
+        p_setup.add_argument(
+            "--runtime",
+            dest="setup_runtime",
+            choices=("grok", "antigravity", "both"),
+            default="grok",
+            help="install runtime projection (default: grok; #77)",
+        )
+        p_setup.add_argument(
+            "--scope",
+            dest="setup_scope",
+            choices=("project", "user"),
+            default="project",
+            help="project writes .omg; user writes ~/.omg-user (default: project)",
+        )
+        p_setup.add_argument(
+            "--force",
+            action="store_true",
+            help="replace user-owned/foreign targets (default: preserve)",
         )
         p_setup.set_defaults(func=cmd_setup)
 

@@ -680,6 +680,8 @@ def probe_host_from_fixture(path: str | Path) -> HostProbeReport:
 
 def host_report_for_doctor(report: HostProbeReport) -> dict[str, Any]:
     """Compact host block matching the #105 PR2 doctor JSON plan shape."""
+    from omg_cli.install_manifest import classify_auth
+
     raw = report.to_dict()
     # Plan-shaped nested host object (no schema noise at top of host key).
     return redact_value(
@@ -695,6 +697,8 @@ def host_report_for_doctor(report: HostProbeReport) -> dict[str, Any]:
             "observations": raw["observations"],
             "binary_found": raw["binary_found"],
             "schema": raw["schema"],
+            "auth": classify_auth(),
+            "live_evidence": False,
         }
     )
 
