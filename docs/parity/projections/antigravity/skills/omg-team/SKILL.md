@@ -114,7 +114,7 @@ omg team resume <team-name-or-run>
 omg team stop <team-name-or-run>    # shutdown alias → stop
 omg team api send-message --input '{...}' --json
 omg team api bulk-create-tasks --input BATCH.json --json
-# Hyperplan V1 hermetic produce + task driver + lane protocol (execution_supported=false; see docs/team-hyperplan-v1.md):
+# Hyperplan V1 hermetic produce + task driver + lane protocol + fixture execute (compile execution_supported=false; see docs/team-hyperplan-v1.md):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN
 omg team hyperplan validate-decision --run RUN --input DECISION.json
@@ -123,7 +123,8 @@ omg team hyperplan admit-tasks --run RUN --team-id TEAM
 omg team hyperplan collect-tasks --run RUN --team-id TEAM
 omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
-# Security Research V1 hermetic produce + task driver + lane protocol (execution_supported=false; see docs/team-security-research-v1.md):
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+# Security Research V1 hermetic produce + task driver + lane protocol + fixture execute (compile execution_supported=false; see docs/team-security-research-v1.md):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN
 omg team security-research validate-report --run RUN --input REPORT.json
@@ -132,6 +133,7 @@ omg team security-research admit-tasks --run RUN --team-id TEAM
 omg team security-research collect-tasks --run RUN --team-id TEAM
 omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 ```
 
 ## When to use ULW instead

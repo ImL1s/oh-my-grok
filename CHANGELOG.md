@@ -78,7 +78,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#70 Codex review:** `omg skill list` exits 1 on a fail-closed catalog
   load; `omg skill show` looks up exact ids (alias rows keep `kind: alias`);
   short trigger matching requires token boundaries so `task`/`steam` no
-  longer resolve to `omg-ask`/`omg-team`. Refs #70.
+  longer resolve to `omg-ask`/`omg-team`. Resource resolve inspects original
+  path components for symlinks, empty resource allowlists deny undeclared
+  files, and embedded NUL / non-UTF-8 catalog bytes raise
+  `SkillsCatalogError`. Refs #70.
 - **#69 Codex review:** idempotent execute also binds stored worker
   evidence to the admitted `topo_order` / lane→task mapping, so a
   truncated or wrong-`task_id` artifact cannot false-green as

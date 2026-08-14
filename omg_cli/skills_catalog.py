@@ -573,7 +573,7 @@ def _parse_skill(value: Any, *, index: int) -> SkillRecord:
 def _load_json(path: Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise SkillsCatalogError(f"cannot read catalog: {path}: {exc}") from exc
     try:
         return json.loads(text)

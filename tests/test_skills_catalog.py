@@ -397,6 +397,13 @@ def test_cli_skill_list_malformed_catalog_exits_1(
     assert payload["error_code"] == "E_SKILL_CATALOG"
 
 
+def test_non_utf8_catalog_is_skills_catalog_error(tmp_path: Path) -> None:
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "catalog.json").write_bytes(b"{\xff\xfe not utf-8")
+    with pytest.raises(SkillsCatalogError, match="cannot read catalog"):
+        load_skills_catalog(tmp_path, require_projections=False)
+
+
 def test_resolve_trigger_requires_token_boundaries() -> None:
     catalog = load_skills_catalog(ROOT)
     assert resolve_trigger(catalog, "task") is None
