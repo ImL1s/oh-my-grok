@@ -10,6 +10,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 PR14 Fixture-backed Composition Execution V1:** leader-only
+  `execute_composition_tasks_v1` runs admitted Hyperplan / Security Research
+  lanes through the existing claim-lane / submit-lane-result protocol with
+  **fixture** workers, then collect-tasks, and persists
+  `omg.team.composition_execution_v1` **last**.
+  `execution_supported=true` is allowed **only** on that evidence document
+  and only with worker evidence (run ids, `fx-{worker_id}` pane ids, lane
+  result / claim digests). Forged `{execution_supported:true}` without
+  evidence is refused. Compile / produce / admit / collect / claim-lane
+  contracts keep `execution_supported=false`. Executor is fixture-only
+  (grok / agy / antigravity / cursor auto-execution fail closed). Job
+  topology, PoC, tmux, Jobs, MCP, and `live_*` remain out of scope. No
+  catalog v5. CLI: `omg team hyperplan|security-research execute --run RUN
+  --team-id TEAM --executor fixture --input BUNDLE.json`. Hermetic coverage
+  in `tests/test_team_composition_execution.py`. Does **not** close #69
+  (authenticated Antigravity live evidence / Team job-backed live workers /
+  host prompt-queue consume remain open). Refs #69.
 - **#134 Grok-side dual-host agent-routing UX:** host-neutral
   `AgentPolicyViewV1` human layouts (narrow/normal/wide, `NO_COLOR`, CJK
   display width), doctor routing addendum, Team presentation human route-kind
@@ -41,6 +58,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#69 Codex review:** idempotent execute also binds stored worker
+  evidence to the admitted `topo_order` / lane→task mapping, so a
+  truncated or wrong-`task_id` artifact cannot false-green as
+  `execution_supported=true`. Refs #69 (does not close).
+- **#69 PR14 execute `--input` fail-closed:** fixture execute now
+  normalizes the composition ResultBundleV1 (foreign writer, claimed
+  digest, artifact_kind, exact keys) before lane submit, and idempotent
+  re-execute conflicts when per-lane result digests differ. Interrupted
+  partial execute remains refuse-until-repair (not auto-resume). Refs #69
+  (does not close).
+- **Capabilities lock LF-canonical hashes:** `generate_capabilities_lock.py`
+  hashes skill/agent/source bytes after CRLF/CR → LF so a Windows
+  `core.autocrlf` checkout matches Linux CI `--check`. Lock JSON is written
+  with Unix newlines. Refs #69 (does not close).
+- **Parity OMC/OmO coverage_digest after #69 PR14 GAPS sync:** refresh proof
+  `coverage_digest` values only after gap.team.v3 +
+  `omo.team.hyperplan_security` text update for fixture-backed composition
+  execution (no policy/mapping/status changes). Refs #69 (does not close).
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
   PreToolUse hard check now smoke-allows first-party `omg team` (bare and
   path-prefixed) so a pre-fix hook that still classifies Team as an external

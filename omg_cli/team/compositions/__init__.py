@@ -2,8 +2,12 @@
 
 Hyperplan V1 and Security Research V1 (contract + hermetic result production +
 shared composition task driver admission/collection + composition lane worker
-protocol claim/submit) live here. Automatic worker/pane/Jobs/provider execution
-remains out of scope (``execution_supported=false``).
+protocol claim/submit + fixture-backed auto-worker execution evidence) live
+here. Compile / produce / admit / collect / claim keep
+``execution_supported=false``. Fixture execution stamps
+``execution_supported=true`` only on ``omg.team.composition_execution_v1``
+with worker evidence. Live grok/agy/antigravity/cursor auto-execution,
+job-backed workers, and catalog v5 remain out of scope.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from omg_cli.team.compositions.hyperplan import (
     collect_hyperplan_tasks_v1,
     compile_hyperplan_decision_v1,
     compile_hyperplan_v1,
+    execute_hyperplan_tasks_v1,
     hyperplan_decision_path,
     hyperplan_manifest_path,
     hyperplan_result_bundle_path,
@@ -40,6 +45,7 @@ from omg_cli.team.compositions.security_research import (
     collect_security_research_tasks_v1,
     compile_security_research_report_v1,
     compile_security_research_v1,
+    execute_security_research_tasks_v1,
     load_security_research_manifest,
     materialize_security_research_v1,
     parse_security_research_spec_v1,
@@ -72,6 +78,8 @@ __all__ = [
     "compile_hyperplan_v1",
     "compile_security_research_report_v1",
     "compile_security_research_v1",
+    "execute_hyperplan_tasks_v1",
+    "execute_security_research_tasks_v1",
     "hyperplan_decision_path",
     "hyperplan_manifest_path",
     "hyperplan_result_bundle_path",

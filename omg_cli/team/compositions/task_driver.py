@@ -120,6 +120,12 @@ class CompositionTaskAdapter(Protocol):
         """Lane-specific payload validation (same rules as collect receipts)."""
         ...
 
+    def normalize_result_bundle(
+        self, raw: Any, *, manifest: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Exact-key ResultBundleV1 parse (writer / digest / artifact_kind)."""
+        ...
+
     def raise_error(
         self,
         message: str,

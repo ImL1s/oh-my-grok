@@ -48,9 +48,11 @@ Same as v1–v3:
 ## Honesty
 
 v4 is a **partial** bounded catalog expansion (one leader-only mutating
-batch admission op on top of v3). Hermetic / fixture-proven. Does **not**
-claim full OMX parity, composition lane execution, live Antigravity
-evidence, maturity promotion, `live_*`, `passes`, `verified`, or
+batch admission op on top of v3). Hermetic / fixture-proven. Fixture-backed
+composition `execute` is a **CLI/Python path** (`omg team
+hyperplan|security-research execute`), **not** a catalog v5 operation.
+Does **not** claim full OMX parity, live Antigravity evidence, maturity
+promotion, `live_*`, `passes`, `verified`, or compile-time
 `execution_supported=true`. Issue #69 remains open.
 
 ```bash

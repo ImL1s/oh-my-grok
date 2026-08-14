@@ -157,24 +157,29 @@ New start/scale also stamp an additive `route` descriptor
 ## Non-goals (this slice)
 
 - No live Antigravity proof / `live_*` maturity claims
-- No Hyperplan **execution** / Security Research **composition execution** /
-  model synthesis / PoC running
+- No live grok / agy / antigravity / cursor composition auto-workers /
+  job-backed live workers / host prompt-queue consume / model synthesis /
+  PoC running
   (Security Research hermetic result production landed in PR9;
   Hyperplan hermetic result production landed in PR10;
   catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) +
-  composition lane worker protocol claim/submit (PR13) landed — partial
-  catalog, not full OMX)
+  composition lane worker protocol claim/submit (PR13) + fixture-backed
+  composition execution (PR14) landed — compile/produce stay
+  `execution_supported=false`; partial catalog, not full OMX)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
 - Does **not** close #69
 
-## Hyperplan V1 (hermetic produce + task driver + lane protocol)
+## Hyperplan V1 (hermetic produce + task driver + lane protocol + fixture execute)
 
 See `docs/team-hyperplan-v1.md`. Contract + hermetic result production +
 shared composition task-driver admission/collection + worker-scoped
-claim-lane / submit-lane-result landed; automatic worker/provider/pane/Jobs
-execution remains open (`execution_supported=false`).
+claim-lane / submit-lane-result + fixture-backed auto-worker execution
+landed. Compile / produce / admit / collect / claim keep
+`execution_supported=false`. `omg.team.composition_execution_v1` may stamp
+true only with fixture worker evidence. Live providers / job-backed workers
+remain open.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json --json
@@ -185,14 +190,16 @@ omg team hyperplan admit-tasks --run RUN --team-id TEAM
 omg team hyperplan collect-tasks --run RUN --team-id TEAM
 omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 ```
 
-## Security Research V1 (hermetic produce + task driver + lane protocol)
+## Security Research V1 (hermetic produce + task driver + lane protocol + fixture execute)
 
 See `docs/team-security-research-v1.md`. Contract + hermetic result production
 + shared composition task-driver admission/collection + worker-scoped
-claim-lane / submit-lane-result landed; composition execution / PoC running
-remain open (`execution_supported=false`).
+claim-lane / submit-lane-result + fixture-backed auto-worker execution
+landed. Compile / produce stay `execution_supported=false`. Safe-PoC policy
+unchanged (no PoC running). Live providers remain open.
 
 ```bash
 omg team security-research plan --spec SPEC.json --json
@@ -203,6 +210,7 @@ omg team security-research admit-tasks --run RUN --team-id TEAM
 omg team security-research collect-tasks --run RUN --team-id TEAM
 omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 ```
 
 Refs #69.

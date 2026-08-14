@@ -11,10 +11,13 @@ run root:
 derive a report from a bounded ``SecurityResearchResultBundleV1`` (offline;
 never executes lanes). ``admit_security_research_tasks_v1`` /
 ``collect_security_research_tasks_v1`` bridge the materialized DAG onto the
-PR11 Team task plane via the shared composition task driver.
-``execution_supported`` is always ``false``. This module never launches panes,
-Jobs, providers, Antigravity, MCP tools, or automatic workers, never runs
-PoCs, and never sets ``verified`` / ``passes``.
+PR11 Team task plane via the shared composition task driver. Fixture-backed
+auto-worker execution lives in ``omg_cli.team.compositions.execution`` and
+writes a separate ``omg.team.composition_execution_v1`` evidence document;
+compile / produce / admit / collect / claim still stamp
+``execution_supported=false``. Immutable safe-PoC policy is unchanged: this
+module never launches grok/agy/antigravity/cursor, Jobs, tmux, MCP, or PoC
+surfaces, and never sets ``verified`` / ``passes``.
 """
 
 from __future__ import annotations
@@ -2141,6 +2144,35 @@ def submit_security_research_lane_result_v1(
         raise SecurityResearchError(str(exc), code=exc.code) from exc
 
 
+def execute_security_research_tasks_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    executor: str,
+    bundle: Mapping[str, Any] | Any,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Leader-only: fixture workers claim/submit SR lanes, then collect."""
+    from omg_cli.team.compositions.execution import (
+        CompositionExecutionError,
+        execute_composition_tasks_v1,
+    )
+
+    try:
+        return execute_composition_tasks_v1(
+            root,
+            run_id,
+            team_id,
+            _SecurityResearchTaskAdapter(),
+            executor=executor,
+            bundle=bundle,
+            env=env,
+        )
+    except CompositionExecutionError as exc:
+        raise SecurityResearchError(str(exc), code=exc.code) from exc
+
+
 class _SecurityResearchTaskAdapter:
     source_kind = "security_research_v1"
     result_bundle_kind = SECURITY_RESEARCH_RESULT_BUNDLE_KIND
@@ -2189,6 +2221,11 @@ class _SecurityResearchTaskAdapter:
             lane_meta=lane,
             label="LaneTaskResultV1.payload",
         )
+
+    def normalize_result_bundle(
+        self, raw: Any, *, manifest: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return _normalize_result_bundle(raw, manifest=manifest)
 
     def raise_error(
         self,
@@ -3507,6 +3544,7 @@ __all__ = [
     "collect_security_research_tasks_v1",
     "compile_security_research_report_v1",
     "compile_security_research_v1",
+    "execute_security_research_tasks_v1",
     "load_security_research_manifest",
     "materialize_security_research_v1",
     "parse_security_research_spec_v1",

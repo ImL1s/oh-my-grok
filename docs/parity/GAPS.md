@@ -9,7 +9,7 @@ Inventory status: **bootstrapping**.
 | `gap.antigravity.provider` | P0 | closed | #67 | `antigravity.provider.adapter` | Closed #67: A–D landed (probe/run/ask/Team envelope). Remaining authenticated Antigravity provider/live evidence is owned by #69; provider loading/doctor follow-up by #77. |
 | `gap.jobs.durable` | P0 | closed | #68 | `jobs.durable_background` | Closed #68: PR1–PR5 durable jobs plane landed. Remaining authenticated Antigravity live evidence and Team job-backed workers are owned by #69. |
 | `gap.parity.governance.remaining` | P0 | closed | #78 | `parity.inventory.governance` | Closed #78: pinned inventory, CI claim gates, and generated docs exist; GAPS no longer lists closed #67/#68 as open P0. Inventory stays bootstrapping. Completeness promotion and near-1:1 belong to #79. |
-| `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | PR4–PR13 Team v3 slices landed (execution_supported=false; partial catalog, not full OMX). Remaining: Hyperplan/Security Research auto-worker execution, authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume (#69). |
+| `gap.team.v3` | P0 | open | #69 | `team.plane_v3` | PR4–PR14 Team v3 slices landed (execution_supported=false; partial catalog, not full OMX). Remaining: authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume (#69). |
 | `gap.install.provider_doctor` | P1 | open | #77 | `antigravity.provider.adapter`, `antigravity.platform.version_matrix` | Transactional Grok + Antigravity plugin setup, migration, and provider loading/doctor remain under #77. |
 | `gap.omo.todo_continuation` | P1 | open | #79 | `omo.goal.todo_continuation` | OmO todo-continuation inject is host_impossible on Grok (no session.prompt API). Leftover owned by #79, not #78. |
 | `gap.parity.platform_live_evidence` | P1 | open | #77, #79 | `antigravity.platform.version_matrix` | Platform/runtime live-evidence gate shipped (#78-C); #78-I Antigravity docs-only proof landed (unpromoted). Provider loading/doctor follow-up is owned by #77. Completeness promotion belongs to #79 and is not a #78 close gate. |
@@ -20,4 +20,4 @@ Inventory status: **bootstrapping**.
 
 ## Open P0
 
-- `gap.team.v3` (#69): PR4–PR13 Team v3 slices landed (execution_supported=false; partial catalog, not full OMX). Remaining: Hyperplan/Security Research auto-worker execution, authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume (#69).
+- `gap.team.v3` (#69): PR4–PR14 Team v3 slices landed (execution_supported=false; partial catalog, not full OMX). Remaining: authenticated Antigravity live evidence, Team job-backed/live workers, and host prompt-queue/fan-out consume (#69).

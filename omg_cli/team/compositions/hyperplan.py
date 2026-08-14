@@ -10,8 +10,11 @@ canonical Team run root:
 decision from a bounded ``HyperplanResultBundleV1`` (offline; never executes
 lanes). ``admit_hyperplan_tasks_v1`` / ``collect_hyperplan_tasks_v1`` bridge
 the materialized DAG onto the PR11 Team task plane via the shared composition
-task driver. ``execution_supported`` is always ``false``. This module never
-launches panes, Jobs, providers, Antigravity, MCP tools, or automatic workers,
+task driver. Fixture-backed auto-worker execution lives in
+``omg_cli.team.compositions.execution`` and writes a separate
+``omg.team.composition_execution_v1`` evidence document; compile / produce /
+admit / collect / claim still stamp ``execution_supported=false``. This module
+never launches grok/agy/antigravity/cursor, Jobs, tmux, MCP, or PoC surfaces,
 and never sets ``verified`` / ``passes``.
 """
 
@@ -1491,6 +1494,35 @@ def submit_hyperplan_lane_result_v1(
         raise HyperplanError(str(exc), code=exc.code) from exc
 
 
+def execute_hyperplan_tasks_v1(
+    root: Path | str,
+    run_id: str,
+    team_id: str,
+    *,
+    executor: str,
+    bundle: Mapping[str, Any] | Any,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Leader-only: fixture workers claim/submit Hyperplan lanes, then collect."""
+    from omg_cli.team.compositions.execution import (
+        CompositionExecutionError,
+        execute_composition_tasks_v1,
+    )
+
+    try:
+        return execute_composition_tasks_v1(
+            root,
+            run_id,
+            team_id,
+            _HyperplanTaskAdapter(),
+            executor=executor,
+            bundle=bundle,
+            env=env,
+        )
+    except CompositionExecutionError as exc:
+        raise HyperplanError(str(exc), code=exc.code) from exc
+
+
 class _HyperplanTaskAdapter:
     source_kind = "hyperplan_v1"
     result_bundle_kind = HYPERPLAN_RESULT_BUNDLE_KIND
@@ -1539,6 +1571,11 @@ class _HyperplanTaskAdapter:
             lane_meta=lane,
             label="LaneTaskResultV1.payload",
         )
+
+    def normalize_result_bundle(
+        self, raw: Any, *, manifest: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return _normalize_result_bundle(raw, manifest=manifest)
 
     def raise_error(
         self,
@@ -2409,6 +2446,7 @@ __all__ = [
     "collect_hyperplan_tasks_v1",
     "compile_hyperplan_decision_v1",
     "compile_hyperplan_v1",
+    "execute_hyperplan_tasks_v1",
     "hyperplan_decision_path",
     "hyperplan_manifest_path",
     "hyperplan_result_bundle_path",

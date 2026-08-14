@@ -1,6 +1,7 @@
 """Tests for scripts/generate_capabilities_lock.py + doctor soft check."""
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -390,6 +391,44 @@ def test_arbitrary_root_python_is_parsed_but_never_executed(tmp_path: Path) -> N
     assert surface["legacy_ask_execution"]["kind"] == "legacy_execution"
     assert surface["legacy_ask_execution"]["canonical_qualification"] is False
     assert surface["legacy_ask_execution"]["canonical_support"] is False
+
+
+def test_sha256_file_normalizes_crlf_and_cr_to_lf(tmp_path: Path) -> None:
+    gen = _load_gen_module()
+    payload = b"---\nname: omg-x\n---\nhello\n"
+    lf = tmp_path / "lf.md"
+    crlf = tmp_path / "crlf.md"
+    cr = tmp_path / "cr.md"
+    lf.write_bytes(payload)
+    crlf.write_bytes(payload.replace(b"\n", b"\r\n"))
+    cr.write_bytes(payload.replace(b"\n", b"\r"))
+    digest = gen._sha256_file(lf)
+    assert gen._sha256_file(crlf) == digest
+    assert gen._sha256_file(cr) == digest
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_compute_lock_identical_for_crlf_and_lf_sources(tmp_path: Path) -> None:
+    gen = _load_gen_module()
+    lf_root = _fake_repo(tmp_path / "lf")
+    crlf_root = tmp_path / "crlf"
+    for path in lf_root.rglob("*"):
+        if not path.is_file():
+            continue
+        body = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        path.write_bytes(body)
+        target = crlf_root / path.relative_to(lf_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body.replace(b"\n", b"\r\n"))
+    assert gen.compute_lock(lf_root) == gen.compute_lock(crlf_root)
+
+
+def test_write_lock_emits_lf_newlines(tmp_path: Path) -> None:
+    gen = _load_gen_module()
+    path = gen.write_lock(_fake_repo(tmp_path))
+    body = path.read_bytes()
+    assert b"\r\n" not in body
+    assert body.endswith(b"\n")
 
 
 def test_editing_file_changes_aggregate(tmp_path: Path) -> None:

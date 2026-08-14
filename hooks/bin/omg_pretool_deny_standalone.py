@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "ea33c31f174cb6604310525c789f2a4d2a2535f978fefeeff497bc3a19a2bf64"
+_OMG_GENERATED_FROM_SHA = "a6539c6a47803cb78855a71246f854d90ab5abaa4fe57a34a333158b1570dea6"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -173,6 +173,7 @@ _TEAM_LEADER_COMPOSITION_OPS = frozenset({
     "produce-report",
     "admit-tasks",
     "collect-tasks",
+    "execute",
 })
 # Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
 # Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked

@@ -1,14 +1,17 @@
-# Team Hyperplan Composition Contract V1 (#69 PR13)
+# Team Hyperplan Composition Contract V1 (#69 PR14)
 
 Hermetic Hyperplan contract: deterministic DAG compiler, fail-closed
 manifest persistence, offline result production, **shared composition
-task-driver admission/collection**, and **worker-scoped lane claim/submit**
-under the canonical Team run root. Composition worker/pane/Jobs/provider
-**automatic** execution remains unsupported (`execution_supported=false`).
+task-driver admission/collection**, **worker-scoped lane claim/submit**,
+and **fixture-backed auto-worker execution** under the canonical Team run
+root. Compile / produce / admit / collect / claim contracts keep
+`execution_supported=false`. Live grok / agy / antigravity / cursor
+auto-execution remains unsupported.
 
 Authoritative modules: `omg_cli.team.compositions.hyperplan`,
-`omg_cli.team.compositions.task_driver`, and
-`omg_cli.team.compositions.lane_protocol`.
+`omg_cli.team.compositions.task_driver`,
+`omg_cli.team.compositions.lane_protocol`, and
+`omg_cli.team.compositions.execution`.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json [--json]
@@ -19,13 +22,14 @@ omg team hyperplan admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team hyperplan collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team hyperplan claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--json]
 omg team hyperplan submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
+omg team hyperplan execute --run RUN_ID --team-id TEAM_ID --executor fixture --input RESULT_BUNDLE.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize`,
-`validate-decision`, `produce-decision`, `admit-tasks`, and `collect-tasks`
-are **leader-only** and fail closed for a worker process or nested first-party
-launch **before persist**; `claim-lane` / `submit-lane-result` remain
-**worker-only**. `materialize` atomically writes
+`validate-decision`, `produce-decision`, `admit-tasks`, `collect-tasks`,
+and `execute` are **leader-only** and fail closed for a worker process or
+nested first-party launch **before persist**; `claim-lane` /
+`submit-lane-result` remain **worker-only**. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/hyperplan-v1.json`
@@ -45,6 +49,21 @@ dependency outputs; never the leader conversation). Human output redacts the
 claim token; machine `--json` may expose it for the worker. Submit consumes a
 claim file (no `--claim-token` argv). Rejected/blocked lane results still
 transition the Team task to `completed`. `execution_supported=false` retained.
+
+`execute` is **leader-only** and **fixture-only**. After admit-tasks it drives
+each pending lane through the real claim-lane / submit-lane-result protocol
+using in-process fixture workers (`pane_id=fx-{worker_id}`), then
+collect-tasks, and writes `.omg/state/runs/<run>/team/compositions/hyperplan-v1-execution.json`
+(`omg.team.composition_execution_v1`) **last**. `--input` is a
+`HyperplanResultBundleV1` and is normalized with the same exact-key /
+foreign-writer / digest / `artifact_kind` contract as `produce-decision`
+**before** fixture workers submit `LaneTaskResultV1` payloads. That evidence
+document may stamp `execution_supported=true` only with worker evidence
+(run ids, fixture pane ids, lane result/claim digests). Forged
+`{execution_supported:true}` without evidence is refused. The materialized
+manifest and collect return keep `execution_supported=false`. grok / agy /
+antigravity / cursor executors and `worker_topology=job` fail closed. No
+tmux, Jobs, MCP, PoC, or `live_*`. Never writes `passes` / `verified`.
 
 `collect-tasks` remains leader-only: requires a committed batch with exact lane
 coverage, every mapped task `completed` + claim-free + still bound, parses
@@ -130,6 +149,11 @@ conflicts) fail closed rather than being silently normalized.
 - Worker claim/submit refuse leader / partial / non-Team spawn contexts
 - Concurrent same-lane claims yield exactly one winner
 - Same-result submit is idempotent; conflicting submit is refused
+- Execute `--input` uses the ResultBundleV1 normalizer (foreign writer /
+  claimed digest / artifact_kind / unexpected fields refused)
+- Idempotent re-execute with a different per-lane result digest → refuse
+- Interrupted fixture execute (some lanes completed, no execution artifact)
+  stays refuse-until-repair; this slice does not auto-resume mixed state
 
 ## Honesty
 
@@ -137,10 +161,14 @@ Hyperplan V1 **result production landed** under #69 PR10. Catalog v4
 atomic task-batch DAG admission landed under #69 PR11. Shared composition
 task driver (admit-tasks / collect-tasks) landed under #69 PR12. Composition
 lane worker protocol (claim-lane / submit-lane-result) landed under #69
-PR13. Does **not** close #69: Hyperplan execution (auto workers / providers /
-panes / Jobs), model synthesis, Security Research composition execution, live
-Antigravity evidence, and full OMX remain open. Security Research hermetic
-result production landed under #69 PR9. Manifests retain
-`execution_supported=false`. No `live_*` maturity claims.
+PR13. Fixture-backed composition execution landed under #69 PR14
+(`omg.team.composition_execution_v1`; compile/produce stay
+`execution_supported=false`). Does **not** close #69: live grok / agy /
+antigravity / cursor auto-workers, job-backed live workers, host
+prompt-queue / fan-out consume, model synthesis, live Antigravity evidence,
+and full OMX remain open. Security Research hermetic result production
+landed under #69 PR9. Manifests retain `execution_supported=false`. No
+`live_*` maturity claims. Catalog stays v4 (execute is a CLI/Python path,
+not a catalog op).
 
 Refs #69.

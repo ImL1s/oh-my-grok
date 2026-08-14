@@ -1282,3 +1282,4 @@ def test_security_research_cli_help_lists_admit_and_collect() -> None:
     assert "admit-tasks" in help_text
     assert "collect-tasks" in help_text
     assert "produce-report" in help_text
+    assert "execute" in help_text

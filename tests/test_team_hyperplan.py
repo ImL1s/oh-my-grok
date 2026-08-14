@@ -945,3 +945,4 @@ def test_hyperplan_cli_help_lists_admit_and_collect() -> None:
     assert "admit-tasks" in help_text
     assert "collect-tasks" in help_text
     assert "produce-decision" in help_text
+    assert "execute" in help_text
