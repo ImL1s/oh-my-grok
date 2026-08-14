@@ -190,6 +190,20 @@ def unproven_io_defaults() -> WorkerIoCapability:
     )
 
 
+def demote_interactive_readiness(record: dict[str, Any]) -> bool:
+    """Clear stale ``input_ready`` after a pane/attempt relaunch.
+
+    Returns True when the row was interactive TTY and was reset to
+    :func:`interactive_pane_io_defaults` (operator input stays supported,
+    not ready). Headless/unproven rows are left unchanged.
+    """
+    cap = normalize_worker_io_capability(record)
+    if cap.io_mode != IO_MODE_INTERACTIVE_TTY:
+        return False
+    stamp_io_capability(record, interactive_pane_io_defaults())
+    return True
+
+
 def stamp_io_capability(
     target: dict[str, Any],
     cap: WorkerIoCapability | None = None,
@@ -368,6 +382,15 @@ def normalize_worker_io_capability(
         supported = False
     if io_mode != IO_MODE_INTERACTIVE_TTY:
         input_ready = False
+    elif (
+        input_ready
+        and (attempt is not None or generation is not None)
+        and evidence is None
+    ):
+        # Attempt/generation-bound reads (operator/resume) need matching
+        # interaction evidence. A relaunch that kept input_ready=true with
+        # stale/missing evidence must not authorize input.
+        input_ready = False
 
     return WorkerIoCapability(
         io_mode=io_mode,
@@ -477,6 +500,7 @@ __all__ = [
     "WorkerIoCapability",
     "assert_operator_input_allowed",
     "background_job_io_defaults",
+    "demote_interactive_readiness",
     "interactive_pane_io_defaults",
     "interactive_pane_io_ready",
     "io_defaults_for_worker_topology",

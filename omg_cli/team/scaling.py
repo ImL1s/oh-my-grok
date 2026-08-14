@@ -6736,6 +6736,12 @@ def _relaunch_dead_incomplete_workers_locked(
         )
 
     candidate_meta = dict(meta)
+    from omg_cli.team.io_capability import demote_interactive_readiness
+
+    relaunched_ids = {str(item.get("task_id") or "") for item in relaunched}
+    for rec in tasks_all:
+        if str(rec.get("task_id") or "") in relaunched_ids:
+            demote_interactive_readiness(rec)
     candidate_meta["tasks"] = [dict(row) for row in tasks_all]
     candidate_meta["identity_generation"] = generation
     candidate_meta["identity_receipt_sha256"] = receipt_hash

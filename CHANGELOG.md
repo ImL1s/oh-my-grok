@@ -127,8 +127,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   those artifacts for `--run` rollback, and threads
   `ExactPaneProof.tmux_socket_path` through liveness probes (not only the
   final `send-keys`). `team start --plan-only` includes `io_mode` like
-  `team launch`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains open #147
-  work. Refs #147.
+  `team launch`. Resume/relaunch of an interactive worker demotes
+  `input_ready` and requires attempt-bound `TUI_READY` evidence again
+  before operator `input`/`key`. `team focus` does not claim
+  `focused=true` when `$TMUX` is a different server than
+  `proof.tmux_socket_path`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains
+  open #147 work. Refs #147.
 - **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
   and ignore CSI-only/empty lines before treating a TTY read as provider
   consume, so `PROVIDER_ECHO` is the operator payload. After echo the

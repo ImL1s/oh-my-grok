@@ -62,6 +62,34 @@ from omg_cli.team.tmux import (
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _WORKER_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+
+def tmux_socket_from_tmux_env(tmux_env: str | None) -> str | None:
+    """Parse the socket path from ``$TMUX`` (``socket,pid,session``)."""
+    if not isinstance(tmux_env, str):
+        return None
+    sock = tmux_env.strip().split(",", 1)[0].strip()
+    return sock or None
+
+
+def caller_shares_team_tmux_server(
+    *,
+    tmux_env: str | None,
+    team_socket_path: str | None,
+) -> bool:
+    """True when this client is attached to the proved Team tmux server.
+
+    A dedicated Team socket that differs from ``$TMUX`` must not run
+    ``select-pane`` and then claim the caller's view changed.
+    Missing/empty team socket keeps the historical default-server path.
+    """
+    caller = tmux_socket_from_tmux_env(tmux_env)
+    if caller is None:
+        return False
+    if not isinstance(team_socket_path, str) or not team_socket_path.strip():
+        return True
+    return os.path.normpath(caller) == os.path.normpath(team_socket_path.strip())
+
+
 DEFAULT_CAPTURE_LINES = 200
 MAX_CAPTURE_LINES = 2000
 MIN_WATCH_INTERVAL_S = 0.5
@@ -1136,6 +1164,10 @@ def focus_worker(
     authorize_focus(proof, status=status)
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     inside_tmux = bool(os.environ.get("TMUX"))
+    same_server = caller_shares_team_tmux_server(
+        tmux_env=os.environ.get("TMUX"),
+        team_socket_path=proof.tmux_socket_path,
+    )
     attach_argv = attach_argv_for_target(
         session_id=proof.session_id,
         pane_id=proof.pane_id,
@@ -1177,7 +1209,7 @@ def focus_worker(
         )
 
     try:
-        if inside_tmux and tty:
+        if inside_tmux and tty and same_server:
             focus_pane(proof.pane_id, socket_path=proof.tmux_socket_path)
             result["focused"] = True
             result["mode"] = "select-pane"
@@ -1202,10 +1234,17 @@ def focus_worker(
                 )
         else:
             result["mode"] = "hint"
-            result["note"] = (
-                "printed attach command only "
-                "(use interactive TTY inside tmux, or --execute to attach)"
-            )
+            if inside_tmux and tty and not same_server:
+                result["note"] = (
+                    "caller tmux server differs from the team socket; "
+                    "printed attach command only (select-pane would not "
+                    "move this client)"
+                )
+            else:
+                result["note"] = (
+                    "printed attach command only "
+                    "(use interactive TTY inside tmux, or --execute to attach)"
+                )
     except TmuxTeamError as exc:
         audit_operator_event(
             root,
