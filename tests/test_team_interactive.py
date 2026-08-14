@@ -29,6 +29,7 @@ from omg_cli.team.io_capability import (
     interactive_pane_io_ready,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, TeamError, start_team
+from omg_cli.team.scaling import scale_team
 
 _POSIX = pytest.mark.skipif(
     os.name != "posix", reason="managed-store confinement requires POSIX dir_fd"
@@ -650,3 +651,24 @@ def test_leader_promotes_input_ready_after_tui_ready(
     assert desc["operator_input_supported"] is False
     # Scraping the same stdout in-process must not be what flipped the descriptor.
     assert "TUI_READY" not in json.dumps(desc)
+
+
+@_POSIX
+def test_scale_up_refuses_interactive_team(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    assert meta["tasks"][0]["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    with pytest.raises(TeamError, match="interactive TTY"):
+        scale_team(tmp_path, meta["run_id"], add=1, dry_run=True)
