@@ -44,6 +44,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("compact", "compaction helpers", "memory"),
     CommandSpec("notify", "notification channels", "inspect"),
     CommandSpec("native-status", "native host status pack", "inspect"),
+    CommandSpec(
+        "agents",
+        "dual-host agent/model policy list/explain (Grok baseline; Medley caps unsupported)",
+        "inspect",
+    ),
     CommandSpec("workflow", "repository workflows", "workflow"),
     CommandSpec("capabilities", "capabilities lock surface", "inspect"),
     CommandSpec("parity", "parity matrix", "inspect"),

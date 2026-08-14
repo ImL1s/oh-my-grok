@@ -2,10 +2,10 @@
 
 English page is canonical. Maintained indexes/locales must link to it rather
 than forking a second support matrix. The eight-row Normative support matrix
-is bound to tests/fixtures/docs/normative_support_matrix_v1.json until the
-#131 capability registry replaces that docs contract. Tests bind documented
-CLI shapes and Presentation route.kind strings to shipped parser/constants;
-they do not implement routing runtime.
+is bound to tests/fixtures/docs/normative_support_matrix_v1.json. The #131
+capability registry is the runtime source for those identifiers; the fixture
+remains the docs-contract golden until Medley #287 lands. Tests bind documented
+CLI shapes and Presentation route.kind strings to shipped parser/constants.
 """
 from __future__ import annotations
 
@@ -91,6 +91,10 @@ SHIPPED_OMG_COMMANDS: tuple[str, ...] = (
     "omg team status --presentation",
     "omg ask fake",
     "omg ask fake --background",
+    "omg agents list",
+    "omg agents list --json",
+    "omg agents explain omg-verifier",
+    "omg agents explain omg-verifier --json",
 )
 
 # Normative fragments that must appear on the English architecture page.
@@ -718,29 +722,28 @@ def test_locale_architecture_projection_honesty() -> None:
 
 
 def test_shipped_cli_names_in_architecture_are_registered() -> None:
-    """Only assert CLI verbs already registered; agents* remain contract-only."""
+    """Shipped CLI verbs including omg agents must be registered."""
     parser = build_parser()
     top: set[str] = set()
     for act in parser._actions:
         if getattr(act, "choices", None):
             top.update(act.choices.keys())
     body = ARCH.read_text(encoding="utf-8")
-    for cmd in ("doctor", "team", "ask"):
+    for cmd in ("doctor", "team", "ask", "agents"):
         assert cmd in top
         assert f"omg {cmd}" in body
-    # Contract surfaces may be mentioned but must not be claimed as shipped-only.
-    if "omg agents" in body:
-        assert "Contract" in body or "contract" in body
+    assert "list" in _nested_choices(parser, "agents")
+    assert "explain" in _nested_choices(parser, "agents")
 
 
 def test_documented_omg_command_shapes_match_parser() -> None:
-    """Backtick ``omg …`` shapes must parse if shipped, and agents must not."""
+    """Backtick ``omg …`` shapes must parse if shipped."""
     body = ARCH.read_text(encoding="utf-8")
     parser = build_parser()
     top = _top_level_choices(parser)
     assert "doctor" in top
     assert "team" in top
-    assert "agents" not in top
+    assert "agents" in top
     assert "status" in _nested_choices(parser, "team")
 
     for shipped in SHIPPED_OMG_COMMANDS:
@@ -758,24 +761,21 @@ def test_documented_omg_command_shapes_match_parser() -> None:
                 not tok.startswith("-") for tok in argv[ask_at + 1 :]
             ):
                 argv.insert(ask_at + 1, "fake")
-        if verb == "agents":
-            assert not _try_parse_argv(argv), f"contract-only command parsed: {command}"
-            continue
         assert _try_parse_argv(argv), f"documented shipped shape failed parse: {command}"
 
 
-def test_omg_agents_mentions_are_contract_only() -> None:
+def test_omg_agents_mentions_are_shipped_with_medley_honesty() -> None:
     body = ARCH.read_text(encoding="utf-8")
     mentions = list(_AGENTS_MENTION.finditer(body))
-    assert mentions, "architecture must mention omg agents as contract-only"
-    honesty = re.compile(r"not runnable|not registered", re.IGNORECASE)
+    assert mentions, "architecture must mention omg agents"
+    honesty = re.compile(
+        r"unsupported|unavailable|contract-only|medley#290",
+        re.IGNORECASE,
+    )
     for m in mentions:
         window = _window(body, m.start(), m.end(), _AGENTS_CONTRACT_WINDOW)
-        assert re.search(r"contract", window, re.IGNORECASE), (
-            f"omg agents without nearby 'contract': {window!r}"
-        )
         assert honesty.search(window), (
-            f"omg agents without nearby not-runnable/not-registered: {window!r}"
+            f"omg agents without nearby Medley/unsupported honesty: {window!r}"
         )
 
 

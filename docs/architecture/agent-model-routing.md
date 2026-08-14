@@ -59,8 +59,10 @@ Rules:
   optional dependencies and are not Medley API/access routes.
 - Unknown hosts negotiate by **capabilities**, not binary-name guessing.
   Current shipped `omg doctor` reports **current host/session capabilities**
-  only. Medley-side negotiation and routing-aware doctor fields are
-  **planned / contract-only** under #131, **not shipped**.
+  plus the versioned **routing capability registry** (`routing_capabilities`).
+  Medley-side exact/candidate/receipt consumption remains
+  **planned** under [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)
+  and is **unsupported** on stock Grok Build (not an installation failure).
 - This document does **not** claim affiliation between OMG, Medley, or xAI.
 
 ## Mandatory terminology
@@ -397,9 +399,11 @@ Presentation ownership (documentation contract; **not** a shipped TUI runtime):
   declarative Agents / Tasks / child-session surfaces**. OMG does **not**
   own an arbitrary stock-host renderer or a new stock Grok Build panel.
 - **OMG** owns policy / Team / external-executor **projection** under
-  [#134](https://github.com/ImL1s/oh-my-grok/issues/134). That work is
-  **planned / contract-only**; this page does not ship `omg agents` (not
-  registered / not runnable today) or a host-neutral TUI.
+  [#134](https://github.com/ImL1s/oh-my-grok/issues/134). `omg agents list`
+  and `omg agents explain <agent-or-profile>` are **shipped** read-only CLI/JSON (Grok baseline;
+  Medley facts stay unsupported/unavailable). Host-neutral accessibility
+  polish and Team presentation completion remain #134. OMG does **not** ship
+  a standalone TUI.
 - **Medley** owns route-aware Agents / lifecycle TUI under
   [ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) and
   provider / route / statusline projection under
@@ -423,13 +427,13 @@ panel.
 
 | Surface | Status relative to this architecture page |
 |---------|-------------------------------------------|
-| `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** only; does **not** negotiate Medley/model-routing enhancements today; enhanced fields must not false-green |
+| `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** plus the routing capability registry; Medley caps are **unsupported** on stock Grok Build (not installation failed); enhanced fields must not false-green |
 | `omg ask <provider>` / `omg ask <provider> --background` | **Shipped** — advisory broker only (`purpose = advisory`); not a Team executor; artifacts never set `verified` |
 | `omg team status [--json]` | **Shipped** — locked `--json` view (no `route` / `route.kind`). Route kind labeling is a dual-host **contract target** and appears only on Presentation V1 (`--presentation`) |
-| `omg agents list [--json]` | **Contract** — host-neutral agent/policy catalog; planned #131/#134; **not runnable today** |
-| `omg agents explain <agent-or-profile> [--json]` | **Contract** — policy vs effective route/receipt; planned #131/#134; **not runnable today** |
+| `omg agents list [--json]` | **Shipped** — host-neutral agent/policy inspect; Grok baseline inherit; Medley facts **unsupported** / **unavailable**; no paid probe |
+| `omg agents explain <agent-or-profile> [--json]` | **Shipped** — policy vs effective route/receipt inspect; exact never silently inherits; Medley TUI remains [medley#290](https://github.com/ImL1s/medley/issues/290) **contract-only** |
 
-Human and JSON views of the same facts must agree when those commands ship.
+Human and JSON views of the same facts must agree.
 On original Grok Build, explain/list must show which enhanced facts are
 unavailable. On Medley, they must separate **requested policy** from **effective
 route** and receipt provenance. Opening diagnostics must not perform paid
@@ -443,9 +447,10 @@ private origins.
 
 #### `omg doctor` / `omg doctor --json` — SHIPPED
 
-Human (resembles the real printer). Host capabilities today are
-session/resume/close (plus `uuid_search`) only — **no** Medley/model-routing
-registry:
+Human (resembles the real printer). Host session capabilities remain
+resume/close (plus `uuid_search`). Doctor also reports the routing
+capability registry: Medley-only outcomes are **unsupported** on stock
+Grok Build.
 
 ```text
 oh-my-grok doctor
@@ -537,18 +542,19 @@ render `unknown`. `native_host_receipt` is optional receipt passthrough
 { "schema": 1, "kind": "external_executor", "executor": "fixture", "provider": "fake", "role": "executor", "posture": "read-write" }
 ```
 
-#### `omg agents list [--json]` — CONTRACT-ONLY, planned #131/#134, **NOT runnable today**
+#### `omg agents list [--json]` — SHIPPED (Grok baseline inspect)
 
-**Not registered. Do not run.** Human + JSON below are **illustrative contract
-targets** only. On a stock host, a Medley-only capability outcome is
-**unsupported**; route-specific facts are **unavailable**.
+Read-only. No paid probe. On a stock host, a Medley-only capability outcome is
+**unsupported**; route-specific facts are **unavailable**. Medley TUI
+(`/agents`) remains [medley#290](https://github.com/ImL1s/medley/issues/290)
+**contract-only** / not runnable from OMG.
 
 ```text
-omg agents list   (not registered — contract target)
+omg agents list
 
-id                     requested policy     host facts
-omg-verifier-example   inherit / exact      Medley-only capability: unsupported
-                                            route-specific facts: unavailable
+Agent            Host policy          Model intent     Status
+omg-verifier     optional extension   inherit          ready
+omg-executor     baseline             inherit          ready
 ```
 
 ```json
@@ -557,9 +563,10 @@ omg-verifier-example   inherit / exact      Medley-only capability: unsupported
   "schema_version": 1,
   "command": "agents.list",
   "data": {
+    "host_tier": "original_grok_build",
     "agents": [
       {
-        "id": "omg-verifier-example",
+        "agent_id": "omg-verifier",
         "requested_policy": { "binding": "inherit" },
         "host_facts": {
           "medley_capability_outcome": "unsupported",
@@ -571,16 +578,16 @@ omg-verifier-example   inherit / exact      Medley-only capability: unsupported
 }
 ```
 
-#### `omg agents explain <agent-or-profile> [--json]` — CONTRACT-ONLY, same honesty
+#### `omg agents explain <agent-or-profile> [--json]` — SHIPPED, same honesty
 
-**Not a current CLI.** Separate requested policy from effective route. Same
-**unsupported** / **unavailable** distinction. Fictional id only.
+Separate requested policy from effective route. Exact never silently inherits.
+Same **unsupported** / **unavailable** distinction.
 
 ```text
-omg agents explain omg-verifier-example   (not registered — contract target)
+omg agents explain omg-verifier
 
 requested policy: inherit parent model (no provider credentials in OMG state)
-effective route:  (none labeled on stock host; not a shipped native runtime)
+effective route:  native inherit (stock host; not a Medley receipt)
 Medley-only capability outcome: unsupported
 route-specific facts: unavailable
 ```
@@ -591,12 +598,14 @@ route-specific facts: unavailable
   "schema_version": 1,
   "command": "agents.explain",
   "data": {
-    "id": "omg-verifier-example",
-    "requested_policy": { "binding": "inherit" },
-    "effective_route": null,
-    "host_facts": {
-      "medley_capability_outcome": "unsupported",
-      "route_specific_facts": "unavailable"
+    "agent": {
+      "agent_id": "omg-verifier",
+      "requested_policy": { "binding": "inherit" },
+      "effective_route": null,
+      "host_facts": {
+        "medley_capability_outcome": "unsupported",
+        "route_specific_facts": "unavailable"
+      }
     }
   }
 }
@@ -605,13 +614,15 @@ route-specific facts: unavailable
 ## Installation and compatibility language
 
 - Original Grok Build remains the **normal supported host**.
-- Medley is an **optional compatible host**. Enhanced native routing and
-  Medley-side negotiation are **planned (#131)**, not shipped.
+- Medley is an **optional compatible host**. Grok-side policy inspect
+  (`omg agents list` / `omg agents explain <agent-or-profile>`) is shipped; Medley exact/candidate/receipt
+  consumption is **planned** ([ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287))
+  and remains **unsupported** on stock Grok Build, not claimed here.
 - OMG install ≠ Medley install; Medley is not required for baseline OMG.
 - External Team executors remain separate optional dependencies.
-- Current `omg doctor` reports **current host/session capabilities** only; it
-  does not negotiate Medley routing availability. Use capability negotiation,
-  not branding guesses.
+- Current `omg doctor` reports **current host/session capabilities** plus the
+  routing capability registry; Medley caps are **unsupported** on stock Grok
+  Build. Use capability negotiation, not branding guesses.
 
 Avoid wording that makes Medley look upstream, official, or required by Grok Build.
 

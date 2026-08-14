@@ -52,6 +52,10 @@ Subagents cannot spawn subagents (host depth limit = 1). Do not attempt nested
 delegation; plan single-level fan-out.
 If a spawn is DENIED for a missing/wrong `capability_mode`, RETRY IMMEDIATELY in
 the same turn with the required mode. Do not fall back to solo work over one deny.
+Stock Grok Build model intent is explicit **inherit** (parent model) unless
+`omg agents explain` shows a blocked exact/requires_capability policy. Do not
+flatten Medley catalog ids onto spawn. Inspect with `omg agents list` /
+`omg agents explain` (read-only; no paid probe).
 </subagents>
 
 <verification>

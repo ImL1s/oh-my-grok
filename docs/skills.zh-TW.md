@@ -469,6 +469,7 @@ find_references/symbols/diagnostics）、
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
 | `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`；不探測私有 sidecar。 |
+| `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗）。不做付費探測。Human UX 打磨屬 #134。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
 | `omg visual compare` | Visual Contract V1 `compare()` 包裝（#75）：讀取 `--input` JSON，發出 scored/blocked 信封。呼叫端自行比較 `aggregate` 與 `threshold`。不寫入 `passes`/`verified`，不解圖像，不呼叫 agent。Capture、overlay/diff、獨立 reviewer、visual-Ralph 仍屬後續 #75。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
 
@@ -495,9 +496,10 @@ Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subag
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 檢視）。
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 下的 Antigravity `agent.md` **只是投影** — 不是已安裝的 AG 插件，也不是 live AG 證據。
-團隊路由地板仍在 `omg_cli/team/roles.py`，直到 dual-host routing（#131）消費此目錄。
-`omg agents` 仍是 contract-only（未註冊）。
-Grok 內建（`explore`、`plan`、`general-purpose`）仍補臨時缺口。
+團隊路由地板仍在 `omg_cli/team/roles.py`。Dual-host model policy（#131）透過
+`agents/model_policies.json` 與 `omg agents list|explain` 消費此目錄
+（Grok baseline 已出貨；Medley exact/receipts 仍為 Refs）。
+Grok 內建（`explore`、`plan`、`general-purpose`）是政策 profiles，不是第二份 registry。
 
 ---
 

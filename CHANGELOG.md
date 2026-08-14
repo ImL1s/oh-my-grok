@@ -10,6 +10,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#131 Grok-side dual-host agent/model policy (runtime):** versioned
+  capability registry (`omg_cli/host_capabilities.py`) with outcomes
+  supported/unsupported/unavailable/incompatible/unknown. Policy overlay
+  `agents/model_policies.json` consumes the #71 catalog (not a second
+  registry). Stock Grok Build uses explicit inherit; exact never silently
+  becomes the parent model; Medley extensions are not flattened to the
+  first catalog id. Native vs `external_executor` route schemas are
+  distinct. `omg agents list|explain` is a read-only inspect surface
+  (JSON + human). `omg doctor` reports the registry as a soft OK when
+  Medley caps are unsupported. Medley #287/#290   remain Refs — no receipts,
+  ordered-candidate runtime, or TUI parity claimed. Refs #131 (does not close).
 - **#71 agent catalog (PR slice):** read-only machine catalog
   `agents/catalog.json` (13 `omg-*` agents: id, file, capability_mode,
   permission_mode, tier, spawn policy, Grok plugin + Antigravity
