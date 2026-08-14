@@ -10,7 +10,7 @@ English: [`skills.md`](./skills.md)
 机器目录（别名、分类、pipeline、续跑策略）：[`skills/catalog.json`](../skills/catalog.json) ·
 生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md)。
 检视：`omg skill list|show|resolve|resources`（永不写 `verified`）。
-仅目录项已分类，不是 live-verified。Antigravity 投影**不是**已安装 AG 插件。
+仅目录项已分类。Antigravity 投影**不是**已安装 AG 插件。
 
 > **两种表面（类似 OMC 的 CLI vs `/skill`）**  
 > - **终端机 CLI：** shell 里跑 `omg …`（状态、accept、modes）。  

@@ -9,7 +9,7 @@ Machine catalog (aliases, classifications, pipeline metadata, continuation
 policy): [`skills/catalog.json`](../skills/catalog.json) · generated table
 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md). Inspect with
 `omg skill list|show|resolve|resources` (never sets `verified`). Catalog-only
-rows are classified, not live-verified. Antigravity projections are **not** an
+rows are classified only. Antigravity projections are **not** an
 installed AG plugin.
 
 > **Two surfaces (like OMC CLI vs `/skill`)**  
