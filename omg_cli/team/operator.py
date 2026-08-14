@@ -1163,7 +1163,7 @@ def focus_worker(
 
     try:
         if inside_tmux and tty:
-            focus_pane(proof.pane_id)
+            focus_pane(proof.pane_id, socket_path=proof.tmux_socket_path)
             result["focused"] = True
             result["mode"] = "select-pane"
         elif execute and tty:
@@ -1267,7 +1267,7 @@ def key_worker(
     )
     try:
         _require_mutating_live(proof, label="key")
-        send_key(proof.pane_id, key_name)
+        send_key(proof.pane_id, key_name, socket_path=proof.tmux_socket_path)
     except OperatorError as exc:
         if exc.code == "E_OPERATOR_TOCTOU":
             audit_operator_event(
@@ -1371,10 +1371,14 @@ def input_worker(
     try:
         # Re-prove before every mutating delivery (literal and optional Enter).
         _require_mutating_live(proof, label="input")
-        send_literal(proof.pane_id, safe)
+        send_literal(
+            proof.pane_id, safe, socket_path=proof.tmux_socket_path
+        )
         if submit:
             _require_mutating_live(proof, label="input-submit")
-            send_key(proof.pane_id, "Enter")
+            send_key(
+                proof.pane_id, "Enter", socket_path=proof.tmux_socket_path
+            )
     except OperatorError as exc:
         if exc.code == "E_OPERATOR_TOCTOU":
             audit_operator_event(

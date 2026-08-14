@@ -196,7 +196,9 @@ def _install_live_tmux(
         # Strip leading tmux binary if present (_tmux_run includes it).
         if command and command[0] == "tmux":
             command = command[1:]
-        commands.append(command)
+        commands.append(list(command))
+        if len(command) >= 2 and command[0] == "-S":
+            command = command[2:]
         result = MagicMock(returncode=0, stdout="", stderr="")
         if not command:
             return result
@@ -496,6 +498,9 @@ def test_key_and_input_audit_no_raw_text(
 ) -> None:
     root = live_team["root"]
     live = _stamp_interactive_io(root, live_team["live"])
+    sock = "/tmp/omg-op-test.sock"
+    live["tmux_socket_path"] = sock
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
 
@@ -532,8 +537,10 @@ def test_key_and_input_audit_no_raw_text(
     assert "Enter" in body
     assert "text_sha256" in body
     assert "io_mode" in body
-    # send-keys effects present
-    assert any(cmd[:1] == ["send-keys"] for cmd in effects)
+    # Isolated-socket teams must pin send-keys with tmux -S (not ambient TMUX).
+    send = [cmd for cmd in effects if "send-keys" in cmd]
+    assert send
+    assert all(cmd[:2] == ["-S", sock] for cmd in send)
 
 
 def test_key_requires_tty_or_operator_override(
