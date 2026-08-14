@@ -5,6 +5,13 @@ English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 **16 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/).  
 Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI stamps.
 
+Machine catalog (aliases, classifications, pipeline metadata, continuation
+policy): [`skills/catalog.json`](../skills/catalog.json) · generated table
+[`docs/parity/skills-catalog.md`](./parity/skills-catalog.md). Inspect with
+`omg skill list|show|resolve|resources` (never sets `verified`). Catalog-only
+rows are classified, not live-verified. Antigravity projections are **not** an
+installed AG plugin.
+
 > **Two surfaces (like OMC CLI vs `/skill`)**  
 > - **Terminal CLI:** `omg …` in your shell (state, accept, modes).  
 > - **In-session skill:** natural language or `/oh-my-grok:<skill>` inside Grok Build after plugin install.  
@@ -582,8 +589,9 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg notify status\|send\|process` | Outbound-only, non-authoritative delivery queue. |
 | `omg workflow install\|list\|show\|plan\|run` | Immutable workflow registry, deterministic waves, receipt-bound ship gate. |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | Frozen W0 manifest delegation, canonical bundle/evidence producers, bundle verification, inventory check, gap listing, and plan-only upstream pin refresh. |
-| `omg capabilities` / `omg native-status` | Independent capability tiers plus read-only `agents_catalog`; no private-sidecar probing. |
+| `omg capabilities` / `omg native-status` | Independent capability tiers plus read-only `agents_catalog` and `skills_catalog`; no private-sidecar probing. |
 | `omg agents list\|explain` | Dual-host agent/model policy inspect (#131) plus host-neutral UX (#134): `--width` / `COLUMNS` narrow-normal-wide, `NO_COLOR`, CJK aliases. Stock Grok Build uses explicit inherit; Medley caps are unsupported (not installation failed). No paid probe. Medley TUI remains #290. |
+| `omg skill list\|show\|resolve\|resources` | Read-only skill catalog inspect (#70). Never sets `verified`. Host-native names such as `plan`/`goal` resolve as aliases only. |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team panes via `build_launch_envelope` (#67-D; supervisor owns PTY/PID/readiness). Never claims `live_call_ready`. |
 | `omg visual compare` | Visual Contract V1 `compare()` wrapper (#75): reads `--input` JSON and emits a scored/blocked envelope. Callers compare `aggregate` to `threshold`. Never writes `passes`/`verified`, never decodes images, never talks to agents. Capture, overlay/diff, reviewer agents, and visual-Ralph remain later #75 work. See [visual-contract-v1.md](./visual-contract-v1.md). |
 | `omg job start\|status\|wait\|collect\|cancel\|list\|retry\|auto-retry\|gc\|recover` | Durable background jobs (#68 PR1–PR5): `.omg/jobs/<id>/` store, subprocess runner owning `ProviderAdapter.run`, owner lease/heartbeat observation, explicit `recover` → `lost`, explicit `retry --attempt N` with attempt archive, bounded `auto-retry` scheduler tick (automatic class only; one pass, no daemon), terminal `gc --retention-days`, and `omg ask --background` → job_id. `--provider fake` (hermetic) and `--provider antigravity` (fail-closed preflight; stream-json default; evidence artifacts only). Fake-only flags rejected with Antigravity. Authenticated Antigravity execution not claimed. Remaining live/job-backed evidence is owned by #69; closed #68 is historical. See `docs/durable-jobs.md`. |
@@ -608,6 +616,13 @@ passes task-ID-bound receipts to `omg workflow run`. See
 | `omg-code-reviewer` / `omg-architect` | `read-only` | Structured review lanes |
 | `omg-security-reviewer` | `read-only` | OWASP / secrets / unsafe patterns |
 | `omg-qa-tester` / `omg-analyst` | see taxonomy | QA scenarios / interview analysis |
+
+Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog.json)
+(loader `omg_cli/skills_catalog.py`; `omg skill list|show|resolve|resources` or
+`omg capabilities` → `skills_catalog`). Antigravity `SKILL.md` files under
+[`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
+are **projections only**. The 16 Grok plugin playbooks remain the in-session
+surface.
 
 Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
 (loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →

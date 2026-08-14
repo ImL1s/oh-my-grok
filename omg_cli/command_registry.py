@@ -56,6 +56,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("hud", "one-line HUD", "inspect"),
     CommandSpec("lsp", "host-owned .lsp.json inspection", "inspect"),
     CommandSpec(
+        "skill",
+        "read-only skill catalog inspect (list/show/resolve/resources; #70)",
+        "inspect",
+    ),
+    CommandSpec(
         "provider",
         "provider probe/run (Antigravity capabilities/doctor/run; #67)",
         "inspect",

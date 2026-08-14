@@ -7,6 +7,11 @@ English: [`skills.md`](./skills.md)
 **16 個 in-session skills**，路徑：[`skills/omg-*/SKILL.md`](../skills/)。  
 概念類似 OMC skill zoo，執行面是 **Grok-native**：playbook + `omg` CLI 蓋章。
 
+機器目錄（別名、分類、pipeline、續跑策略）：[`skills/catalog.json`](../skills/catalog.json) ·
+生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md)。
+檢視：`omg skill list|show|resolve|resources`（永不寫 `verified`）。
+僅目錄列已分類，不是 live-verified。Antigravity 投影**不是**已安裝 AG 外掛。
+
 > **兩種表面（類似 OMC 的 CLI vs `/skill`）**  
 > - **終端機 CLI：** shell 裡跑 `omg …`（狀態、accept、modes）。  
 > - **Session skill：** 安裝 plugin 後，在 Grok Build 對話裡用自然語言或 `/oh-my-grok:<skill>`。  
@@ -471,8 +476,9 @@ find_references/symbols/diagnostics）、
 | `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
-| `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`；不探測私有 sidecar。 |
+| `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog` 與 `skills_catalog`；不探測私有 sidecar。 |
 | `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）與 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗）。不做付費探測。Medley TUI 仍為 #290。 |
+| `omg skill list\|show\|resolve\|resources` | 唯讀 skill 目錄檢視（#70）。永不寫 `verified`。宿主名 `plan`/`goal` 只作為別名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
 | `omg visual compare` | Visual Contract V1 `compare()` 包裝（#75）：讀取 `--input` JSON，發出 scored/blocked 信封。呼叫端自行比較 `aggregate` 與 `threshold`。不寫入 `passes`/`verified`，不解圖像，不呼叫 agent。Capture、overlay/diff、獨立 reviewer、visual-Ralph 仍屬後續 #75。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
 | `omg edit plan\|apply` | Hash-anchored 編輯 CLI（#76）：`plan` 唯讀；`apply` 走 `apply_hash_edit`（再讀、再規劃、原子替換）。不寫 `passes`/`verified`。不宣稱 `omo.edit.hash_anchored` 宿主對等。見 `docs/hash-edit.md`。 |
@@ -496,7 +502,13 @@ Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subag
 | `omg-security-reviewer` | `read-only` | OWASP / secrets / 不安全模式 |
 | `omg-qa-tester` / `omg-analyst` | 見 taxonomy | QA 情境 / interview 分析 |
 
-機器可讀插件 agent 目錄：[`agents/catalog.json`](../agents/catalog.json)
+機器可讀外掛 skill 目錄：[`skills/catalog.json`](../skills/catalog.json)
+（loader `omg_cli/skills_catalog.py`；`omg skill list|show|resolve|resources` 或
+`omg capabilities` 的 `skills_catalog`）。
+[`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
+下的 Antigravity `SKILL.md` **只是投影**。Grok 仍只有 16 個 in-session playbook。
+
+機器可讀外掛 agent 目錄：[`agents/catalog.json`](../agents/catalog.json)
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 檢視）。
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 下的 Antigravity `agent.md` **只是投影** — 不是已安裝的 AG 插件，也不是 live AG 證據。

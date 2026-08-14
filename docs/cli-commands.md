@@ -39,6 +39,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `wiki` | inspect | project wiki |
 | `hud` | inspect | one-line HUD |
 | `lsp` | inspect | host-owned .lsp.json inspection |
+| `skill` | inspect | read-only skill catalog inspect (list/show/resolve/resources; #70) |
 | `provider` | inspect | provider probe/run (Antigravity capabilities/doctor/run; #67) |
 | `edit` | inspect | hash-anchored edit plan/apply (#76; no verified stamp) |
 | `visual` | inspect | visual contract compare (scored/blocked; #75) |

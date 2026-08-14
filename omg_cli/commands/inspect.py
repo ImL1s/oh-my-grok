@@ -1,6 +1,6 @@
 """Inspect-family CLI handlers (#29 Phase 2).
 
-Commands: wiki, hud, lsp, notify, native-status, capabilities, parity.
+Commands: wiki, hud, lsp, skill, notify, native-status, capabilities, parity.
 Parser construction: ``register_inspect_parsers`` (#29 Phase 4').
 """
 
@@ -237,6 +237,101 @@ def cmd_native_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_skill(args: argparse.Namespace) -> int:
+    """Read-only skill catalog inspect (#70) — never sets verified."""
+    from omg_cli.cli_envelope import emit_json, failure, success
+    from omg_cli.skills_catalog import (
+        SkillsCatalogError,
+        inspect_skills_catalog,
+        load_skills_catalog,
+        plugin_root as skills_root,
+        resolve_skill_resource,
+        resolve_trigger,
+    )
+
+    action = getattr(args, "skill_action", None) or "list"
+    root = skills_root()
+    if action == "list":
+        emit_data(args, "skill.list", inspect_skills_catalog(root))
+        return 0
+    try:
+        catalog = load_skills_catalog(root)
+    except SkillsCatalogError as exc:
+        emit_json(
+            failure(
+                f"skill.{action}",
+                "E_SKILL_CATALOG",
+                str(exc),
+                next_action="Fix skills/catalog.json and plugin SKILL.md files",
+            )
+        )
+        return 1
+    if action == "show":
+        record = catalog.resolve(str(args.id))
+        if record is None:
+            emit_json(
+                failure(
+                    "skill.show",
+                    "E_SKILL_UNKNOWN",
+                    f"unknown skill {args.id!r}",
+                    next_action="omg skill list",
+                )
+            )
+            return 1
+        emit_json(success("skill.show", skill=record.to_inspect_row(), verified=False))
+        return 0
+    if action == "resolve":
+        name = str(getattr(args, "name", "") or "")
+        record = catalog.resolve(name) or resolve_trigger(catalog, name)
+        if record is None:
+            emit_json(
+                failure(
+                    "skill.resolve",
+                    "E_SKILL_UNKNOWN",
+                    f"cannot resolve {name!r}",
+                    next_action="omg skill list",
+                )
+            )
+            return 1
+        emit_json(
+            success(
+                "skill.resolve",
+                input=name,
+                canonical=record.id,
+                classification=record.classification,
+                verified=False,
+            )
+        )
+        return 0
+    if action == "resources":
+        record = catalog.resolve(str(args.id))
+        if record is None:
+            emit_json(
+                failure(
+                    "skill.resources",
+                    "E_SKILL_UNKNOWN",
+                    f"unknown skill {args.id!r}",
+                    next_action="omg skill list",
+                )
+            )
+            return 1
+        rows = []
+        for rel in record.resources:
+            path = resolve_skill_resource(root, record.id, rel, catalog=catalog)
+            rows.append({"path": rel, "exists": path.is_file()})
+        emit_json(
+            success(
+                "skill.resources",
+                id=record.id,
+                resources=rows,
+                verified=False,
+            )
+        )
+        return 0
+    print("usage: omg skill {list,show,resolve,resources}", file=sys.stderr)
+    return 2
+
+
 def cmd_capabilities(args: argparse.Namespace) -> int:
     """Report independent capability tiers without inferring host health."""
     import importlib.util
@@ -266,12 +361,14 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     mcp_installed = importlib.util.find_spec("omg_cli.mcp.server") is not None
     workflow_installed = importlib.util.find_spec("omg_cli.workflows.runner") is not None
     from omg_cli.agents_catalog import inspect_agents_catalog, plugin_root as catalog_root
+    from omg_cli.skills_catalog import inspect_skills_catalog
 
     result = {
         "schema": "omg-capability-status/v1",
         "tiers": list(CAPABILITY_TIERS),
         "version": __version__,
         "agents_catalog": inspect_agents_catalog(catalog_root()),
+        "skills_catalog": inspect_skills_catalog(catalog_root()),
         "surfaces": {
             "mcp": {
                 "configured": (root / ".mcp.json").is_file(),
@@ -902,6 +999,37 @@ def register_inspect_parsers(
         p_lsp_diag.set_defaults(func=cmd_lsp)
         p_lsp.set_defaults(func=cmd_lsp)
 
+        p_skill = sub.add_parser(
+            "skill",
+            parents=[common],
+            help="read-only skill catalog inspect (#70; never sets verified)",
+        )
+        skill_sub = p_skill.add_subparsers(dest="skill_action")
+        p_skill_list = skill_sub.add_parser(
+            "list", parents=[common], help="list catalog rows"
+        )
+        p_skill_list.set_defaults(func=cmd_skill, skill_action="list")
+        p_skill_show = skill_sub.add_parser(
+            "show", parents=[common], help="show one skill or alias"
+        )
+        p_skill_show.add_argument("id")
+        p_skill_show.set_defaults(func=cmd_skill, skill_action="show")
+        p_skill_resolve = skill_sub.add_parser(
+            "resolve",
+            parents=[common],
+            help="resolve alias/trigger to canonical id",
+        )
+        p_skill_resolve.add_argument("name")
+        p_skill_resolve.set_defaults(func=cmd_skill, skill_action="resolve")
+        p_skill_resources = skill_sub.add_parser(
+            "resources",
+            parents=[common],
+            help="list confined bundled resources",
+        )
+        p_skill_resources.add_argument("id")
+        p_skill_resources.set_defaults(func=cmd_skill, skill_action="resources")
+        p_skill.set_defaults(func=cmd_skill)
+
 __all__ = [
     "register_inspect_parsers",
     "cmd_capabilities",
@@ -910,5 +1038,6 @@ __all__ = [
     "cmd_native_status",
     "cmd_notify",
     "cmd_parity",
+    "cmd_skill",
     "cmd_wiki",
 ]

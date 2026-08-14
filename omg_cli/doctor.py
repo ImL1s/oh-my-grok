@@ -260,7 +260,24 @@ def check_skills_omg_prefix() -> tuple[str, bool, str]:
         return _check("skills omg-*", False, f"bad: {', '.join(bad)}")
     if good == 0:
         return _check("skills omg-*", False, "no skills found")
-    return _check("skills omg-*", True, f"{good} skill(s)")
+    from omg_cli.skills_catalog import SkillsCatalogError, load_skills_catalog
+
+    try:
+        catalog = load_skills_catalog(plugin_root())
+    except SkillsCatalogError as exc:
+        return _check("skills omg-*", False, str(exc)[:240])
+    plugin_n = len(catalog.plugin_skills)
+    if plugin_n != good:
+        return _check(
+            "skills omg-*",
+            False,
+            f"catalog/plugin mismatch {plugin_n} vs {good}",
+        )
+    return _check(
+        "skills omg-*",
+        True,
+        f"{plugin_n} plugin skill(s), {len(catalog.skills)} catalogued",
+    )
 
 
 def check_agents_present() -> tuple[str, bool, str]:
