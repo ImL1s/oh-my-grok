@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -367,3 +370,79 @@ def test_stdio_transport_timeout_does_not_block(tmp_path: Path) -> None:
             transport.request("initialize", {})
     finally:
         transport.close()
+
+
+def test_stdio_transport_reads_full_frame_from_raw_pipe(tmp_path: Path) -> None:
+    from omg_cli.tools_sidecar import StdioLspTransport
+
+    script = tmp_path / "full_frame_lsp.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "raw = json.dumps({'jsonrpc':'2.0','id':1,'result':{'ok':True}}).encode()\n"
+        "sys.stdout.buffer.write("
+        "f'Content-Length: {len(raw)}\\r\\n\\r\\n'.encode() + raw)\n"
+        "sys.stdout.buffer.flush()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=2.0
+    )
+    try:
+        assert transport.request("initialize", {}) == {"ok": True}
+    finally:
+        transport.close()
+
+
+def test_stdio_transport_skips_notifications_until_matching_id(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.tools_sidecar import StdioLspTransport
+
+    script = tmp_path / "notify_then_result.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "def _write(msg):\n"
+        "    raw = json.dumps(msg).encode()\n"
+        "    sys.stdout.buffer.write("
+        "f'Content-Length: {len(raw)}\\r\\n\\r\\n'.encode() + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "_write({'jsonrpc':'2.0','method':'textDocument/publishDiagnostics',"
+        "'params':{'uri':'file:///x'}})\n"
+        "_write({'jsonrpc':'2.0','id':1,'result':{'contents':'ok'}})\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=2.0
+    )
+    try:
+        assert transport.request("textDocument/hover", {}) == {"contents": "ok"}
+    finally:
+        transport.close()
+
+
+def test_ast_ignores_unrelated_sg_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = tmp_path / "sg_help.py"
+    helper.write_text(
+        "print('Usage: sg group [[-c] command]')\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake = tmp_path / "sg.cmd"
+        fake.write_text(f'@"{sys.executable}" "{helper}" %*\r\n', encoding="utf-8")
+    else:
+        fake = tmp_path / "sg"
+        fake.write_text(
+            f"#!/bin/sh\nexec '{sys.executable}' '{helper}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar.shutil.which",
+        lambda name: str(fake) if name == "sg" else None,
+    )
+    with pytest.raises(ToolsError, match="E_ASTGREP_MISSING"):
+        ast_search(root=tmp_path, pattern="foo", lang="python")

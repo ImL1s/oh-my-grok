@@ -101,6 +101,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#73 Codex review:** stdio LSP reads the raw pipe (leftover-aware,
+  no buffered `select` false-timeout), waits for the matching JSON-RPC
+  `id`, and only treats `sg` as ast-grep after an identity probe.
+  Refs #73.
 - **#73 Codex review:** sidecar LSP sends `initialize`/`initialized`/`didOpen`
   before semantic requests; `omg tools serve --stdio` accepts
   `--lsp-command`/`--fake-lsp`; stdio reads honor the timeout without

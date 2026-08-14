@@ -311,12 +311,14 @@ class StdioLspTransport:
             raise ToolsError("E_LSP_COMMAND", "lsp command is empty")
         self.timeout_s = timeout_s
         self._next_id = 1
+        self._pending = bytearray()
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(cwd),
+            bufsize=0,
         )
 
     def _write_message(self, payload: Mapping[str, Any]) -> None:
@@ -329,26 +331,31 @@ class StdioLspTransport:
         except OSError as exc:
             raise ToolsError("E_LSP_CRASH", "language server stdin closed") from exc
 
-    def _read_byte(self, deadline: float) -> bytes:
+    def _read_more(self, deadline: float) -> None:
         stdout = self._proc.stdout
         assert stdout is not None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+        fd = stdout.fileno()
         if os.name != "nt":
-            ready, _, _ = select.select([stdout], [], [], remaining)
+            ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
                 raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
-            chunk = stdout.read(1)
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError as exc:
+                raise ToolsError("E_LSP_CRASH", "language server stdout closed") from exc
             if not chunk:
                 raise ToolsError("E_LSP_CRASH", "language server stdout closed")
-            return chunk
+            self._pending.extend(chunk)
+            return
         holder: list[bytes] = []
         error: list[BaseException] = []
 
         def _read() -> None:
             try:
-                holder.append(stdout.read(1))
+                holder.append(os.read(fd, 4096))
             except BaseException as exc:  # noqa: BLE001 — surface into timeout loop
                 error.append(exc)
 
@@ -362,24 +369,24 @@ class StdioLspTransport:
         chunk = holder[0] if holder else b""
         if not chunk:
             raise ToolsError("E_LSP_CRASH", "language server stdout closed")
-        return chunk
+        self._pending.extend(chunk)
 
     def _read_message(self, deadline: float) -> dict[str, Any]:
-        buf = b""
-        while True:
-            buf += self._read_byte(deadline)
-            if b"\r\n\r\n" not in buf:
-                continue
-            head, rest = buf.split(b"\r\n\r\n", 1)
-            length = None
-            for line in head.decode("ascii", "replace").split("\r\n"):
-                if line.lower().startswith("content-length:"):
-                    length = int(line.split(":", 1)[1].strip())
-            if length is None:
-                raise ToolsError("E_LSP_PROTOCOL", "missing Content-Length")
-            while len(rest) < length:
-                rest += self._read_byte(deadline)
-            return json.loads(rest[:length].decode("utf-8"))
+        while b"\r\n\r\n" not in self._pending:
+            self._read_more(deadline)
+        head, rest = bytes(self._pending).split(b"\r\n\r\n", 1)
+        length = None
+        for line in head.decode("ascii", "replace").split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                length = int(line.split(":", 1)[1].strip())
+        if length is None:
+            raise ToolsError("E_LSP_PROTOCOL", "missing Content-Length")
+        self._pending = bytearray(rest)
+        while len(self._pending) < length:
+            self._read_more(deadline)
+        body = bytes(self._pending[:length])
+        del self._pending[:length]
+        return json.loads(body.decode("utf-8"))
 
     def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
         if self._proc.poll() is not None:
@@ -402,10 +409,15 @@ class StdioLspTransport:
             }
         )
         deadline = time.monotonic() + self.timeout_s
-        msg = self._read_message(deadline)
-        if "error" in msg:
-            raise ToolsError("E_LSP_RPC", str(msg["error"]))
-        return msg.get("result")
+        while True:
+            msg = self._read_message(deadline)
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("id") != msg_id:
+                continue
+            if msg.get("error") is not None:
+                raise ToolsError("E_LSP_RPC", str(msg["error"]))
+            return msg.get("result")
 
     def close(self) -> None:
         if self._proc.poll() is None:
@@ -594,8 +606,28 @@ def lsp_operation(
     )
 
 
+def _astgrep_identity_ok(path: str) -> bool:
+    """``sg`` on Linux is often the shadow-utils group tool, not ast-grep."""
+    try:
+        proc = subprocess.run(
+            [path, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    blob = f"{proc.stdout or ''}{proc.stderr or ''}".lower()
+    return "ast-grep" in blob or "--pattern" in blob
+
+
 def _astgrep_bin() -> str | None:
-    return shutil.which("ast-grep") or shutil.which("sg")
+    for name in ("ast-grep", "sg"):
+        path = shutil.which(name)
+        if path and _astgrep_identity_ok(path):
+            return path
+    return None
 
 
 def ast_search(
