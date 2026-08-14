@@ -88,6 +88,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#72 Codex review:** `omg doctor` prints hooks-registry `installed`
+  and `enabled` so `OMG_DISABLE_HOOKS` / `DISABLE_OMG` is visible (not
+  only `omg capabilities`). Refs #72.
 - **#72 Codex review:** Grok `host_capability` must match `GROK_EVENT_MAP`
   exactly (no native_passive/native_blocking swap); `omg capabilities`
   reports hooks `enabled: false` when `OMG_DISABLE_HOOKS`/`DISABLE_OMG` is

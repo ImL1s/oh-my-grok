@@ -1236,6 +1236,8 @@ def check_hooks_registry() -> SoftResult:
         payload = inspect_hooks_registry(plugin_root())
         detail = (
             f"configured={payload.get('configured')}; "
+            f"installed={payload.get('installed')}; "
+            f"enabled={payload.get('enabled')}; "
             f"loadable={payload.get('loadable')}; "
             f"observed={payload.get('observed')}; "
             f"healthy={payload.get('healthy')}; "
