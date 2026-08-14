@@ -15,7 +15,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [workflows.md](./workflows.md) · [workflows.zh.md](./workflows.zh.md) · [workflows.zh-TW.md](./workflows.zh-TW.md) | Versioned repository workflows, receipt execution, and ship gates |
 | [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
 | [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) · [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) | EN **canonical**; zh / zh-TW are projections — do not fork the matrix |
-| [hash-edit.md](./hash-edit.md) | Hash-anchored edit library V1 (supplements host edits; does not hash-anchor unobserved host edits; no public CLI) |
+| [hash-edit.md](./hash-edit.md) | Hash-anchored edit V1 + `omg edit plan\|apply` (supplements host edits; does not hash-anchor unobserved host edits; no `omo.edit.hash_anchored` claim) |
 | [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1 (pure comparison + `omg visual compare`; no approved/passes/verified; no image I/O) |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | Maintainer release protocol |
 

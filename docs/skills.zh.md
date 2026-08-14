@@ -471,6 +471,7 @@ find_references/symbols/diagnostics）、
 | `omg capabilities` / `omg native-status` | 分开的 capability tiers，外加只读 `agents_catalog`；不探测私有 sidecar。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探测 + 无头执行（#67-A/B）：能力信封、doctor、与 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切换（#67-C）；Team 窗格经 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣称 `live_call_ready`。 |
 | `omg visual compare` | Visual Contract V1 `compare()` 包装（#75）：读取 `--input` JSON，发出 scored/blocked 信封。调用方自行比较 `aggregate` 与 `threshold`。不写入 `passes`/`verified`，不解图像，不调用 agent。Capture、overlay/diff、独立 reviewer、visual-Ralph 仍属后续 #75。见 [visual-contract-v1.md](./visual-contract-v1.md)。 |
+| `omg edit plan\|apply` | Hash-anchored 编辑 CLI（#76）：`plan` 只读；`apply` 走 `apply_hash_edit`（再读、再规划、原子替换）。不写 `passes`/`verified`。不宣称 `omo.edit.hash_anchored` 宿主对等。见 `docs/hash-edit.md`。 |
 
 Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subagent`、传入
 精确 `capability_mode`，再把绑定 task ID 的 receipts 交给 `omg workflow run`。

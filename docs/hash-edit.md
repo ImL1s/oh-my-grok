@@ -1,24 +1,68 @@
-# Hash-anchored edit protocol V1 (#76 PR1)
+# Hash-anchored edit protocol V1 (#76)
 
-Library contract in `omg_cli.hash_edit`. It **supplements** host-native edit
-tools. It does **not** make unobserved host edits hash-anchored. There is no
-public CLI, no Team / read-only role authority, and no `.omg/state` writer.
+Library contract in `omg_cli.hash_edit`, plus a public CLI wrapper
+(`omg edit plan|apply`). It **supplements** host-native edit tools. It does
+**not** make unobserved host edits hash-anchored. There is no Team / read-only
+role authority, and no `.omg/state` writer.
 
 A caller may claim this protocol was used only after `apply_hash_edit`
-returns a `HashEditApplyResultV1`. Constructing that dataclass by hand is
-not proof.
+returns a `HashEditApplyResultV1` (including via `omg edit apply`). Constructing
+that dataclass by hand is not proof.
 
-Refs #76. This PR1 does not close the issue.
+Refs #76. This slice does not close the issue.
 
 ## Surfaces
 
-| Function | Role |
-|----------|------|
+| Function / command | Role |
+|--------------------|------|
 | `parse_hash_edit_descriptor` | Strict V1 descriptor (allowlisted keys, canonical digest) |
 | `plan_hash_edit` | Pure planner: descriptor + caller-supplied current bytes |
 | `apply_hash_edit` | Confined re-read, re-plan, atomic same-dir replace |
+| `omg edit plan --input <descriptor.json>` | Read-only CLI over parse + plan (no file write) |
+| `omg edit apply --input <descriptor.json>` | CLI apply via `apply_hash_edit` only |
 
 `kind` is `omg.hash_edit.v1`. `schema_version` is the integer `1` (not `true`).
+
+## Public CLI
+
+Workspace root follows `--project-root` / `OMG_PROJECT_ROOT` / discovery.
+`--input` is the operator's descriptor file (pretty JSON is accepted; the
+library re-canonicalizes mappings).
+
+`omg edit plan` reads the descriptor path under the workspace, plans, and
+prints a JSON envelope. It does not mutate the target, does not `patch(1)`
+a unified diff, and does not write `.omg/state`.
+
+`omg edit apply` builds a plan from current bytes, then calls
+`apply_hash_edit` (re-read, re-plan under lock, splice at offsets, atomic
+replace). Apply JSON is copy-safe: relative `path`, digests, offsets,
+`rebased`, `preserved_mode`. It omits raw source, replacement, unified-diff
+text, and local absolute paths.
+
+Neither command writes `passes` / `verified` or any `.omg/state` stamp that
+claims OMG accepted the edit. This does **not** claim `omo.edit.hash_anchored`
+host parity.
+
+Library failures map to stable CLI codes (exit `1`). Missing/unreadable
+`--input` is `E_HASH_EDIT_USAGE` (exit `2`).
+
+| Code | Library exception |
+|------|-------------------|
+| `E_HASH_EDIT_USAGE` | missing/unreadable `--input` |
+| `E_HASH_EDIT_DESCRIPTOR` | `HashEditDescriptorError` |
+| `E_HASH_EDIT_INPUT` | `HashEditInputError` |
+| `E_HASH_EDIT_BIND` | `HashEditBindError` |
+| `E_HASH_EDIT_STALE` | `HashEditStaleError` |
+| `E_HASH_EDIT_AMBIGUOUS` | `HashEditAmbiguousError` |
+| `E_HASH_EDIT_PATH` | `HashEditPathError` |
+| `E_HASH_EDIT_CONCURRENCY` | `HashEditConcurrencyError` |
+| `E_HASH_EDIT_APPLY` | `HashEditApplyError` |
+| `E_HASH_EDIT_PLAN` | other `HashEditPlannerError` |
+| `E_HASH_EDIT` | other `HashEditError` |
+
+Stale, ambiguous, and path errors fail closed. Apply on hosts without
+`O_NOFOLLOW` / `fcntl` (win32) fail closed in the library; do not weaken
+that floor.
 
 ## Descriptor (fail closed)
 
@@ -78,8 +122,8 @@ The result is copy-safe: relative `path`, digests, offsets, `rebased`,
 `preserved_mode`. It does not include raw source, replacement, unified-diff
 text, or local absolute paths.
 
-## Out of scope (PR1)
+## Out of scope
 
 Comment hygiene, simplifier roles, lifecycle hooks, MCP, Antigravity
-projection, Team ownership, public `omg` commands, and claiming
+projection, Team ownership / read-only role authority, and claiming
 `omo.edit.hash_anchored` host parity.

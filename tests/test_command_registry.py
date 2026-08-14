@@ -27,6 +27,23 @@ def test_command_specs_unique_and_cover_known() -> None:
     assert "visual" in KNOWN_SUBCOMMANDS
 
 
+def test_edit_is_registered_with_plan_apply() -> None:
+    import argparse
+
+    assert "edit" in KNOWN_SUBCOMMANDS
+    spec = next(s for s in COMMAND_SPECS if s.name == "edit")
+    assert spec.family == "inspect"
+    parser = build_parser()
+    choices: set[str] = set()
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction) and "edit" in act.choices:
+            for nested in act.choices["edit"]._actions:
+                if isinstance(nested, argparse._SubParsersAction):
+                    choices = set(nested.choices)
+                    break
+    assert choices == {"plan", "apply"}
+
+
 def test_job_help_mentions_auto_retry_pr5() -> None:
     from omg_cli.command_registry import COMMAND_SPECS
 

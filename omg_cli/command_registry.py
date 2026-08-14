@@ -56,6 +56,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
         "inspect",
     ),
     CommandSpec(
+        "edit",
+        "hash-anchored edit plan/apply (#76; no verified stamp)",
+        "inspect",
+    ),
+    CommandSpec(
         "visual",
         "visual contract compare (scored/blocked; #75)",
         "inspect",
