@@ -2,8 +2,9 @@
 """Authoritative run-state single-writer for oh-my-grok.
 
 Only the omg CLI (this module) may mutate status / passes / verified under
-``.omg/state/runs/<run_id>/``. Hooks and agents may only append events or write
-proposals under ``.omg/artifacts/``.
+``<state_dir>/state/runs/<run_id>/``. ``state_dir`` comes from
+``resolve_state_root`` (project identity stays ``root``). Hooks and agents may
+only append events or write proposals under ``.omg/artifacts/``.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ from omg_cli.contracts.path_keys import (
 from omg_cli.contracts.state_schemas import require_integer, require_sha256
 from omg_cli.contracts.writer_chain import canonical_json_bytes, parse_canonical_json_bytes
 from omg_cli.redaction import redact_value
+from omg_cli.state_root import resolve_state_root
 
 try:
     import fcntl
@@ -81,9 +83,9 @@ def _force_verified_capability_enabled() -> bool:
     return _FORCE_VERIFIED_CAPABILITY is not None
 
 
-OMG_SUBDIRS = (
-    "state",
-    "state/runs",
+# Project-layout dirs stay under ``<project>/.omg`` (team/wiki/workers/etc.
+# writers are not part of this #74 PR2 cutover).
+OMG_PROJECT_SUBDIRS = (
     "plans",
     "research",
     "handoffs",
@@ -92,12 +94,36 @@ OMG_SUBDIRS = (
     "wiki",
     "jobs",
 )
+# Run-state dirs live under the resolved physical ``state_dir``.
+OMG_RUN_STATE_SUBDIRS = (
+    "state",
+    "state/runs",
+)
+OMG_SUBDIRS = OMG_PROJECT_SUBDIRS + OMG_RUN_STATE_SUBDIRS
+
+
+def _physical_state_dir(root: Path) -> Path:
+    """Physical ``.omg``-equivalent store for *root* (project identity).
+
+    Honors ``OMG_STATE_DIR`` / workspace-marker / per-worktree via
+    ``resolve_state_root``. ``cwd`` is the project root so the store is a
+    function of identity + env, not the operator's nested cwd. Does not
+    mkdir; callers use ``ensure_managed_dir``.
+    """
+    root = Path(root)
+    return resolve_state_root(
+        cwd=root,
+        explicit_project_root=root,
+    ).state_dir
 
 
 def ensure_omg_dirs(root: Path) -> Path:
     root = Path(root)
-    for sub in OMG_SUBDIRS:
+    for sub in OMG_PROJECT_SUBDIRS:
         ensure_managed_dir(root / ".omg" / sub)
+    state_dir = _physical_state_dir(root)
+    for sub in OMG_RUN_STATE_SUBDIRS:
+        ensure_managed_dir(state_dir / sub)
     return root
 
 
@@ -106,15 +132,15 @@ def _utc_now() -> str:
 
 
 def _runs_dir(root: Path) -> Path:
-    return Path(root) / ".omg" / "state" / "runs"
+    return _physical_state_dir(root) / "state" / "runs"
 
 
 def _active_path(root: Path) -> Path:
-    return Path(root) / ".omg" / "state" / "active.json"
+    return _physical_state_dir(root) / "state" / "active.json"
 
 
 def _create_lock_path(root: Path) -> Path:
-    return Path(root) / ".omg" / "state" / "create.lock"
+    return _physical_state_dir(root) / "state" / "create.lock"
 
 
 def _safe_run_id(run_id: str) -> str:
@@ -979,8 +1005,8 @@ def _create_run_unlocked(
         status["status"] = "initialized"
 
     run_dir = _runs_dir(root) / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "workers").mkdir(exist_ok=True)
+    ensure_managed_dir(run_dir)
+    ensure_managed_dir(run_dir / "workers")
     _atomic_write_json(_status_path(root, run_id), status)
     _atomic_write_json(_active_path(root), {"run_id": run_id, "updated_at": now})
     return status
@@ -998,7 +1024,7 @@ def create_run(
     """Create a new run directory + status.json and point active.json at it.
 
     Serializes concurrent creates via ``fcntl.flock`` on
-    ``.omg/state/create.lock`` (POSIX). Refuses when an active run exists with
+    ``<state_dir>/state/create.lock`` (POSIX). Refuses when an active run exists with
     status in ``{initialized, running, verifying}`` unless:
 
     * ``force=True`` — **supersede**: cancel/kill the old active run first
@@ -1015,7 +1041,7 @@ def create_run(
     ensure_omg_dirs(root)
 
     lock_path = _create_lock_path(root)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(lock_path.parent)
 
     if fcntl is None:
         return _create_run_unlocked(
@@ -1389,7 +1415,7 @@ def clear_active(root: Path, run_id: str | None = None) -> None:
         return
 
     lock_path = _create_lock_path(root)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(lock_path.parent)
     with lock_path.open("a+", encoding="utf-8") as lockf:
         fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
         _push_lock("create")

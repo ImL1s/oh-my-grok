@@ -43,9 +43,10 @@ Inspect via `omg team status <run> --full` (descriptor only — not pane scrollb
 
 The table above is **project identity** only. The physical `.omg` state
 directory is a separate contract: [state-root.md](./state-root.md)
-(`omg_cli.state_root.resolve_state_root`). This PR is the contract — not
-a cutover. Writers still use `<project_root>/.omg`. There is no `omg`
-flag for `OMG_STATE_DIR` (API / env only).
+(`omg_cli.state_root.resolve_state_root`). Core run-state writers in
+`omg_cli/state.py` (runs/, `active.json`, `create.lock`) honor that
+directory. Other writers still use `<project_root>/.omg` until later
+#74 slices. There is no `omg` flag for `OMG_STATE_DIR` (API / env only).
 
 ## Migration
 

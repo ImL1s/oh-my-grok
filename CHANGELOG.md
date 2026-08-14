@@ -67,14 +67,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Command-text env assignments never authorize. Standalone hook regenerated.
 
 ### Added
+- **#74 PR2 core run-state writer cutover:** `omg_cli/state.py`
+  writers for `runs/`, `active.json`, `create.lock`, and status
+  `passes`/`verified` fields use `resolve_state_root(...).state_dir`
+  so `OMG_STATE_DIR` and workspace-marker scopes receive CLI-written
+  run state. Project identity is unchanged. No `omg --state-dir`.
+  Team/wiki/workers/workflows, session search/replay, ACP, and wiki
+  HUD still use `<project_root>/.omg`. Resolver still does not mkdir.
+  `verified` is still only written via `set_verified` / `omg accept`.
+  Docs: `docs/state-root.md`. **Refs #74 (does not close)**.
 - **#75 PR-A Visual Contract V1:** pure library `omg_cli.contracts.visual_contract` — copy-safe comparison schema, scores, digests; status only `scored`/`blocked`; never emits `approved`/`passes`/`verified` or image bytes. No screenshot capture, agent loop, or `.omg/state` writer. Docs: `docs/visual-contract-v1.md`. Hermetic: `tests/test_visual_contract.py`. Refs #75 (does not close).
 - **#74 PR1 canonical state-root contract:** pure resolver
   `omg_cli.state_root.resolve_state_root` (API/env only:
   `OMG_STATE_DIR`, `OMG_WORKSPACE_MARKER`,
   `OMG_DISABLE_WORKSPACE_MARKER`). Scopes `per_worktree` |
-  `workspace_shared` | `centralized`. Writers still use
-  `<project_root>/.omg` — no writer cutover, no CLI flags, no
-  mkdir/write. Hermetic coverage in `tests/test_state_root.py`.
+  `workspace_shared` | `centralized`. PR1 shipped the resolver only
+  (no writer cutover, no CLI flags, no mkdir/write). Hermetic coverage
+  in `tests/test_state_root.py`.
   Docs: `docs/state-root.md`, `docs/project-root.md`. **Refs #74
   (does not close)**.
 - **#76 PR1 versioned hash-anchored edit core:** library-only
