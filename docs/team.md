@@ -35,12 +35,16 @@ omg team api replace-worker --input '{
 omg team status --run RUN --presentation --json
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 
-# Worker I/O capability (#147 PR1 — fail-closed; not interactive parity):
-# New supervisor panes stamp io_mode=headless_stream, provider_tty_owner=supervisor,
-# input_ready=false, operator_input_supported=false. Job topology → background_job.
-# Legacy/missing fields normalize to unproven/unsupported. operator input/key
-# refuse before tmux send; --operator-override does not bypass capability.
-# Prefer mailbox/task API. Interactive TTY ownership is a later PR.
+# Worker I/O capability (#147):
+# Default/auto/headless supervisor panes stamp io_mode=headless_stream,
+# provider_tty_owner=supervisor, operator_input_supported=false.
+# `--io-mode interactive` (grok|fixture pane only) execs the provider on the
+# pane TTY: io_mode=interactive_tty, provider_tty_owner=provider,
+# operator_input_supported=true. Leader waits (OMG_TEAM_READY_TIMEOUT_MS,
+# same --no-wait skip) for TUI_READY:<nonce> on the pane TTY then CLI-promotes
+# input_ready. Timeout/missing marker fails closed — never silent headless.
+# Workers/descriptors never self-promote from stdout scrape. Prefer mailbox.
+# Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK is still optional.
 
 # Catalog v4 atomic task-batch DAG admission (leader-only; no MCP mutation):
 omg team api bulk-create-tasks --input BATCH.json --json

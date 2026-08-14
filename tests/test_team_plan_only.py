@@ -32,6 +32,8 @@ def test_team_start_plan_only_no_mutation(
             "--tasks-json",
             tasks,
             "--plan-only",
+            "--io-mode",
+            "interactive",
         ]
     )
     assert rc == 0
@@ -41,6 +43,7 @@ def test_team_start_plan_only_no_mutation(
     assert payload["mutates"] is False
     assert payload["task_count"] == 1
     assert payload["goal"] == "preview only"
+    assert payload["io_mode"] == "interactive"
     assert "Team plan-only" in out.err
     assert not (tmp_path / ".omg").exists()
     # No worktrees either

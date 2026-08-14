@@ -1577,7 +1577,9 @@ def pane_alive(pane_id: str) -> bool | None:
     return (probe.stdout or "").strip() == f"{pane_id}\t0"
 
 
-def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
+def probe_worker_pane_identity(
+    pane_id: str, *, socket_path: str | None = None
+) -> dict[str, Any] | None:
     """Return ``{pane_id, dead, session_id, pane_pid}`` or None on probe failure.
 
     Fail-closed: missing tmux / spawn OSError / malformed fields → None
@@ -1596,7 +1598,8 @@ def probe_worker_pane_identity(pane_id: str) -> dict[str, Any] | None:
                 "-t",
                 pane_id,
                 "#{pane_id}\t#{pane_dead}\t#{session_id}\t#{pane_pid}",
-            ]
+            ],
+            socket_path=socket_path,
         )
     except OSError:
         return None

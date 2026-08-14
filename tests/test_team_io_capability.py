@@ -137,6 +137,7 @@ def test_stale_interaction_evidence_invalidated() -> None:
 
     stale = normalize_worker_io_capability(raw, attempt=2, generation=0)
     assert stale.interaction_evidence is None
+    assert stale.input_ready is False
 
     bad_schema = normalize_worker_io_capability(
         {
@@ -183,6 +184,37 @@ def test_operator_input_refusal_codes() -> None:
     )
     assert operator_input_refusal(ready, action="input") is None
     assert_operator_input_allowed(ready, action="key")
+
+
+def test_demote_interactive_readiness_clears_stale_ready() -> None:
+    from omg_cli.team.io_capability import (
+        demote_interactive_readiness,
+        interactive_pane_io_ready,
+        stamp_io_capability,
+    )
+
+    row: dict = {"task_id": "w1", "attempt": 2, "pane_id": "%11"}
+    stamp_io_capability(
+        row,
+        interactive_pane_io_ready(
+            ready_marker="TUI_READY:abc",
+            pane_id="%10",
+            provider_pid=99,
+            attempt=1,
+            generation=0,
+        ),
+    )
+    assert row["input_ready"] is True
+    assert demote_interactive_readiness(row) is True
+    assert row["input_ready"] is False
+    assert row["operator_input_supported"] is True
+    assert row["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert row["interaction_evidence"] is None
+
+    headless: dict = {"task_id": "w2"}
+    stamp_io_capability(headless, supervisor_pane_io_defaults())
+    assert demote_interactive_readiness(headless) is False
+    assert headless["io_mode"] == IO_MODE_HEADLESS_STREAM
 
 
 def test_assert_raises_typed_error() -> None:

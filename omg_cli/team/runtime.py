@@ -705,6 +705,43 @@ def startup_readiness_payload(
                 "no-wait: readiness not collected; not a proven Team started"
             ),
         }
+    interactive_rows = _interactive_worker_rows(
+        root, run_id=run_id, expected_workers=expected
+    )
+    interactive_ids = [str(row["task_id"]) for row in interactive_rows]
+    headless_ids = [wid for wid in expected if wid not in set(interactive_ids)]
+    if interactive_ids and not headless_ids:
+        return _interactive_startup_payload(
+            root,
+            run_id=run_id,
+            workers=interactive_rows,
+            timeout_ms=timeout_ms,
+            env=env,
+            poll_s=poll_s,
+        )
+    if interactive_ids and headless_ids:
+        tui = _interactive_startup_payload(
+            root,
+            run_id=run_id,
+            workers=interactive_rows,
+            timeout_ms=timeout_ms,
+            env=env,
+            poll_s=poll_s,
+        )
+        acks = wait_for_startup_acks(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            expected_workers=headless_ids,
+            timeout_ms=timeout_ms,
+            env=env,
+            poll_s=poll_s,
+        )
+        return _combine_interactive_and_ack(
+            expected=expected,
+            interactive=tui,
+            headless=acks,
+        )
     startup = wait_for_startup_acks(
         root,
         run_id=run_id,
@@ -746,6 +783,251 @@ def startup_readiness_payload(
             "state left for diagnosis"
         )
     return startup
+
+
+def _interactive_worker_rows(
+    root: Path | str,
+    *,
+    run_id: str,
+    expected_workers: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Return task rows that the leader must TUI-ready-gate (not ACK-gate)."""
+    from omg_cli.team.io_capability import (
+        IO_MODE_INTERACTIVE_TTY,
+        normalize_worker_io_capability,
+    )
+
+    expected_set = {str(w).strip() for w in expected_workers if str(w).strip()}
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "").strip()
+        if tid not in expected_set:
+            continue
+        cap = normalize_worker_io_capability(raw)
+        if cap.io_mode != IO_MODE_INTERACTIVE_TTY:
+            continue
+        row = dict(raw)
+        if "generation" not in row:
+            gen = meta.get("identity_generation", 0)
+            if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
+                row["generation"] = gen
+            else:
+                row["generation"] = 0
+        rows.append(row)
+    return rows
+
+
+def _capture_interactive_pane(
+    pane_id: str, *, socket_path: str | None = None
+) -> str:
+    """Leader capture for TUI-ready evidence. Capture errors are not ready."""
+    from omg_cli.team.tmux import TmuxTeamError, capture_pane
+
+    try:
+        return capture_pane(pane_id, socket_path=socket_path)
+    except (TmuxTeamError, OSError, TypeError, ValueError):
+        return ""
+
+
+def _promote_interactive_input_ready(
+    root: Path | str,
+    run_id: str,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """CLI-only ``input_ready`` promotion after proven TUI-ready evidence."""
+    from omg_cli.team.io_capability import (
+        IO_MODE_INTERACTIVE_TTY,
+        interactive_pane_io_ready,
+        normalize_worker_io_capability,
+        stamp_io_capability,
+    )
+
+    proven = {
+        str(tid): dict(ev)
+        for tid, ev in evidence_by_id.items()
+        if isinstance(tid, str) and isinstance(ev, Mapping)
+    }
+
+    def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        tasks = current.get("tasks")
+        if not isinstance(tasks, list):
+            return current
+        for raw in tasks:
+            if not isinstance(raw, dict):
+                continue
+            tid = str(raw.get("task_id") or "").strip()
+            ev = proven.get(tid)
+            if ev is None:
+                continue
+            cap = normalize_worker_io_capability(raw)
+            if cap.io_mode != IO_MODE_INTERACTIVE_TTY:
+                continue
+            marker = ev.get("ready_marker")
+            if not isinstance(marker, str):
+                continue
+            stamp_io_capability(
+                raw,
+                interactive_pane_io_ready(
+                    ready_marker=marker,
+                    pane_id=ev.get("pane_id") if isinstance(ev.get("pane_id"), str) else None,
+                    provider_pid=ev.get("provider_pid")
+                    if isinstance(ev.get("provider_pid"), int)
+                    else None,
+                    attempt=ev.get("attempt") if isinstance(ev.get("attempt"), int) else None,
+                    generation=ev.get("generation")
+                    if isinstance(ev.get("generation"), int)
+                    else None,
+                ),
+            )
+        return current
+
+    return mutate_team_meta(root, run_id, _apply)
+
+
+def _interactive_startup_payload(
+    root: Path | str,
+    *,
+    run_id: str,
+    workers: Sequence[Mapping[str, Any]],
+    timeout_ms: int | None,
+    env: Mapping[str, str] | None,
+    poll_s: float,
+) -> dict[str, Any]:
+    """Bounded TUI-ready wait. Never silently downgrades to headless."""
+    from omg_cli.team.interactive import (
+        INTERACTIVE_GATE_PHASE,
+        wait_for_interactive_tui_ready,
+    )
+
+    expected = [
+        str(row.get("task_id") or "").strip()
+        for row in workers
+        if isinstance(row, Mapping) and str(row.get("task_id") or "").strip()
+    ]
+    ms = ready_timeout_ms(env) if timeout_ms is None else int(timeout_ms)
+    socket: str | None = None
+    try:
+        meta = load_team_meta(root, run_id)
+        raw_sock = meta.get("tmux_socket_path")
+        if isinstance(raw_sock, str) and raw_sock:
+            socket = raw_sock
+    except TeamError:
+        socket = None
+
+    waited = wait_for_interactive_tui_ready(
+        workers,
+        timeout_ms=ms,
+        poll_s=poll_s,
+        capture_fn=lambda pane_id: _capture_interactive_pane(
+            pane_id, socket_path=socket
+        ),
+    )
+    ready = list(waited.get("ready_workers") or [])
+    missing = list(waited.get("missing_workers") or [])
+    evidence = waited.get("evidence") if isinstance(waited.get("evidence"), Mapping) else {}
+    if ready and isinstance(evidence, Mapping) and evidence:
+        _promote_interactive_input_ready(root, run_id, evidence)
+    if expected and not missing:
+        status = "running"
+        note = (
+            f"all {len(ready)} interactive workers TUI-ready "
+            f"(gate={INTERACTIVE_GATE_PHASE}) within {ms}ms"
+        )
+    elif ready:
+        status = "degraded"
+        note = (
+            f"partial TUI-ready {len(ready)}/{len(expected)} "
+            f"(gate={INTERACTIVE_GATE_PHASE}) within {ms}ms "
+            f"(knob {READY_TIMEOUT_ENV}); not a silent headless downgrade"
+        )
+    else:
+        status = "failed_start"
+        note = (
+            f"zero TUI-ready signals within {ms}ms "
+            f"(gate={INTERACTIVE_GATE_PHASE}; knob {READY_TIMEOUT_ENV}); "
+            "interactive launch did not downgrade to headless"
+        )
+    snap = [
+        {
+            "worker_id": tid,
+            "ready": tid in set(ready),
+            "gate": INTERACTIVE_GATE_PHASE,
+        }
+        for tid in expected
+    ]
+    return {
+        "startup_acks": 0,
+        "startup_ack_workers": [],
+        "startup_process_ready": len(ready),
+        "startup_process_ready_workers": list(ready),
+        "startup_ready_workers": list(ready),
+        "startup_missing_workers": list(missing),
+        "startup_blocked_workers": [],
+        "startup_workers": snap,
+        "startup_status": status,
+        "startup_expected": len(expected),
+        "startup_gate_phase": INTERACTIVE_GATE_PHASE,
+        "ready_timeout_ms": ms,
+        "startup_note": note,
+    }
+
+
+def _combine_interactive_and_ack(
+    *,
+    expected: Sequence[str],
+    interactive: Mapping[str, Any],
+    headless: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Merge TUI-ready + supervisor-ACK subsets. Never drop interactive mode."""
+    from omg_cli.team.interactive import INTERACTIVE_GATE_PHASE
+
+    ready: list[str] = []
+    seen: set[str] = set()
+    for src in (interactive, headless):
+        for wid in src.get("startup_ready_workers") or []:
+            key = str(wid)
+            if key in seen:
+                continue
+            seen.add(key)
+            ready.append(key)
+    missing = [wid for wid in expected if wid not in seen]
+    blocked = [str(w) for w in (headless.get("startup_blocked_workers") or [])]
+    if blocked and not ready:
+        status = "blocked_start"
+    elif not missing:
+        status = "running"
+    elif not ready:
+        status = "failed_start"
+    else:
+        status = "degraded"
+    ms = interactive.get("ready_timeout_ms")
+    if not isinstance(ms, int):
+        ms = headless.get("ready_timeout_ms")
+    note_i = str(interactive.get("startup_note") or "")
+    note_h = str(headless.get("startup_note") or "")
+    note = "; ".join(p for p in (note_i, note_h) if p)
+    return {
+        "startup_acks": headless.get("startup_acks") or 0,
+        "startup_ack_workers": list(headless.get("startup_ack_workers") or []),
+        "startup_process_ready": len(ready),
+        "startup_process_ready_workers": list(ready),
+        "startup_ready_workers": list(ready),
+        "startup_missing_workers": list(missing),
+        "startup_blocked_workers": blocked,
+        "startup_workers": list(interactive.get("startup_workers") or [])
+        + list(headless.get("startup_workers") or []),
+        "startup_status": status,
+        "startup_expected": len(expected),
+        "startup_gate_phase": INTERACTIVE_GATE_PHASE,
+        "ready_timeout_ms": ms,
+        "startup_note": note or "mixed interactive/headless readiness",
+    }
 
 
 def persist_startup_annotations(
@@ -824,6 +1106,7 @@ def apply_start_readiness(
         "team_id",
         "launch_mode",
         "note",
+        "tasks",
     ):
         if key in persisted:
             out[key] = persisted[key]
@@ -1050,6 +1333,7 @@ def launch_team(
     detach: bool = False,
     view_mode: str | None = None,
     worker_topology: str | None = None,
+    io_mode: str | None = None,
 ) -> dict[str, Any]:
     """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
 
@@ -1087,6 +1371,7 @@ def launch_team(
         detach=detach,
         view_mode=view_mode,
         worker_topology=worker_topology,
+        io_mode=io_mode,
     )
     rid = str(meta["run_id"])
     # start_team creates a new run unless --run was supplied.
@@ -1970,6 +2255,12 @@ def worker_pane_descriptors(
                 else None,
                 window_id=window_id,
                 pane_owner_nonce=pane_owner_nonce,
+                socket_path=(
+                    str(meta["tmux_socket_path"])
+                    if isinstance(meta.get("tmux_socket_path"), str)
+                    and meta.get("tmux_socket_path")
+                    else None
+                ),
             )
             if status_label == "live":
                 capture_allowed = True

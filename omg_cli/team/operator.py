@@ -62,6 +62,34 @@ from omg_cli.team.tmux import (
 _TMUX_PANE_ID = re.compile(r"^%[0-9]{1,16}$")
 _WORKER_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+
+def tmux_socket_from_tmux_env(tmux_env: str | None) -> str | None:
+    """Parse the socket path from ``$TMUX`` (``socket,pid,session``)."""
+    if not isinstance(tmux_env, str):
+        return None
+    sock = tmux_env.strip().split(",", 1)[0].strip()
+    return sock or None
+
+
+def caller_shares_team_tmux_server(
+    *,
+    tmux_env: str | None,
+    team_socket_path: str | None,
+) -> bool:
+    """True when this client is attached to the proved Team tmux server.
+
+    A dedicated Team socket that differs from ``$TMUX`` must not run
+    ``select-pane`` and then claim the caller's view changed.
+    Missing/empty team socket keeps the historical default-server path.
+    """
+    caller = tmux_socket_from_tmux_env(tmux_env)
+    if caller is None:
+        return False
+    if not isinstance(team_socket_path, str) or not team_socket_path.strip():
+        return True
+    return os.path.normpath(caller) == os.path.normpath(team_socket_path.strip())
+
+
 DEFAULT_CAPTURE_LINES = 200
 MAX_CAPTURE_LINES = 2000
 MIN_WATCH_INTERVAL_S = 0.5
@@ -126,6 +154,7 @@ class ExactPaneProof:
     worktree: str | None
     state: str | None
     ready: bool | None
+    tmux_socket_path: str | None = None
 
 
 def _utc_now_iso() -> str:
@@ -367,6 +396,9 @@ def resolve_live_worker(
             window_id = norm_window
 
     team_id = str(meta.get("team_id") or "team")
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
     return ExactPaneProof(
         run_id=run_id,
         team_id=team_id,
@@ -389,6 +421,7 @@ def resolve_live_worker(
         worktree=str(task["worktree"]) if task.get("worktree") else None,
         state=str(task["status"]) if task.get("status") else None,
         ready=None,
+        tmux_socket_path=sock,
     )
 
 
@@ -402,6 +435,7 @@ def classify_exact_pane_live(
     expected_pid_start: str | None,
     window_id: str | None,
     pane_owner_nonce: str | None,
+    socket_path: str | None = None,
 ) -> str:
     """Classify pane liveness using #102 owner-nonce when present, else #98.
 
@@ -423,6 +457,7 @@ def classify_exact_pane_live(
                 expected_session_id=session_id,
                 expected_window_id=window_id,
                 pane_owner_nonce=pane_owner_nonce,
+                socket_path=socket_path,
             )
         except TmuxTeamError:
             return STATUS_MISMATCH
@@ -436,7 +471,7 @@ def classify_exact_pane_live(
                 return STATUS_MISMATCH
         # Defense in depth: launch nonce must still match on the exact pane.
         live_nonce, nonce_ok = plane_mod._probe_tmux_launch_nonce_for_pane(
-            pane_id, session, allow_session_fallback=False
+            pane_id, session, allow_session_fallback=False, socket_path=socket_path
         )
         if not nonce_ok:
             return STATUS_UNKNOWN
@@ -452,6 +487,7 @@ def classify_exact_pane_live(
         launch_nonce=launch_nonce,
         expected_pid_start=expected_pid_start,
         expected_pid=expected_pid,
+        socket_path=socket_path,
     )
     return _liveness_status(state)
 
@@ -467,6 +503,7 @@ def probe_exact_worker(proof: ExactPaneProof) -> str:
         expected_pid_start=proof.expected_pid_start,
         window_id=proof.window_id,
         pane_owner_nonce=proof.pane_owner_nonce,
+        socket_path=proof.tmux_socket_path,
     )
 
 
@@ -1077,7 +1114,12 @@ def capture_worker(
         )
     bound = _bound_lines(lines)
     try:
-        text = capture_pane(proof.pane_id, lines=bound, raw=raw)
+        text = capture_pane(
+            proof.pane_id,
+            lines=bound,
+            raw=raw,
+            socket_path=proof.tmux_socket_path,
+        )
     except TmuxTeamError as exc:
         raise OperatorError(
             str(exc),
@@ -1122,10 +1164,15 @@ def focus_worker(
     authorize_focus(proof, status=status)
     tty = sys.stdin.isatty() if is_tty is None else bool(is_tty)
     inside_tmux = bool(os.environ.get("TMUX"))
+    same_server = caller_shares_team_tmux_server(
+        tmux_env=os.environ.get("TMUX"),
+        team_socket_path=proof.tmux_socket_path,
+    )
     attach_argv = attach_argv_for_target(
         session_id=proof.session_id,
         pane_id=proof.pane_id,
         window_id=proof.window_id,
+        socket_path=proof.tmux_socket_path,
     )
     result: dict[str, Any] = {
         "ok": True,
@@ -1162,8 +1209,8 @@ def focus_worker(
         )
 
     try:
-        if inside_tmux and tty:
-            focus_pane(proof.pane_id)
+        if inside_tmux and tty and same_server:
+            focus_pane(proof.pane_id, socket_path=proof.tmux_socket_path)
             result["focused"] = True
             result["mode"] = "select-pane"
         elif execute and tty:
@@ -1187,10 +1234,17 @@ def focus_worker(
                 )
         else:
             result["mode"] = "hint"
-            result["note"] = (
-                "printed attach command only "
-                "(use interactive TTY inside tmux, or --execute to attach)"
-            )
+            if inside_tmux and tty and not same_server:
+                result["note"] = (
+                    "caller tmux server differs from the team socket; "
+                    "printed attach command only (select-pane would not "
+                    "move this client)"
+                )
+            else:
+                result["note"] = (
+                    "printed attach command only "
+                    "(use interactive TTY inside tmux, or --execute to attach)"
+                )
     except TmuxTeamError as exc:
         audit_operator_event(
             root,
@@ -1267,7 +1321,7 @@ def key_worker(
     )
     try:
         _require_mutating_live(proof, label="key")
-        send_key(proof.pane_id, key_name)
+        send_key(proof.pane_id, key_name, socket_path=proof.tmux_socket_path)
     except OperatorError as exc:
         if exc.code == "E_OPERATOR_TOCTOU":
             audit_operator_event(
@@ -1371,10 +1425,14 @@ def input_worker(
     try:
         # Re-prove before every mutating delivery (literal and optional Enter).
         _require_mutating_live(proof, label="input")
-        send_literal(proof.pane_id, safe)
+        send_literal(
+            proof.pane_id, safe, socket_path=proof.tmux_socket_path
+        )
         if submit:
             _require_mutating_live(proof, label="input-submit")
-            send_key(proof.pane_id, "Enter")
+            send_key(
+                proof.pane_id, "Enter", socket_path=proof.tmux_socket_path
+            )
     except OperatorError as exc:
         if exc.code == "E_OPERATOR_TOCTOU":
             audit_operator_event(

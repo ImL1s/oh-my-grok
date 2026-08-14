@@ -1915,6 +1915,7 @@ def _probe_tmux_launch_nonce_for_pane(
     session: str,
     *,
     allow_session_fallback: bool = False,
+    socket_path: str | None = None,
 ) -> tuple[str | None, bool]:
     """Probe pane-scoped launch nonce with an explicit ok/unknown bit.
 
@@ -1925,7 +1926,8 @@ def _probe_tmux_launch_nonce_for_pane(
     if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
         try:
             r = _tmux_run(
-                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
+                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION],
+                socket_path=socket_path,
             )
         except OSError:
             return None, False
@@ -1948,6 +1950,7 @@ def _read_tmux_launch_nonce_for_pane(
     session: str,
     *,
     allow_session_fallback: bool = False,
+    socket_path: str | None = None,
 ) -> str | None:
     """Read pane-scoped launch nonce; session fallback is legacy-only.
 
@@ -1960,7 +1963,10 @@ def _read_tmux_launch_nonce_for_pane(
     into DEAD_OR_FOREIGN (relaunch / side-effect paths).
     """
     nonce, ok = _probe_tmux_launch_nonce_for_pane(
-        pane_id, session, allow_session_fallback=allow_session_fallback
+        pane_id,
+        session,
+        allow_session_fallback=allow_session_fallback,
+        socket_path=socket_path,
     )
     return nonce if ok else None
 
@@ -3104,6 +3110,7 @@ def start_team(
     detach: bool = False,
     view_mode: str | None = None,
     worker_topology: str | None = None,
+    io_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -3135,6 +3142,9 @@ def start_team(
     worker_topology:
         ``pane`` (default — existing tmux workers) or ``job`` (durable Jobs
         plane workers; #69 PR4). Independent of split/windows layout topology.
+    io_mode:
+        ``headless`` / ``auto`` (default — supervisor path) or ``interactive``
+        (direct-exec provider TTY; fail-closed; never silently downgrades).
 
     Returns the written team.json payload.
     """
@@ -3197,6 +3207,36 @@ def start_team(
         except RoutingError as exc:
             raise TeamError(str(exc)) from exc
         # UnknownRoleError propagates (FLOOR 2) — do not swallow.
+
+    from omg_cli.team.interactive import (
+        InteractiveTeamError,
+        REQUESTED_INTERACTIVE,
+        normalize_requested_io_mode,
+        resolve_effective_io_mode,
+    )
+
+    try:
+        want_interactive = (
+            normalize_requested_io_mode(io_mode) == REQUESTED_INTERACTIVE
+        )
+        if want_interactive:
+            resolve_effective_io_mode(
+                requested=io_mode,
+                worker_topology=worker_topo,
+                provider="fixture" if use_fixture_executor else "grok",
+                executor=executor_norm,
+            )
+            if resolved is not None and not use_fixture_executor:
+                for role_name in { _task_role(t) for t in tasks }:
+                    route_prov = str(resolved.for_role(role_name).provider).strip().lower()
+                    resolve_effective_io_mode(
+                        requested=io_mode,
+                        worker_topology=worker_topo,
+                        provider=route_prov,
+                        executor=None,
+                    )
+    except InteractiveTeamError as exc:
+        raise TeamError(str(exc)) from exc
 
     # Launch-intent WAL recovery gate: sweep ALL project intents *before*
     # create_run / active-run refusal so crash orphans are reachable even when
@@ -3506,6 +3546,59 @@ def start_team(
                     )
                     provider = "fixture"
 
+                if want_interactive:
+                    from omg_cli.team.interactive import (
+                        INTERACTIVE_NONCE_ENV,
+                        assert_not_supervisor_pane_command,
+                        fixture_interactive_argv,
+                        grok_interactive_argv,
+                        make_interactive_nonce,
+                        pane_command_for_exec_script,
+                        write_interactive_exec_script,
+                        write_worker_inbox,
+                    )
+
+                    if use_fixture_executor:
+                        argv = fixture_interactive_argv()
+                        provider = "fixture"
+                    else:
+                        routed_model = None
+                        if multi_cli and resolved is not None:
+                            routed_model = resolved.for_role(role).model
+                        argv = grok_interactive_argv(
+                            cwd=wt,
+                            posture=posture,
+                            model=routed_model,
+                            safe=safe,
+                            yolo=yolo,
+                        )
+                    inbox_path = tdir / f"{tid}.inbox.txt"
+                    exec_script = tdir / f"{tid}.interactive.sh"
+                    if not created_team_dir:
+                        _note_start_file_backup(file_backups, inbox_path)
+                        _note_start_file_backup(file_backups, exec_script)
+                    write_worker_inbox(
+                        dest=inbox_path,
+                        body=f"task_id={tid}\n{goal}\n",
+                    )
+                    interactive_nonce = make_interactive_nonce()
+                    write_interactive_exec_script(
+                        dest=exec_script,
+                        argv=argv,
+                        worktree=wt,
+                        extra_env={INTERACTIVE_NONCE_ENV: interactive_nonce},
+                    )
+                    pane_cmd = pane_command_for_exec_script(exec_script)
+                    assert_not_supervisor_pane_command(pane_cmd)
+                    needs_pty = True
+                    prompt_delivery = "interactive-tty"
+                    rec_inbox = str(
+                        inbox_path.relative_to(_run_dir(root_path, rid))
+                    )
+                else:
+                    rec_inbox = None
+                    interactive_nonce = None
+
                 # Job-backed workers may take an explicit jobs-admitted provider
                 # from the task dict (fake|antigravity) when not using fixture.
                 if worker_topo == WORKER_TOPOLOGY_JOB and not use_fixture_executor:
@@ -3535,6 +3628,7 @@ def start_team(
                     "posture": posture,
                     "needs_pty": needs_pty,
                     "prompt_delivery": prompt_delivery,
+                    "inbox_path": rec_inbox,
                     "pid": None,
                     "pgid": None,
                     "pid_start": None,
@@ -3548,15 +3642,28 @@ def start_team(
                         owner_token=token,
                     ),
                 }
+                if interactive_nonce:
+                    from omg_cli.team.interactive import INTERACTIVE_NONCE_ENV
+
+                    rec["interactive_nonce"] = interactive_nonce
+                    merged_env = dict(rec["_env_pairs"])
+                    merged_env[INTERACTIVE_NONCE_ENV] = interactive_nonce
+                    rec["_env_pairs"] = sorted(
+                        merged_env.items(), key=lambda kv: kv[0]
+                    )
                 # #147 PR1: CLI-authoritative I/O capability on new task rows.
                 # Independent of needs_pty / provider name / startup status.
                 from omg_cli.team.io_capability import (
+                    interactive_pane_io_defaults,
                     io_defaults_for_worker_topology,
                     stamp_io_capability,
                 )
 
                 stamp_io_capability(
-                    rec, io_defaults_for_worker_topology(worker_topo)
+                    rec,
+                    interactive_pane_io_defaults()
+                    if want_interactive
+                    else io_defaults_for_worker_topology(worker_topo),
                 )
                 from omg_cli.team.presentation import stamp_route_on_task
 
@@ -4291,6 +4398,7 @@ def _worker_pane_liveness(
     launch_nonce: str | None,
     expected_pid_start: str | None,
     expected_pid: int | None,
+    socket_path: str | None = None,
 ) -> Literal["alive", "proven_absent", "present_foreign", "unknown"]:
     """Fail-closed pane liveness for status / resume / relaunch.
 
@@ -4308,9 +4416,9 @@ def _worker_pane_liveness(
     try:
         from omg_cli.team.tmux import probe_worker_pane_identity
 
-        probed = probe_worker_pane_identity(pane_id)
+        probed = probe_worker_pane_identity(pane_id, socket_path=socket_path)
         if probed is None:
-            absent, _err = _pane_proven_absent(pane_id)
+            absent, _err = _pane_proven_absent(pane_id, socket_path=socket_path)
             if absent is True:
                 return "proven_absent"
             return "unknown"
@@ -4319,7 +4427,10 @@ def _worker_pane_liveness(
         if probed.get("session_id") != expected_session_id:
             return "present_foreign"
         live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
-            pane_id, session, allow_session_fallback=False
+            pane_id,
+            session,
+            allow_session_fallback=False,
+            socket_path=socket_path,
         )
         if not nonce_ok:
             return "unknown"
@@ -4354,6 +4465,7 @@ def _status_worker_alive(
     launch_nonce: str | None,
     expected_pid_start: str | None,
     expected_pid: int | None,
+    socket_path: str | None = None,
 ) -> bool | None:
     """Tri-state wrapper over :func:`_worker_pane_liveness` for status/resume.
 
@@ -4371,6 +4483,7 @@ def _status_worker_alive(
         launch_nonce=launch_nonce,
         expected_pid_start=expected_pid_start,
         expected_pid=expected_pid,
+        socket_path=socket_path,
     )
     if state == "alive":
         return True
@@ -4428,6 +4541,10 @@ def team_status(
         except WorkerError:
             ownership_present = False
 
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
+
     tasks_out: list[dict[str, Any]] = []
     for raw in meta.get("tasks") or []:
         if not isinstance(raw, Mapping):
@@ -4452,6 +4569,7 @@ def team_status(
                 if isinstance(raw.get("pid_start"), str)
                 else None,
                 expected_pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
+                socket_path=sock,
             )
             # Locked status schema keeps bool; unknown → not-alive display.
             alive = bool(probed_alive)
@@ -4887,7 +5005,9 @@ def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
     return False, None
 
 
-def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
+def _pane_proven_absent(
+    pane_id: str, *, socket_path: str | None = None
+) -> tuple[bool | None, str | None]:
     """Prove pane absence only via a successful complete ``list-panes -a``.
 
     Returns:
@@ -4899,7 +5019,9 @@ def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
     if _TMUX_PANE_ID.fullmatch(pane_id) is None:
         return None, f"invalid pane id for absence probe {pane_id!r}"
     try:
-        listed = _tmux_run(["list-panes", "-a", "-F", "#{pane_id}"])
+        listed = _tmux_run(
+            ["list-panes", "-a", "-F", "#{pane_id}"], socket_path=socket_path
+        )
     except OSError as exc:
         return None, f"pane absence probe OSError pane={pane_id}: {exc}"
     if listed.returncode != 0:

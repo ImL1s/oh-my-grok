@@ -166,13 +166,15 @@ omg accept --yes
 | **何時** | 多 pane ULW + 真實 worktree；測試用 hermetic dry-run / fixture smoke |
 | **閘門** | **預設開啟。** 關閉：`OMG_DISABLE_TMUX_TEAM=1`（舊 `OMG_EXPERIMENTAL_TMUX_TEAM=0` 也會關） |
 | **Skill** | `omg-team` — session slash **僅** `/oh-my-grok:omg-team`；自然語言 `team N …` |
-| **CLI** | `omg team launch`（argv 簡寫 `N`/`N:role`+goal → launch）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
+| **CLI** | `omg team launch`（argv 簡寫 `N`/`N:role`+goal → launch；`--io-mode auto\|interactive\|headless`）；亦 `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
 
 **啟動就緒（#99）：** pane supervisor 證明 provider 真正可用（`pane_created` →
 `provider_spawned` → `provider_ready` → `task_dispatched`；可選 `mailbox_ack`）。
 舊版 `worker-ready` v1 收據僅為 `wrapper_ready_legacy`，不能產生
 `startup_status=running`。認證/信任提示 → `blocked_start`。`--no-wait` →
-`unverified_start`。
+`unverified_start`。`--io-mode interactive` 不等 supervisor ACK，由 leader
+在同一逾時內等待 pane TTY 上的 `TUI_READY:<nonce>` 後再提升 `input_ready`；
+逾時 fail-closed，不會靜默降為 headless。
 
 **靜默 bootstrap（#100）：** worker pane 成功啟動不印 JSON / nested-`.omg` 警告；
 失敗僅一行提示。詳情見 `workers/<id>/bootstrap.log`，用

@@ -117,12 +117,46 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `coverage_digest` values only after gap.team.v3 +
   `omo.team.hyperplan_security` text update for fixture-backed composition
   execution (no policy/mapping/status changes). Refs #69 (does not close).
+- **#147 Codex review:** `omg team scale --add` refuses interactive TTY
+  teams until scale-up materializes the same I/O mode (it currently
+  stamps headless supervisor panes). Refs #147.
+- **#147 Codex review:** interactive Grok argv now honors `--safe` /
+  `--yolo` the same way as headless D1 (default no longer injects
+  `bypassPermissions`; `--yolo` also adds `--always-approve`), passes the
+  routed model, refuses symlink inbox / exec-wrapper destinations, snapshots
+  those artifacts for `--run` rollback, and threads
+  `ExactPaneProof.tmux_socket_path` through liveness probes (not only the
+  final `send-keys`). `team start --plan-only` includes `io_mode` like
+  `team launch`. Resume/relaunch of an interactive worker demotes
+  `input_ready` and requires attempt-bound `TUI_READY` evidence again
+  before operator `input`/`key`. `team focus` does not claim
+  `focused=true` when `$TMUX` is a different server than
+  `proof.tmux_socket_path`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains
+  open #147 work. Refs #147.
+- **#147 Codex review:** interactive inbox is published with atomic
+  `0600` (no umask-window `write_text` then chmod). Exec argv rejects the
+  `--prompt-file` / `--prompt-file=` option tokens, not path substrings.
+  Refs #147.
+- **#147 AG skill projection:** regenerate
+  `docs/parity/projections/antigravity/skills/omg-team/SKILL.md` after
+  `--io-mode` skill text (static #70 projection; not live AG evidence).
+  Refs #147.
+- **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
+  and ignore CSI-only/empty lines before treating a TTY read as provider
+  consume, so `PROVIDER_ECHO` is the operator payload. After echo the
+  fixture lingers (`OMG_TEAM_PROVIDER_LINGER_S`, default 5s) so macOS
+  tmux 3.7 can still capture the marker before the pane is destroyed.
+  Status/resume liveness mocks accept `socket_path`. Refs #147.
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
   PreToolUse hard check now smoke-allows first-party `omg team` (bare and
   path-prefixed) so a pre-fix hook that still classifies Team as an external
   CLI cannot pass. Isolated install + PATH-basename `omg team` tests prove
   slash-skill → bare CLI routing, nested-launch zero side effects, and
   foreign CLI deny. Refs #146.
+- **#147 ExactPaneProof tmux socket:** `resolve_live_worker` binds
+  `tmux_socket_path` onto `ExactPaneProof` so operator `input`/`key`/`focus`
+  (and capture / attach argv) can pin `tmux -S`. The prior pin called
+  `proof.tmux_socket_path` on a type that lacked the field. Refs #147.
 - **#169 PR1 identity-safe release upload:** publish no longer uses
   `gh release upload --clobber`. `scripts/release_upload_assets.py` +
   `omg_cli.release_upload.plan_release_asset_upload` skip only when remote
@@ -151,6 +185,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Publication facts are uploaded as a workflow artifact. Does **not** close
   #169 until a tagged publish produces completion evidence and protection
   readback on `main`.
+- **#147 PR2 follow-up interactive TUI-ready gate:** `--io-mode interactive`
+  launch/start waits for `TUI_READY:<nonce>` on the pane TTY (bounded by
+  `OMG_TEAM_READY_TIMEOUT_MS`; `--no-wait` stays `unverified_start`) instead
+  of supervisor ACK receipts. Only the leader CLI promotes `input_ready`
+  after that proof; workers/descriptors never self-promote from stdout
+  scrape. Timeout fails closed with no silent headless downgrade.
+  Operator `input`/`key` pin `tmux -S` to the team's socket (isolated
+  servers do not depend on ambient `TMUX`). Default/`auto` stay headless.
+  Does **not** claim `LIVE_TEAM_INTERACTIVE_TTY_OK`. Refs #147.
+- **#147 PR2 direct-exec interactive pane:** `--io-mode interactive` on
+  `omg team launch`/`start` execs grok or the TTY fixture in the pane (0700
+  wrapper, no `--prompt-file`, no supervisor between pane and provider).
+  Default/`auto`/`headless` stay on the supervisor path. Explicit interactive
+  never silently downgrades (job topology and unqualified providers fail
+  closed). `input_ready` stays false until TUI-ready evidence. Live Grok
+  marker `LIVE_TEAM_INTERACTIVE_TTY_OK` is still optional. Refs #147.
 - **#147 PR1 Team worker I/O capability (fail-closed):** CLI-authoritative
   `io_mode` / `provider_tty_owner` / `input_ready` / `operator_input_supported`
   / `interaction_evidence` independent of pane/job topology. New supervisor

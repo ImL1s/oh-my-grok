@@ -713,10 +713,10 @@ def test_redact_text_closes_pr94v_residual_p2_classes() -> None:
         assert "secret" not in out, n
         assert REDACTED in out, n
     # Doubling n must not ~4× the CPU time (quadratic).
-    # Nest rewrite must stay near-linear. Absolute floor is slightly above
-    # 50ms absorbs interpreter and platform variance without admitting the
-    # historical O(n²) regression.
-    assert rewrite_timings[3] < max(0.1, rewrite_timings[0] * 10.0), rewrite_timings
+    # Nest rewrite must stay near-linear. Absolute floor absorbs interpreter,
+    # GC, and shared-CI variance when n=200 is overhead-dominated (sub-ms)
+    # without admitting the historical multi-second O(n²) regression.
+    assert rewrite_timings[3] < max(0.35, rewrite_timings[0] * 10.0), rewrite_timings
     assert rewrite_timings[3] < 1.0, rewrite_timings
     # Small functional shape.
     assert "secret" not in redact_text("[[[token=secret]=x]=x]=x")

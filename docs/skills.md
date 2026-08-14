@@ -174,7 +174,7 @@ omg accept --yes
 | **When** | Multi-pane ULW with real worktrees; hermetic dry-run / fixture smoke for tests |
 | **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
-| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
+| **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch; `--io-mode auto\|interactive\|headless`); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
 | **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v4 has 39 named ops / 28 implemented — not full OMX catalog parity; see `docs/team-operation-catalog-v4.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
@@ -202,6 +202,10 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # (default 45000). Partial/zero/blocked_start leaves state for diagnosis
 # and exits non-zero (no silent dry-run fallback). --no-wait →
 # unverified_start only.
+# `--io-mode interactive` skips supervisor ACK receipts: the leader waits
+# the same timeout for TUI_READY:<nonce> on the pane TTY, then CLI-promotes
+# input_ready. Timeout fails closed (no headless downgrade). Default/auto
+# stay headless. Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK is optional.
 # Worker panes bootstrap silently (#100): no worker-ready JSON envelope and
 # no nested-.omg shadow warnings in pane scrollback. Failures print one
 # redacted line; details live in workers/<id>/bootstrap.log — inspect with

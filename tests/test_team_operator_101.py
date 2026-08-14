@@ -17,16 +17,19 @@ from omg_cli.team.io_capability import (
     E_OPERATOR_INPUT_NOT_READY,
     E_OPERATOR_INPUT_UNSUPPORTED,
     E_OPERATOR_KEY_UNSUPPORTED,
+    INTERACTION_EVIDENCE_SCHEMA,
     IO_MODE_HEADLESS_STREAM,
     IO_MODE_INTERACTIVE_TTY,
     TTY_OWNER_SUPERVISOR,
 )
 from omg_cli.team.operator import (
+    ExactPaneProof,
     OperatorError,
     STATUS_GONE,
     STATUS_LIVE,
     STATUS_MISMATCH,
     authorize_key,
+    caller_shares_team_tmux_server,
     capture_worker,
     focus_worker,
     input_worker,
@@ -34,6 +37,7 @@ from omg_cli.team.operator import (
     list_panes,
     probe_exact_worker,
     resolve_live_worker,
+    tmux_socket_from_tmux_env,
     watch_worker,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, start_team, team_meta_path
@@ -47,13 +51,26 @@ def _stamp_interactive_io(root: Path, live: dict[str, Any]) -> dict[str, Any]:
     """
     live = dict(live)
     tasks = [dict(t) for t in live["tasks"]]
+    generation = int(live.get("identity_generation") or 0)
     for i, task in enumerate(tasks):
+        attempt = int(task.get("attempt") or 1)
+        pane = task.get("pane_id")
+        pid = task.get("pid")
         tasks[i] = {
             **task,
             "io_mode": IO_MODE_INTERACTIVE_TTY,
             "provider_tty_owner": "provider",
             "operator_input_supported": True,
             "input_ready": True,
+            "interaction_evidence": {
+                "schema": INTERACTION_EVIDENCE_SCHEMA,
+                "attempt": attempt,
+                "generation": generation,
+                "ready_marker": "TUI_READY:test",
+                "proven_at": "2026-01-01T00:00:00Z",
+                "pane_id": pane if isinstance(pane, str) else None,
+                "provider_pid": pid if isinstance(pid, int) else None,
+            },
         }
     live["tasks"] = tasks
     plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
@@ -193,10 +210,19 @@ def _install_live_tmux(
 
     def run(args: Any, **_kw: Any) -> MagicMock:
         command = list(args)
+        sock = _kw.get("socket_path")
         # Strip leading tmux binary if present (_tmux_run includes it).
         if command and command[0] == "tmux":
             command = command[1:]
-        commands.append(command)
+        recorded = list(command)
+        if isinstance(sock, str) and sock:
+            recorded = ["-S", sock, *command]
+        commands.append(recorded)
+        if len(command) >= 2 and command[0] == "-S":
+            command = command[2:]
+        elif isinstance(sock, str) and sock:
+            # Product _tmux_run pins -S via kwarg, not argv[0].
+            pass
         result = MagicMock(returncode=0, stdout="", stderr="")
         if not command:
             return result
@@ -288,6 +314,109 @@ def live_team(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     meta = start_team("op fixture", TASKS_ONE, root=tmp_path, dry_run=True)
     live = _write_live_team(tmp_path, meta, monkeypatch)
     return {"root": tmp_path, "live": live, "run_id": str(live["run_id"])}
+
+
+def test_exact_pane_proof_carries_tmux_socket_path() -> None:
+    """Operator send/focus pin tmux -S off the proof; the field must exist."""
+    proof = ExactPaneProof(
+        run_id="run",
+        team_id="team",
+        worker_id="w1",
+        attempt=1,
+        generation=0,
+        session="omg-op-session",
+        session_id="$42",
+        launch_nonce="b" * 32,
+        pane_id="%10",
+        window_id="@9",
+        expected_pid=7000,
+        expected_pid_start=None,
+        pane_owner_nonce=None,
+        owner_token_sha256=None,
+        leader_pane_id="%1",
+        role=None,
+        provider=None,
+        posture=None,
+        worktree=None,
+        state=None,
+        ready=None,
+        tmux_socket_path="/tmp/omg-op-test.sock",
+    )
+    assert proof.tmux_socket_path == "/tmp/omg-op-test.sock"
+
+
+def test_caller_shares_team_tmux_server() -> None:
+    assert tmux_socket_from_tmux_env("/tmp/a.sock,123,0") == "/tmp/a.sock"
+    assert (
+        caller_shares_team_tmux_server(
+            tmux_env="/tmp/a.sock,123,0",
+            team_socket_path="/tmp/a.sock",
+        )
+        is True
+    )
+    assert (
+        caller_shares_team_tmux_server(
+            tmux_env="/tmp/tmux-1000/default,1,0",
+            team_socket_path="/tmp/a.sock",
+        )
+        is False
+    )
+    assert (
+        caller_shares_team_tmux_server(
+            tmux_env="/tmp/tmux-1000/default,1,0",
+            team_socket_path=None,
+        )
+        is True
+    )
+    assert (
+        caller_shares_team_tmux_server(
+            tmux_env=None,
+            team_socket_path="/tmp/a.sock",
+        )
+        is False
+    )
+
+
+def test_probe_exact_worker_threads_tmux_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_read(**kwargs: Any) -> int:
+        seen.update(kwargs)
+        return 7000
+
+    monkeypatch.setattr(operator, "tmux_available", lambda: True)
+    monkeypatch.setattr(operator, "read_exact_worker_pane_identity", fake_read)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda *args, **kwargs: ("b" * 32, True),
+    )
+    proof = ExactPaneProof(
+        run_id="run",
+        team_id="team",
+        worker_id="w1",
+        attempt=1,
+        generation=0,
+        session="omg-op-session",
+        session_id="$42",
+        launch_nonce="b" * 32,
+        pane_id="%10",
+        window_id="@9",
+        expected_pid=7000,
+        expected_pid_start=None,
+        pane_owner_nonce="owner-nonce",
+        owner_token_sha256=None,
+        leader_pane_id="%1",
+        role=None,
+        provider=None,
+        posture=None,
+        worktree=None,
+        state=None,
+        ready=None,
+        tmux_socket_path="/tmp/omg-op-test.sock",
+    )
+    assert probe_exact_worker(proof) == STATUS_LIVE
+    assert seen.get("socket_path") == "/tmp/omg-op-test.sock"
 
 
 def test_parser_registers_operator_family() -> None:
@@ -491,13 +620,65 @@ def test_focus_tty_inside_tmux_selects(
     assert any(cmd[:2] == ["select-pane", "-t"] for cmd in effects)
 
 
+def test_focus_inside_tmux_foreign_socket_does_not_claim_focus(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    sock = "/tmp/omg-team-focus.sock"
+    live["tmux_socket_path"] = sock
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    effects: list[list[str]] = []
+    _install_live_tmux(monkeypatch, live, effects=effects)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    out = focus_worker(
+        root,
+        live_team["run_id"],
+        "w1",
+        as_json=False,
+        is_tty=True,
+    )
+    assert out["focused"] is False
+    assert out["mode"] == "hint"
+    assert "differs from the team socket" in str(out.get("note") or "")
+    assert not any(cmd[:2] == ["select-pane", "-t"] for cmd in effects)
+
+
+def test_focus_inside_tmux_matching_socket_selects(
+    live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = live_team["root"]
+    live = live_team["live"]
+    sock = "/tmp/omg-team-focus.sock"
+    live["tmux_socket_path"] = sock
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
+    effects: list[list[str]] = []
+    _install_live_tmux(monkeypatch, live, effects=effects)
+    monkeypatch.setenv("TMUX", f"{sock},1,0")
+    out = focus_worker(
+        root,
+        live_team["run_id"],
+        "w1",
+        as_json=False,
+        is_tty=True,
+    )
+    assert out["focused"] is True
+    assert out["mode"] == "select-pane"
+    assert any(cmd[:2] == ["select-pane", "-t"] or cmd[:4] == ["-S", sock, "select-pane", "-t"] for cmd in effects)
+
+
 def test_key_and_input_audit_no_raw_text(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = live_team["root"]
     live = _stamp_interactive_io(root, live_team["live"])
+    sock = "/tmp/omg-op-test.sock"
+    live["tmux_socket_path"] = sock
+    plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
+    proof = resolve_live_worker(root, live_team["run_id"], "w1")
+    assert proof.tmux_socket_path == sock
 
     key_worker(
         root,
@@ -532,8 +713,10 @@ def test_key_and_input_audit_no_raw_text(
     assert "Enter" in body
     assert "text_sha256" in body
     assert "io_mode" in body
-    # send-keys effects present
-    assert any(cmd[:1] == ["send-keys"] for cmd in effects)
+    # Isolated-socket teams must pin send-keys with tmux -S (not ambient TMUX).
+    send = [cmd for cmd in effects if "send-keys" in cmd]
+    assert send
+    assert all(cmd[:2] == ["-S", sock] for cmd in send)
 
 
 def test_key_requires_tty_or_operator_override(
