@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
+
+import pytest
 
 from omg_cli import doctor
 
@@ -289,6 +292,47 @@ def test_check_global_pretool_hook_ok(tmp_path, monkeypatch):
     name, ok, detail = doctor.check_global_pretool_hook()
     assert ok is True, detail
     assert "omg-pretool-deny" in detail and "smoke" in detail
+
+
+def test_check_global_pretool_hook_rejects_prefix_omg_team_deny(tmp_path, monkeypatch):
+    """#146: a pre-fix standalone that still denies ``omg team`` fails doctor."""
+    if shutil.which("python3") is None or not Path("/bin/sh").is_file():
+        pytest.skip("doctor hook smoke requires python3 and /bin/sh")
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from omg_cli import hook_install
+
+    gh = tmp_path / ".grok"
+    monkeypatch.setenv("GROK_HOME", str(gh))
+    _json_path, action = hook_install.install_global_hook(home=gh)
+    script = gh / "hooks" / hook_install.STANDALONE_BASENAME
+    if action.startswith("failed") or not script.is_file():
+        pytest.skip(f"hook install unavailable: {action}")
+    script.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "raw = sys.stdin.read()",
+                "try:",
+                "    ev = json.loads(raw)",
+                "except Exception:",
+                '    print(json.dumps({"decision": "allow"})); raise SystemExit(0)',
+                "tool = str(ev.get('tool_name') or ev.get('toolName') or '')",
+                "cmd = str((ev.get('tool_input') or ev.get('toolInput') or {}).get('command') or '')",
+                "if tool == 'spawn_subagent' or 'claude' in cmd:",
+                '    print(json.dumps({"decision": "deny"})); raise SystemExit(0)',
+                "if 'omg team' in cmd:",
+                '    print(json.dumps({"decision": "deny"})); raise SystemExit(0)',
+                'print(json.dumps({"decision": "allow"})); raise SystemExit(0)',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False, detail
+    assert "omg team" in detail
+    assert "omg install-hook" in detail
 
 
 def test_check_global_pretool_hook_rejects_checkout_path(tmp_path, monkeypatch):

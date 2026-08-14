@@ -328,8 +328,12 @@ this with a layered fail-**open** ladder:
    file") to rc 0 → fail-open.
 3. **In-code** — whole-body `try/except` defaults to allow on any error.
 4. **doctor** — realpath-under-`$GROK_HOME` + real `open()` + a behavioral
-   subprocess smoke (allow/deny) + installed-vs-committed hash (WARN on stale).
-   `os.access` is *not* trusted (it checks permission bits, not TCC).
+   subprocess smoke (allow `ls`, allow first-party `omg team` bare and
+   path-prefixed, deny `claude`, deny unscoped `spawn_subagent`) +
+   installed-vs-committed hash (WARN on stale; `--strict` fails). A pre-fix
+   hook that still classifies `omg team` as an external CLI fails the hard
+   check with remediation `omg install-hook`. `os.access` is *not* trusted
+   (it checks permission bits, not TCC).
 
 Migration: an existing checkout-path json is auto-repaired on `omg setup` /
 `install-hook`; if it cannot be replaced it is **quarantined** to a non-`.json`
