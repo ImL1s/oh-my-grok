@@ -151,10 +151,14 @@ def _mkdir(path: Path) -> None:
 
 
 def _write_text_nofollow(path: Path, text: str) -> None:
-    """Write a regular file. Never follow a symlink to an outside path."""
+    """Write a regular file atomically. Never follow a symlink to an outside path."""
     if path.is_symlink():
         path.unlink()
-    path.write_text(text, encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    if tmp.is_symlink() or tmp.is_file():
+        tmp.unlink()
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
@@ -391,19 +395,31 @@ def _tx_dir(scope: str, project_root: Path | None) -> Path:
     return Path(project_root) / ".omg" / "install" / "tx"
 
 
-def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any]:
+def rollback_interrupted(
+    scope: str,
+    project_root: Path | None,
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     tx_root = _tx_dir(scope, project_root)
     marker = tx_root / "current.json"
     if marker.is_symlink():
         marker.unlink(missing_ok=True)
-        return {"ok": True, "rolled_back": False, "note": "symlinked tx marker removed"}
-    if not marker.is_file():
-        return {"ok": True, "rolled_back": False}
-    try:
-        state = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        marker.unlink(missing_ok=True)
-        return {"ok": True, "rolled_back": False, "note": "malformed tx marker removed"}
+        if fallback is None:
+            return {"ok": True, "rolled_back": False, "note": "symlinked tx marker removed"}
+        state = fallback
+    elif not marker.is_file():
+        if fallback is None:
+            return {"ok": True, "rolled_back": False}
+        state = fallback
+    else:
+        try:
+            state = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            if fallback is None:
+                marker.unlink(missing_ok=True)
+                return {"ok": True, "rolled_back": False, "note": "malformed tx marker removed"}
+            state = fallback
     if state.get("status") == "committed":
         return {"ok": True, "rolled_back": False}
     try:
@@ -597,7 +613,17 @@ def apply_manifest(
             "note": "manifest written; not live-verified; not agy discovery",
         }
     except Exception as exc:
-        rollback_interrupted(scope, project_root)
+        rollback_interrupted(
+            scope,
+            project_root,
+            fallback={
+                "status": "committing",
+                "transaction_id": tx_id,
+                "backup_dir": str(backup_dir),
+                "runtime": runtime,
+                "scope": scope,
+            },
+        )
         raise InstallManifestError(
             "E_TX", f"install transaction rolled back ({type(exc).__name__})"
         ) from exc

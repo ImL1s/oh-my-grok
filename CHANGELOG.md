@@ -126,7 +126,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   on a symlinked `.omg` parent. File-backup restore refuses a symlink
   leaf (does not follow it). Empty `artifacts` is not installed. Rollback
   restores only writable catalog paths (not `.git/config`). All-preserved
-  installs report `enabled=false`. Refs #77.
+  installs report `enabled=false`. Commit-marker writes are atomic; a
+  truncated marker still rolls back via in-memory fallback. Refs #77.
 - **#77 Codex review:** inspect compares recorded `content_hash` (hash
   mismatch is stale, not user_owned false-green); rollback unlinks files
   created in a failed transaction; `--force` replaces symlinks instead of

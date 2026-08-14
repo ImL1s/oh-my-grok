@@ -347,7 +347,7 @@ def test_failed_commit_rolls_back_manifest(
     orig = Path.write_text
 
     def wrapped(self, data="", *args, **kwargs):
-        if self.name == "current.json" and "committed" in str(data):
+        if self.name == "current.json.tmp" and "committed" in str(data):
             raise OSError("disk full")
         return orig(self, data, *args, **kwargs)
 
@@ -640,3 +640,28 @@ def test_rollback_does_not_unlink_git_config(tmp_path: Path) -> None:
     )
     rollback_interrupted("project", tmp_path)
     assert git_config.read_text(encoding="utf-8") == "[core]\n"
+
+
+def test_rollback_uses_fallback_when_marker_malformed(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("new\n", encoding="utf-8")
+    tx = tmp_path / ".omg" / "install" / "tx" / ("i" * 32)
+    tx.mkdir(parents=True)
+    (tx / "art.prev.json").write_text(
+        json.dumps({"target": str(dest), "kind": "created"}), encoding="utf-8"
+    )
+    marker = tmp_path / ".omg" / "install" / "tx" / "current.json"
+    marker.write_text("{", encoding="utf-8")
+    out = rollback_interrupted(
+        "project",
+        tmp_path,
+        fallback={
+            "status": "committing",
+            "runtime": "antigravity",
+            "transaction_id": "i" * 32,
+            "backup_dir": str(tx),
+        },
+    )
+    assert dest.exists() is False
+    assert out["rolled_back"] is True
