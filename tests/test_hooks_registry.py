@@ -317,6 +317,8 @@ def test_continuation_policies() -> None:
     assert resolve_continuation("ralph", "cancel") == "adopt_existing"
     assert resolve_continuation("ralph", "wiki") == "artifact_only"
     assert resolve_continuation(None, "ralph") == "none"
+    assert resolve_continuation("autopilot", "ralplan") == "adopt_existing"
+    assert resolve_continuation("pipeline", "dual-review") == "adopt_existing"
 
 
 def test_compact_handoff_refuses_transcript(tmp_path: Path) -> None:
@@ -337,6 +339,21 @@ def test_compact_handoff_refuses_transcript(tmp_path: Path) -> None:
     )
     assert "SECRET" not in text
     assert "run-1" in text
+
+
+def test_compact_handoff_refuses_symlink(tmp_path: Path) -> None:
+    dest_dir = tmp_path / ".omg" / "artifacts"
+    dest_dir.mkdir(parents=True)
+    target = tmp_path / "outside.txt"
+    target.write_text("secret\n", encoding="utf-8")
+    dest = dest_dir / "compact-handoff.json"
+    try:
+        dest.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks not available")
+    with pytest.raises(HooksRegistryError, match="symlink"):
+        write_compact_handoff(tmp_path, run_id="run-1", session_id="sess-1")
+    assert target.read_text(encoding="utf-8") == "secret\n"
 
 
 def test_dispatch_compact_pre_writes_handoff(tmp_path: Path) -> None:

@@ -94,31 +94,6 @@ GROK_EVENT_MAP: dict[str, str] = {
     "team.member.transition": "wrapper",
 }
 
-CONTINUATION_OWNERS = frozenset(
-    {
-        "autopilot",
-        "ralph",
-        "pipeline",
-        "ultrawork",
-        "ultragoal",
-        "ultraqa",
-        "team",
-        "ralplan",
-    }
-)
-_ADOPT_PAIRS = frozenset(
-    {
-        ("autopilot", "ultraqa"),
-        ("autopilot", "dual-review"),
-        ("ralph", "ultraqa"),
-        ("ultragoal", "ralph"),
-        ("ultragoal", "ultrawork"),
-        ("ultragoal", "autopilot"),
-    }
-)
-_ALWAYS_ADOPT = frozenset({"cancel", "using"})
-_ARTIFACT_ONLY = frozenset({"wiki", "hud", "lsp", "ask", "trace"})
-
 _HOOK_REQUIRED = (
     "id",
     "event",
@@ -380,26 +355,20 @@ def _hook_skipped(record: HookRecord, skip: set[str]) -> bool:
 
 
 def resolve_continuation(active_owner: str | None, requested: str) -> str:
-    """Deterministic loop conflict: refuse | adopt_existing | artifact_only | none."""
-    active = (active_owner or "").strip().lower() or None
-    want = (requested or "").strip().lower()
-    if want.startswith("omg-"):
-        want = want.removeprefix("omg-")
-    if active and active.startswith("omg-"):
-        active = active.removeprefix("omg-")
-    if not active:
-        return "none"
-    if want == active:
-        return "adopt_existing"
-    if want in _ALWAYS_ADOPT:
-        return "adopt_existing"
-    if (active, want) in _ADOPT_PAIRS:
-        return "adopt_existing"
-    if want in _ARTIFACT_ONLY:
-        return "artifact_only"
-    if want in CONTINUATION_OWNERS and active in CONTINUATION_OWNERS:
-        return "refuse"
-    return "artifact_only"
+    """Delegate to the #70 skill-catalog continuation policy (single owner)."""
+    from omg_cli.skills_catalog import (
+        SkillsCatalogError,
+        load_skills_catalog,
+        plugin_root as skill_root,
+        resolve_continuation as resolve_skill_continuation,
+    )
+
+    catalog = None
+    try:
+        catalog = load_skills_catalog(skill_root(), require_projections=False)
+    except SkillsCatalogError:
+        catalog = None
+    return resolve_skill_continuation(active_owner, requested, catalog=catalog)
 
 
 def write_compact_handoff(
@@ -427,9 +396,28 @@ def write_compact_handoff(
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(body) > MAX_HANDOFF_BYTES:
         raise HooksRegistryError("compact handoff exceeds bounded size")
-    dest = Path(root) / ".omg" / "artifacts" / "compact-handoff.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(body)
+    dest_dir = Path(root) / ".omg" / "artifacts"
+    dest = dest_dir / "compact-handoff.json"
+    if dest.is_symlink() or dest_dir.is_symlink():
+        raise HooksRegistryError("compact handoff may not be a symlink")
+    try:
+        from omg_cli.contracts.path_keys import (
+            ContractPathError,
+            atomic_write_bytes,
+            ensure_managed_dir,
+        )
+
+        ensure_managed_dir(dest_dir)
+        atomic_write_bytes(dest, body)
+    except Exception as exc:
+        from omg_cli.contracts.path_keys import ContractPathError
+
+        if not isinstance(exc, ContractPathError):
+            raise
+        if dest.is_symlink() or dest_dir.is_symlink():
+            raise HooksRegistryError("compact handoff may not be a symlink") from exc
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(body)
     return payload
 
 
