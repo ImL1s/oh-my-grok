@@ -95,6 +95,9 @@ _NATIVE_ONLY_KEYS: frozenset[str] = frozenset(
         "candidates",
     }
 )
+_EXTERNAL_ROUTE_KEYS: frozenset[str] = frozenset(
+    {"kind", "executor", "provider", "model_flag"}
+)
 
 
 class AgentPolicyError(ValueError):
@@ -174,11 +177,17 @@ class AgentPolicyViewV1:
             "reasons": [item.to_json() for item in self.reasons],
             "host_facts": dict(self.host_facts),
             "requested_policy": {"binding": self.baseline_mode},
-            "effective_route": {
-                "kind": self.route_kind,
-                "selected_model_ref": self.selected_model_ref,
-                "route_receipt_digest": self.route_receipt_digest,
-            },
+            "effective_route": self._effective_route_json(),
+        }
+
+    def _effective_route_json(self) -> dict[str, Any] | None:
+        """Pre-execution inspect leaves this unset; a receipt or negotiated model is evidence."""
+        if self.route_receipt_digest is None and self.selected_model_ref is None:
+            return None
+        return {
+            "kind": self.route_kind,
+            "selected_model_ref": self.selected_model_ref,
+            "route_receipt_digest": self.route_receipt_digest,
         }
 
 
@@ -636,6 +645,11 @@ def _merge_policy(
             f"{label}: model and models cannot both be set",
             code="E_AGENT_POLICY_CONFLICT",
         )
+    if "models" in overlay:
+        raise AgentPolicyError(
+            f"{label}.models is not valid on an override (use inherit/exact model)",
+            code="E_AGENT_POLICY_CONFLICT",
+        )
     extra = sorted(
         set(overlay)
         - {
@@ -645,7 +659,6 @@ def _merge_policy(
             "reasoning",
             "extensions",
             "model",
-            "models",
         }
     )
     if extra:
@@ -759,6 +772,11 @@ def parse_policy_route(
             raise AgentPolicyError(
                 "external_executor route cannot carry native catalog/receipt keys: "
                 + ", ".join(leaked)
+            )
+        extra = sorted(set(obj) - _EXTERNAL_ROUTE_KEYS)
+        if extra:
+            raise AgentPolicyError(
+                f"external_executor route has unknown keys: {', '.join(extra)}"
             )
         executor = obj.get("executor")
         provider = obj.get("provider")

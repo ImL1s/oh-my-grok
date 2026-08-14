@@ -8,9 +8,30 @@
   "required": [
     "schema",
     "agent_id",
+    "aliases",
+    "category",
+    "tier",
+    "capability_floor",
+    "tool_floor",
+    "policy_id",
+    "policy_digest",
+    "policy_source",
     "baseline_mode",
+    "baseline_model",
+    "requested_extension",
+    "candidate_ids",
+    "prompt_profile",
+    "reasoning_preference",
+    "host_capabilities",
+    "selected_model_ref",
+    "route_kind",
+    "route_receipt_digest",
+    "attempt",
     "status",
-    "route_kind"
+    "reasons",
+    "host_facts",
+    "requested_policy",
+    "effective_route"
   ],
   "properties": {
     "schema": { "const": "omg.agent_policy_view/v1" },
@@ -40,7 +61,23 @@
     },
     "reasons": { "type": "array" },
     "host_facts": { "type": "object" },
-    "requested_policy": { "type": "object" },
-    "effective_route": { "type": "object" }
+    "requested_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding"],
+      "properties": {
+        "binding": { "type": "string" }
+      }
+    },
+    "effective_route": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "selected_model_ref", "route_receipt_digest"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["native", "external_executor"] },
+        "selected_model_ref": { "type": ["string", "null"] },
+        "route_receipt_digest": { "type": ["string", "null"] }
+      }
+    }
   }
 }

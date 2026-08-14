@@ -66,6 +66,7 @@ def test_stock_orchestrator_executor_verifier_explore_inherit() -> None:
         assert spawn_admitted(view)
         assert view.host_facts["medley_capability_outcome"] == "unsupported"
         assert view.host_facts["route_specific_facts"] == "unavailable"
+        assert view.to_json()["effective_route"] is None
 
 
 def test_verifier_extension_not_flattened_on_stock() -> None:
@@ -114,6 +115,11 @@ def test_exact_admitted_when_host_exposes_contract() -> None:
     assert view.status == "ready"
     assert view.selected_model_ref == "grok-example-1"
     assert spawn_admitted(view)
+    route = view.to_json()["effective_route"]
+    assert route is not None
+    assert route["kind"] == ROUTE_KIND_NATIVE
+    assert route["selected_model_ref"] == "grok-example-1"
+    assert route["route_receipt_digest"] is None
 
 
 def test_requires_capability_rejects_on_stock() -> None:
@@ -285,6 +291,24 @@ def test_native_and_external_routes_cannot_be_confused() -> None:
                 "catalog": "review-primary-example",
             }
         )
+    with pytest.raises(AgentPolicyError, match="unknown keys"):
+        parse_policy_route(
+            {
+                "kind": ROUTE_KIND_EXTERNAL,
+                "executor": "codex",
+                "policy_id": "executor.default",
+            }
+        )
+
+
+def test_override_models_without_model_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AgentPolicyError) as exc:
+        resolve_agent_policy(
+            "omg-executor",
+            root=ROOT,
+            per_run={"models": ["grok-example-1"]},
+        )
+    assert exc.value.code == "E_AGENT_POLICY_CONFLICT"
 
 
 def test_list_filter_and_deterministic_order() -> None:
@@ -321,3 +345,16 @@ def test_deny_module_does_not_import_agent_policy() -> None:
     assert "agent_policy" not in deny
     assert "host_capabilities" not in deny
     assert "model_policies" not in deny
+
+
+def test_policy_view_schema_requires_full_projection() -> None:
+    schema = json.loads(
+        (ROOT / "docs" / "schemas" / "omg.agent_policy_view.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    view = resolve_agent_policy("omg-verifier", root=ROOT).to_json()
+    assert set(schema["required"]) == set(view)
+    assert schema["properties"]["effective_route"]["type"] == ["object", "null"]
+    assert view["effective_route"] is None
+    assert view["requested_policy"]["binding"] == "inherit"

@@ -6056,7 +6056,8 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         if isinstance(route, Mapping) and route.get("kind"):
             route_s = f" route={route.get('kind')}"
         else:
-            route_s = " route=unknown"
+            # Locked status tasks never carry route; do not label every row unknown.
+            route_s = ""
         lines.append(
             f"{tid:<16} "
             f"{int(t.get('window_index') or 0):>3} "

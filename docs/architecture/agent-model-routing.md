@@ -419,7 +419,10 @@ rather than fabricating a panel.
 Accessibility **CLI shipped** / **TUI contract-only**:
 
 - `omg agents list` / `omg agents explain <agent-or-profile>` narrow-width /
-  normal / wide layouts are **shipped** (`--width` / `COLUMNS`; Medley facts stay
+  normal / wide layouts are **shipped** (`--width` / `COLUMNS` wrap free-form
+  reason and next-action lines to the selected budget; oversized identity
+  tokens such as `policy_digest` continue on the next line rather than
+  truncating; Medley facts stay
   **unsupported**; Medley TUI remains [medley#290](https://github.com/ImL1s/medley/issues/290)
   **contract-only**);
 - no-color / `NO_COLOR` environments remain usable (status is never color-only);
@@ -557,7 +560,7 @@ Read-only. No paid probe. On a stock host, a Medley-only capability outcome is
 omg agents list
 
 Agent            Host policy          Model intent     Status
-omg-verifier     optional extension   inherit          ready
+omg-verifier     optional extension   inherit (unsupported)  ready
 omg-executor     baseline             inherit          ready
 ```
 

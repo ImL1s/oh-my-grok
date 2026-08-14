@@ -75,6 +75,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#131 Codex review (follow-up):** `omg agents list` model-intent uses the
+  requested extension's `host_capabilities` state, not the aggregate
+  `medley_capability_outcome`, so mixed Medley caps cannot advertise
+  candidate ids for an unauthorized route. Refs #131 (does not close).
+- **#134 Codex review (follow-up):** `wrap_display` continues oversized tokens
+  such as `policy_digest` onto the next line instead of truncating them;
+  `omg team status --presentation` uses the stacked layout when the member
+  table cannot fit the terminal. Refs #134 (does not close).
+- **#134 Codex review:** `omg agents explain --json` leaves `effective_route`
+  null until a receipt or negotiated model exists; `--width` wraps free-form
+  reason/action lines; Team status omits `route=unknown` on locked tasks;
+  presentation human copy honors terminal width; adapter schema requires the
+  full typed view (nullable `effective_route` included). Refs #134.
 - **#70 Codex review:** `omg skill list` exits 1 on a fail-closed catalog
   load; `omg skill show` looks up exact ids (alias rows keep `kind: alias`);
   short trigger matching requires token boundaries so `task`/`steam` no
@@ -82,6 +95,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   path components for symlinks, empty resource allowlists deny undeclared
   files, and embedded NUL / non-UTF-8 catalog bytes raise
   `SkillsCatalogError`. Refs #70.
+- **#131 Codex review:** stock-host `omg agents list` shows inherit (plus
+  unsupported/unavailable) instead of Medley candidate ids; overrides
+  reject unimplemented `models`; external executor routes reject mixed
+  native/unknown fields. Refs #131.
 - **#69 Codex review:** idempotent execute also binds stored worker
   evidence to the admitted `topo_order` / lane→task mapping, so a
   truncated or wrong-`task_id` artifact cannot false-green as

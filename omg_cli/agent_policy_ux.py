@@ -120,21 +120,145 @@ def truncate_display(text: str, width: int) -> str:
     return "".join(out) + ELLIPSIS
 
 
+def _fit_chars(text: str, width: int) -> tuple[str, str]:
+    """Split ``text`` so ``head`` fits in ``width`` display columns."""
+    if width <= 0:
+        return "", text
+    if display_width(text) <= width:
+        return text, ""
+    out: list[str] = []
+    used = 0
+    for index, char in enumerate(text):
+        size = 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+        if used + size > width:
+            if not out:
+                return char, text[index + 1 :]
+            return "".join(out), text[index:]
+        out.append(char)
+        used += size
+    return "".join(out), ""
+
+
+def _wrap_unbroken(text: str, width: int) -> list[str]:
+    if display_width(text) <= width:
+        return [text]
+    lines: list[str] = []
+    rest = text
+    while rest:
+        head, rest = _fit_chars(rest, width)
+        if not head:
+            head, rest = rest[:1], rest[1:]
+        lines.append(head)
+    return lines
+
+
+def wrap_display(
+    text: str,
+    width: int,
+    *,
+    subsequent_indent: str | None = None,
+) -> list[str]:
+    """Wrap ``text`` to ``width`` display columns (CJK-aware).
+
+    Oversized tokens continue on the next line; characters are never dropped.
+    """
+    if width < 1:
+        return [""]
+    lead_n = len(text) - len(text.lstrip(" "))
+    lead = text[:lead_n]
+    body = text[lead_n:]
+    cont = subsequent_indent if subsequent_indent is not None else lead
+    tokens = body.split()
+    if not tokens:
+        return _wrap_unbroken(text, width)
+    lines: list[str] = []
+    prefix = lead
+    parts: list[str] = []
+
+    def current() -> str:
+        return prefix + " ".join(parts)
+
+    def flush() -> None:
+        nonlocal prefix, parts
+        lines.append(current())
+        prefix = cont
+        parts = []
+
+    for token in tokens:
+        trial = prefix + " ".join(parts + [token])
+        if display_width(trial) <= width:
+            parts.append(token)
+            continue
+        if parts:
+            flush()
+            if display_width(prefix + token) <= width:
+                parts = [token]
+                continue
+        rest = token
+        while rest:
+            budget = width - display_width(prefix)
+            if budget < 1:
+                lines.append(prefix)
+                prefix = cont
+                budget = width - display_width(prefix)
+                if budget < 1:
+                    prefix = ""
+                    budget = width
+            head, rest = _fit_chars(rest, budget)
+            if not head and rest:
+                head, rest = rest[0], rest[1:]
+            lines.append(prefix + head)
+            prefix = cont
+        parts = []
+    if parts:
+        flush()
+    return lines or [lead]
+
+
+def _wrap_lines(lines: Sequence[str], columns: int) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        indent = "    " if line.startswith(" ") else ""
+        out.extend(wrap_display(line, columns, subsequent_indent=indent))
+    return out
+
+
 def host_policy_label(view: object) -> str:
     if getattr(view, "requested_extension", None):
         return "optional extension"
     return "baseline"
 
 
+def _requested_extension_state(view: object) -> str | None:
+    extension = getattr(view, "requested_extension", None)
+    if not extension:
+        return None
+    rows = getattr(view, "host_capabilities", ()) or ()
+    for item in rows:
+        if isinstance(item, Mapping) and item.get("capability_id") == extension:
+            state = item.get("state")
+            return str(state) if state is not None else None
+    return None
+
+
 def model_intent_label(view: object, *, band: str) -> str:
     extension = getattr(view, "requested_extension", None)
     candidates = tuple(getattr(view, "candidate_ids", ()) or ())
     mode = str(getattr(view, "baseline_mode", "") or "")
-    if extension and candidates and band != "narrow":
-        shown = " -> ".join(str(item) for item in candidates[:2])
-        if len(candidates) > 2:
-            shown += " -> …"
-        return shown
+    outcome = _requested_extension_state(view)
+    if extension and candidates:
+        if outcome != "supported":
+            shown = (
+                outcome
+                if outcome in {"unsupported", "unavailable", "incompatible", "unknown"}
+                else "unsupported"
+            )
+            return f"{mode} ({shown})"
+        if band != "narrow":
+            shown = " -> ".join(str(item) for item in candidates[:2])
+            if len(candidates) > 2:
+                shown += " -> …"
+            return shown
     return mode
 
 
@@ -147,7 +271,7 @@ def render_list_human(
     _ = color_enabled(env)
     band = width_band(columns)
     if band == "narrow":
-        return _render_list_narrow(rows)
+        return _render_list_narrow(rows, columns=columns)
     if band == "wide":
         return _render_list_table(
             rows,
@@ -175,7 +299,7 @@ def render_list_human(
     )
 
 
-def _render_list_narrow(rows: Sequence[object]) -> str:
+def _render_list_narrow(rows: Sequence[object], *, columns: int) -> str:
     blocks: list[str] = []
     for row in rows:
         reasons = getattr(row, "reasons", ()) or ()
@@ -185,14 +309,17 @@ def _render_list_narrow(rows: Sequence[object]) -> str:
         aliases = ", ".join(getattr(row, "aliases", ()) or ())
         blocks.append(
             "\n".join(
-                [
-                    str(getattr(row, "agent_id")),
-                    f"  aliases: {aliases or '(none)'}",
-                    f"  host policy: {host_policy_label(row)}",
-                    f"  model intent: {model_intent_label(row, band='narrow')}",
-                    f"  status: {getattr(row, 'status')}",
-                    f"  next: {next_action}",
-                ]
+                _wrap_lines(
+                    [
+                        str(getattr(row, "agent_id")),
+                        f"  aliases: {aliases or '(none)'}",
+                        f"  host policy: {host_policy_label(row)}",
+                        f"  model intent: {model_intent_label(row, band='narrow')}",
+                        f"  status: {getattr(row, 'status')}",
+                        f"  next: {next_action}",
+                    ],
+                    columns,
+                )
             )
         )
     return "\n\n".join(blocks)
@@ -307,7 +434,7 @@ def render_explain_human(
         out.append(name)
         out.extend(sections[name])
     out.append(f"status: {getattr(view, 'status')}")
-    return "\n".join(out)
+    return "\n".join(_wrap_lines(out, columns))
 
 
 def _reason_lines(reasons: Sequence[object]) -> list[str]:
@@ -359,48 +486,92 @@ def format_doctor_routing_human(snapshot: object) -> str:
 
 def format_presentation_human(state: Mapping[str, Any], *, columns: int = 120) -> str:
     """Human Team Presentation V1. Does not change locked ``omg team status --json``."""
-    _ = columns
-    lines = [
+    header = [
         "Team presentation (schema v1; not omg team status --json)",
         f"run_id: {state.get('run_id')}",
         f"team_id: {state.get('team_id')}",
         f"  {POLICY_NATIVE_NOTE}",
         "",
-        "  ".join(
-            pad_display(h, w)
-            for h, w in (
-                ("member", 16),
-                ("role", 14),
-                ("presentation_route", 22),
-                ("executor", 12),
-                ("attempt", 8),
-                ("status", 12),
-            )
-        ),
     ]
-    for member in state.get("members") or []:
-        if not isinstance(member, Mapping):
-            continue
-        route = member.get("route") if isinstance(member.get("route"), Mapping) else {}
-        current = (
-            member.get("current_attempt")
-            if isinstance(member.get("current_attempt"), Mapping)
-            else {}
-        )
-        kind = str(route.get("kind") or "unknown")
-        lines.append(
-            "  ".join(
-                [
-                    pad_display(str(member.get("logical_worker_id") or ""), 16),
-                    pad_display(str(member.get("role") or ""), 14),
-                    pad_display(kind, 22),
-                    pad_display(str(route.get("executor") or "-"), 12),
-                    pad_display(str(current.get("attempt") or "-"), 8),
-                    pad_display(str(current.get("status") or "-"), 12),
-                ]
+    members = [
+        member
+        for member in (state.get("members") or [])
+        if isinstance(member, Mapping)
+    ]
+    headers = (
+        "member",
+        "role",
+        "presentation_route",
+        "executor",
+        "attempt",
+        "status",
+    )
+    table_rows = [_presentation_cells(member) for member in members]
+    out = _wrap_lines(header, columns)
+    if (
+        width_band(columns) != "narrow"
+        and _natural_table_width(headers, table_rows) <= columns
+    ):
+        out.append(
+            _render_list_table(
+                members,
+                headers=headers,
+                cells=_presentation_cells,
+                columns=columns,
             )
         )
-    return "\n".join(lines)
+        return "\n".join(out)
+    out.extend(_wrap_lines(_presentation_stacked_lines(members), columns))
+    return "\n".join(out).rstrip()
+
+
+def _natural_table_width(
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[str, ...]],
+) -> int:
+    widths = [display_width(h) for h in headers]
+    for line in rows:
+        for index, cell in enumerate(line):
+            widths[index] = max(widths[index], display_width(cell))
+    gaps = 2 * max(0, len(widths) - 1)
+    return sum(widths) + gaps
+
+
+def _presentation_cells(member: Mapping[str, Any]) -> tuple[str, ...]:
+    route = member.get("route") if isinstance(member.get("route"), Mapping) else {}
+    current = (
+        member.get("current_attempt")
+        if isinstance(member.get("current_attempt"), Mapping)
+        else {}
+    )
+    kind = str(route.get("kind") or "unknown")
+    return (
+        str(member.get("logical_worker_id") or ""),
+        str(member.get("role") or ""),
+        kind,
+        str(route.get("executor") or "-"),
+        str(current.get("attempt") or "-"),
+        str(current.get("status") or "-"),
+    )
+
+
+def _presentation_stacked_lines(members: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for member in members:
+        cells = _presentation_cells(member)
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                cells[0] or "(member)",
+                f"  role: {cells[1] or '-'}",
+                f"  presentation_route: {cells[2]}",
+                f"  executor: {cells[3]}",
+                f"  attempt: {cells[4]}",
+                f"  status: {cells[5]}",
+            ]
+        )
+    return lines
 
 
 __all__ = [
@@ -417,4 +588,5 @@ __all__ = [
     "terminal_width",
     "truncate_display",
     "width_band",
+    "wrap_display",
 ]
