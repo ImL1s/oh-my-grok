@@ -242,6 +242,40 @@ def test_declared_resource_roundtrip(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "ok\n"
 
 
+def test_empty_resource_allowlist_rejects_undeclared(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    _write_catalog(tmp_path, [_plugin_entry("omg-using")])
+    catalog = load_skills_catalog(tmp_path, require_projections=False)
+    with pytest.raises(SkillsCatalogError, match="not declared"):
+        resolve_skill_resource(
+            tmp_path, "omg-using", "SKILL.md", catalog=catalog
+        )
+
+
+def test_resource_nul_rejected(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    with pytest.raises(SkillsCatalogError, match="NUL"):
+        resolve_skill_resource(tmp_path, "omg-using", "bad\x00name")
+    entry = _plugin_entry("omg-using")
+    entry["resources"] = ["bad\u0000name"]
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(SkillsCatalogError, match="NUL"):
+        load_skills_catalog(tmp_path, require_projections=False)
+
+
+def test_in_tree_resource_symlink_rejected(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    real = tmp_path / "skills" / "omg-using" / "templates" / "note.md"
+    _write(real, "ok\n")
+    link = tmp_path / "skills" / "omg-using" / "alias.md"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlinks not available")
+    with pytest.raises(SkillsCatalogError, match="symlink"):
+        resolve_skill_resource(tmp_path, "omg-using", "alias.md")
+
+
 def test_continuation_refuse_adopt_artifact() -> None:
     catalog = load_skills_catalog(ROOT)
     assert resolve_continuation("omg-ralph", "omg-autopilot", catalog=catalog) == "refuse"

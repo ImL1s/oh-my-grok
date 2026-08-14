@@ -293,6 +293,8 @@ def _require_keys(obj: Mapping[str, Any], required: tuple[str, ...], *, label: s
 
 def _posix_relative(value: str, *, label: str) -> str:
     text = _require_str(value, label=label)
+    if "\x00" in text:
+        raise SkillsCatalogError(f"{label} must not contain NUL")
     if text.startswith("/") or text.startswith("\\") or ".." in Path(text).parts:
         raise SkillsCatalogError(f"{label} must be a relative posix path: {text!r}")
     if "\\" in text:
@@ -819,21 +821,31 @@ def resolve_skill_resource(
     loaded = record
     if loaded is None and catalog is not None:
         loaded = catalog.by_id().get(skill_id)
-    skill_dir = (base / "skills" / skill_id).resolve()
+    skills_root = base / "skills"
+    skill_dir_raw = skills_root / skill_id
+    if skill_dir_raw.is_symlink():
+        raise SkillsCatalogError("skill resources may not be symlinks")
+    skill_dir = skill_dir_raw.resolve()
     try:
-        skill_dir.relative_to(base / "skills")
+        skill_dir.relative_to(skills_root.resolve())
     except ValueError as exc:
         raise SkillsCatalogError("skill directory escapes skills/") from exc
-    candidate = (skill_dir / rel_posix).resolve()
+    cursor = skill_dir_raw
+    for part in Path(rel_posix).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise SkillsCatalogError("skill resources may not be symlinks")
+    try:
+        candidate = cursor.resolve()
+    except ValueError as exc:
+        raise SkillsCatalogError(f"resource {rel_posix!r} is not a valid path") from exc
     try:
         candidate.relative_to(skill_dir)
     except ValueError as exc:
         raise SkillsCatalogError(
             f"resource {rel_posix!r} escapes skill directory {skill_id}"
         ) from exc
-    if candidate.is_symlink() or skill_dir.is_symlink():
-        raise SkillsCatalogError("skill resources may not be symlinks")
-    if loaded is not None and loaded.resources and rel_posix not in loaded.resources:
+    if loaded is not None and rel_posix not in loaded.resources:
         raise SkillsCatalogError(
             f"{skill_id}: resource {rel_posix!r} is not declared in the catalog"
         )
