@@ -343,8 +343,96 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_parity_release_bundle(args: argparse.Namespace) -> int:
+    from omg_cli import __version__
+    from omg_cli.contracts.state_schemas import ContractValidationError
+    from omg_cli.release_bundle import (
+        ReleaseBundleError,
+        produce_release_bundle_from_files,
+    )
+
+    root = Path(getattr(args, "root", None) or project_root())
+    receipt = None
+    if getattr(args, "receipt", None):
+        loaded = read_json_path(args.receipt, label="build receipt")
+        if not isinstance(loaded, dict):
+            print("omg parity: build receipt must be a JSON object", file=sys.stderr)
+            return 2
+        receipt = loaded
+    try:
+        result = produce_release_bundle_from_files(
+            root,
+            run_id=str(args.run_id),
+            candidate_commit=str(args.candidate_commit),
+            candidate_tree=str(args.candidate_tree),
+            semver=str(getattr(args, "semver", None) or __version__),
+            archive=Path(args.archive),
+            checksums=Path(args.checksums),
+            build_receipt=receipt,
+            live_receipt=bool(getattr(args, "live_receipt", False)),
+            write=bool(getattr(args, "write_layout", False)),
+        )
+    except (OSError, ValueError, ContractValidationError, ReleaseBundleError) as exc:
+        print(f"omg parity: {exc}", file=sys.stderr)
+        return 1
+    public = {
+        "ok": True,
+        "manifest_relative_path": result["manifest_relative_path"],
+        "manifest_sha256": result["manifest_sha256"],
+        "semver": result["manifest"]["semver"],
+        "candidate_commit": result["manifest"]["candidate_commit"],
+        "release_asset_root": result["manifest"]["release_asset_root"],
+        "public_upload_order": result["manifest"]["public_upload_order"],
+    }
+    if "manifest_path" in result:
+        public["manifest_path"] = result["manifest_path"]
+    emit_data(args, "parity.release-bundle", public)
+    return 0
+
+
+def _cmd_parity_release_evidence(args: argparse.Namespace) -> int:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes
+    from omg_cli.release_evidence import (
+        ReleaseEvidenceError,
+        produce_release_evidence_from_facts,
+    )
+
+    payload = read_json_path(args.facts, label="release evidence facts")
+    if not isinstance(payload, dict):
+        print("omg parity: facts must be a JSON object", file=sys.stderr)
+        return 2
+    try:
+        evidence = produce_release_evidence_from_facts(payload)
+        body = canonical_json_bytes(evidence)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(body)
+        os.chmod(output, 0o600)
+    except (OSError, ValueError, ReleaseEvidenceError) as exc:
+        print(f"omg parity: {exc}", file=sys.stderr)
+        return 1
+    emit_data(
+        args,
+        "parity.release-evidence",
+        {
+            "ok": True,
+            "output": str(output),
+            "run_id": evidence["run_id"],
+            "final_state": evidence["final_state"],
+            "transaction_identity_hash": evidence["transaction_identity_hash"],
+        },
+    )
+    return 0
+
+
 def cmd_parity(args: argparse.Namespace) -> int:
     """Run-manifest, release-readback, inventory check, and gap listing."""
+    action = getattr(args, "parity_action", None)
+    if action == "release-bundle":
+        return _cmd_parity_release_bundle(args)
+    if action == "release-evidence":
+        return _cmd_parity_release_evidence(args)
+
     from omg_cli.contracts.parity_schema import (
         load_json_object,
         validate_parity_inventory,
@@ -356,7 +444,6 @@ def cmd_parity(args: argparse.Namespace) -> int:
     from omg_cli.parity_check import check_parity_inventory, filter_parity_gaps
     from omg_cli.setup_cmd import plugin_root
 
-    action = getattr(args, "parity_action", None)
     if action == "run":
         return int(run_manifest_main(list(getattr(args, "manifest_args", None) or [])))
 
@@ -483,7 +570,8 @@ def cmd_parity(args: argparse.Namespace) -> int:
 
     if action != "release-readback":
         print(
-            "omg parity: action required (run|release-readback|check|gaps|refresh)",
+            "omg parity: action required "
+            "(run|release-readback|release-bundle|release-evidence|check|gaps|refresh)",
             file=sys.stderr,
         )
         return 2
@@ -626,6 +714,35 @@ def register_inspect_parsers(
         p_parity_readback.add_argument("--manifest", required=True)
         p_parity_readback.add_argument("--claimed-registries", default=None)
         p_parity_readback.set_defaults(func=cmd_parity, parity_action="release-readback")
+        p_parity_bundle = parity_sub.add_parser(
+            "release-bundle",
+            parents=[common],
+            help="construct the canonical release-bundle-manifest (#169)",
+        )
+        p_parity_bundle.add_argument("--run-id", required=True)
+        p_parity_bundle.add_argument("--archive", required=True)
+        p_parity_bundle.add_argument("--checksums", required=True)
+        p_parity_bundle.add_argument("--candidate-commit", required=True)
+        p_parity_bundle.add_argument("--candidate-tree", required=True)
+        p_parity_bundle.add_argument("--semver", default=None)
+        p_parity_bundle.add_argument("--receipt", default=None)
+        p_parity_bundle.add_argument("--live-receipt", action="store_true")
+        p_parity_bundle.add_argument(
+            "--write",
+            dest="write_layout",
+            action="store_true",
+            help="write canonical .omg/artifacts/... layout",
+        )
+        p_parity_bundle.add_argument("--root", default=None)
+        p_parity_bundle.set_defaults(func=cmd_parity, parity_action="release-bundle")
+        p_parity_evidence = parity_sub.add_parser(
+            "release-evidence",
+            parents=[common],
+            help="construct release-evidence-input.json from observed facts (#169)",
+        )
+        p_parity_evidence.add_argument("--facts", required=True)
+        p_parity_evidence.add_argument("--output", required=True)
+        p_parity_evidence.set_defaults(func=cmd_parity, parity_action="release-evidence")
         p_parity_check = parity_sub.add_parser(
             "check",
             parents=[common],

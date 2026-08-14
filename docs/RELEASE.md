@@ -104,9 +104,17 @@ The integration/release owner creates one deterministic prebuilt bundle at:
     SHA256SUMS
 ```
 
-The manifest binds candidate commit/tree, toolchain, environment allowlist, source date epoch, archive hash/length, exact checksum bytes, and public upload order. Verify before any network writer:
+The manifest binds candidate commit/tree, toolchain, environment allowlist, source date epoch, archive hash/length, exact checksum bytes, and public upload order. Produce it with the canonical command (do not hand-author):
 
 ```bash
+omg parity release-bundle \
+  --run-id RUN_ID \
+  --archive dist/release-bundle/oh-my-grok-0.8.0.tar.gz \
+  --checksums dist/release-bundle/SHA256SUMS \
+  --candidate-commit COMMIT \
+  --candidate-tree TREE \
+  --live-receipt \
+  --write
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
@@ -123,17 +131,20 @@ External writers are serialized by the run-manifest release state machine. Befor
 The approved sequence is:
 
 1. push the frozen candidate to the approved `main` ref and read back its OID;
-2. create/read back the exact annotated `v<version>` tag;
-3. create the GitHub release from that tag;
-4. upload archive, read back hash/length;
+2. create/read back the exact annotated `v<version>` tag (`git cat-file -t` must be `tag`);
+3. create the GitHub release from that tag using the matching versioned CHANGELOG section as notes;
+4. upload archive, read back hash/length (identity-safe; never `--clobber`);
 5. upload `SHA256SUMS`, read back hash/length;
 6. set/read back GitHub latest;
-7. verify public latest install in a clean location;
-8. persist canonical `release-completion-evidence.json`, including the
-   transaction-bound readback chain, then use the dedicated release finalizer
-   to move the run manifest from `release_active` to `closed`.
+7. verify public latest install in a clean location (no credentials or private paths in evidence);
+8. persist canonical `release-completion-evidence.json` via `omg parity release-evidence` (the only constructor), then use the dedicated release finalizer to move the run manifest from `release_active` to `closed`.
 
 ```bash
+python3 scripts/release_github_facts.py notes --version 0.8.0 --output /tmp/notes.md
+python3 scripts/release_github_facts.py tag-identity --tag v0.8.0 --expected-commit COMMIT
+omg parity release-evidence \
+  --facts /tmp/omg-release-facts.json \
+  --output .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-evidence-input.json
 omg parity run finalize-release \
   --path .omg/state/runs/RUN_ID/run-manifest.json \
   --expected-revision REVISION \
@@ -146,9 +157,21 @@ The generic manifest transition route cannot close a release. The finalizer
 binds the evidence to the exact `release_active` manifest hash, frozen bundle
 hash, release nonce, candidate commit, and required per-channel/asset
 readbacks; closed manifests fail verification if that immutable 0400 evidence
-is missing or altered. A release workflow may verify and prepare evidence, but
-it must not rebuild or silently publish different bytes. See
-`.github/workflows/release.yml`.
+is missing or altered. The tag-triggered workflow generates and validates the
+bundle manifest, annotated-tag identity, changelog notes, asset/latest
+readback, and a public-latest install probe. It invokes `finalize-release`
+only when a `release_active` run and complete facts file are supplied
+(`.omg/` is gitignored, so a GitHub Actions checkout does not invent a dual-parity
+run). The facts file's `run_id` must be that dual-parity run, not the GitHub
+Actions run id; `omg parity run finalize-release` takes the subcommand directly
+(no `--` before `finalize-release`). A release workflow may verify and prepare
+evidence, but it must not rebuild or silently publish different bytes.
+Ambiguous writes remain unknown/non-success. GitHub asset identity is
+the hashed remote download (`remote_assets`); local bundle bytes are never
+substituted as a successful readback. Branch/tag protection is an
+external settings gate: the workflow records `gh api` readback into the
+`release-publication-facts` artifact and never claims `configured` when the
+API is unavailable. See `.github/workflows/release.yml`.
 
 ## User install text
 

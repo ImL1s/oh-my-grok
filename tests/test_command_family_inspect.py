@@ -73,11 +73,21 @@ def test_parser_wires_inspect_handlers() -> None:
         # Must be the inspect-module implementation
         assert ns.func.__module__ == "omg_cli.commands.inspect", name
     assert "refresh" in _subparser_choices(parser, "parity")
+    assert "release-bundle" in _subparser_choices(parser, "parity")
+    assert "release-evidence" in _subparser_choices(parser, "parity")
     ns = parser.parse_args(
         ["parity", "refresh", "--source", "OMC", "--pin", "a" * 40]
     )
     assert ns.func is inspect_cmds.cmd_parity
     assert ns.parity_action == "refresh"
+    ns_run = parser.parse_args(
+        ["parity", "run", "finalize-release", "--path", "x.json"]
+    )
+    assert ns_run.manifest_args[0] == "finalize-release"
+    ns_dash = parser.parse_args(
+        ["parity", "run", "--", "finalize-release", "--path", "x.json"]
+    )
+    assert ns_dash.manifest_args[0] == "--"
 
 
 def test_inspect_help_lists_primary_commands() -> None:
