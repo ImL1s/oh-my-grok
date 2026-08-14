@@ -87,6 +87,27 @@ def test_bus_kill_switches() -> None:
     }
 
 
+def test_inspect_reports_kill_switched_hooks_as_disabled() -> None:
+    payload = inspect_hooks_registry(ROOT, env={})
+    assert payload["ok"] is True
+    assert payload["enabled"] is True
+    assert payload["loadable"] is True
+    disabled = inspect_hooks_registry(ROOT, env={"OMG_DISABLE_HOOKS": "1"})
+    assert disabled["enabled"] is False
+    assert disabled["loadable"] is True
+    assert disabled["configured"] is True
+
+
+def test_grok_passive_cannot_claim_blocking(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["event"] == "session.start":
+            hook["host_capability"] = "native_blocking"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="native_passive"):
+        load_hooks_registry(tmp_path)
+
+
 def test_dispatch_disabled_skips_all() -> None:
     result = dispatch("tool.pre", {}, root=ROOT, env={"OMG_DISABLE_HOOKS": "1"})
     assert result["ok"] is True

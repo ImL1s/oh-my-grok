@@ -216,12 +216,9 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
             )
     grok_expected = GROK_EVENT_MAP[event]
     if obj["runtime_projection"] == "grok" and cap != grok_expected:
-        # Allow native_passive vs native_blocking only when map agrees on native_*.
-        if not (cap.startswith("native_") and grok_expected.startswith("native_")):
-            if cap != grok_expected:
-                raise HooksRegistryError(
-                    f"{hook_id}: grok {event} must map as {grok_expected}, got {cap}"
-                )
+        raise HooksRegistryError(
+            f"{hook_id}: grok {event} must map as {grok_expected}, got {cap}"
+        )
     policy = _require_str(obj["fail_policy"], label=f"{label}.fail_policy")
     if policy not in FAIL_POLICIES:
         raise HooksRegistryError(f"{hook_id}: fail_policy must be fail-open or fail-closed")
@@ -293,7 +290,9 @@ def load_hooks_registry(root: Path | None = None) -> HooksRegistry:
     return HooksRegistry(schema=schema, hooks=tuple(records))
 
 
-def inspect_hooks_registry(root: Path | None = None) -> dict[str, Any]:
+def inspect_hooks_registry(
+    root: Path | None = None, *, env: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     """Inspect payload (never verified / never live AG)."""
     base = Path(root) if root is not None else plugin_root()
     try:
@@ -321,7 +320,7 @@ def inspect_hooks_registry(root: Path | None = None) -> dict[str, Any]:
         "ok": True,
         "configured": True,
         "installed": True,
-        "enabled": True,
+        "enabled": not bus_disabled(env),
         "loadable": True,
         "observed": False,
         "healthy": False,
