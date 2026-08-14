@@ -734,6 +734,8 @@
         "omg_cli/verdict.py",
         "omg_cli/review.py",
         "omg_cli/package_release.py",
+        "omg_cli/contracts/visual_contract.py",
+        "omg_cli/commands/visual.py",
         "skills/omg-dual-review/",
         "skills/omg-ultraqa/"
       ],
@@ -744,11 +746,14 @@
       "evidence": {
         "tests": [
           "tests/test_review.py",
-          "tests/test_package_release.py"
+          "tests/test_package_release.py",
+          "tests/test_visual_contract.py",
+          "tests/test_visual_cli.py"
         ],
         "docs": [
           "docs/skills.md",
-          "docs/RELEASE.md"
+          "docs/RELEASE.md",
+          "docs/visual-contract-v1.md"
         ],
         "live": []
       },
@@ -756,7 +761,7 @@
         "#75",
         "#79"
       ],
-      "gap": "Dual-review/verdict/release exist; OMC visual-verdict / project-session-manager breadth is partial."
+      "gap": "Visual Contract V1 and `omg visual compare` landed; capture, overlay/diff, independent reviewers, screenshot Ralph, and OMC visual-verdict skill breadth remain partial (#75/#79)."
     },
     {
       "id": "omx.launch.worktree_tmux_hud",
@@ -1117,6 +1122,8 @@
       "omg_paths": [
         "omg_cli/dual_review.py",
         "omg_cli/verdict.py",
+        "omg_cli/contracts/visual_contract.py",
+        "omg_cli/commands/visual.py",
         "skills/omg-dual-review/",
         "skills/omg-ultraqa/"
       ],
@@ -1127,10 +1134,13 @@
       "evidence": {
         "tests": [
           "tests/test_dual_review.py",
-          "tests/test_review.py"
+          "tests/test_review.py",
+          "tests/test_visual_contract.py",
+          "tests/test_visual_cli.py"
         ],
         "docs": [
-          "docs/skills.md"
+          "docs/skills.md",
+          "docs/visual-contract-v1.md"
         ],
         "live": []
       },
@@ -1138,7 +1148,7 @@
         "#75",
         "#79"
       ],
-      "gap": "Dual-review/verdict/UltraQA exist; OMX visual-mode catalog breadth remains partial (#75/#79)."
+      "gap": "Visual Contract V1 and `omg visual compare` landed; OMX visual-ralph/visual-verdict catalog, capture, and screenshot loops remain partial (#75/#79)."
     },
     {
       "id": "omo.agents.discipline_routing",

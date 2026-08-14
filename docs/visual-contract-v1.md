@@ -1,8 +1,9 @@
 # Visual Contract V1
 
-Pure, copy-safe comparison contract for Issue #75 PR-A.
+Pure, copy-safe comparison contract for Issue #75.
 
 Authoritative implementation: `omg_cli/contracts/visual_contract.py`.
+Public CLI: `omg visual compare --input <json>` (wraps `compare()` only).
 
 This module does **not** decode images, talk to agents or providers, write
 `.omg/state`, or set OMG `verified`. A visual score is evidence only.
@@ -146,7 +147,22 @@ or network, and adds no third-party dependency.
   `canonical_json_bytes` / `sha256_hex`
 - `VisualContractError`
 
+## CLI (`omg visual compare`)
+
+`omg visual compare --input <json>` reads a comparison document and wraps
+`compare()`. It always emits a schema_version 1 JSON envelope:
+
+| Exit | When |
+| --- | --- |
+| `0` | `compare()` returned `scored` or `blocked` (`ok: true`; callers still compare `aggregate` to `threshold`) |
+| `2` | missing `--input`, unreadable JSON (`E_VISUAL_INPUT`), or `VisualContractError` (`E_VISUAL_CONTRACT`) |
+
+The nested `result` object is the contract output. The CLI does not decode
+images, talk to agents or providers, or write `passes` / `verified`.
+`aggregate < threshold` is still `status: scored` and exit `0`.
+
 ## Out of scope (later #75 PRs)
 
-CLI (`omg visual *`), skills, capture adapters, overlay/diff artifacts,
-independent reviewer agents, and any write to `passes` / `verified`.
+Capture adapters, overlay/diff artifacts, independent reviewer agents,
+screenshot Ralph loops, later visual subcommands beyond `compare`,
+skills, and any write to `passes` / `verified`.
