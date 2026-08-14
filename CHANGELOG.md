@@ -75,6 +75,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#134 Codex review (follow-up):** `wrap_display` continues oversized tokens
+  such as `policy_digest` onto the next line instead of truncating them;
+  `omg team status --presentation` uses the stacked layout when the member
+  table cannot fit the terminal. Refs #134 (does not close).
 - **#134 Codex review:** `omg agents explain --json` leaves `effective_route`
   null until a receipt or negotiated model exists; `--width` wraps free-form
   reason/action lines; Team status omits `route=unknown` on locked tasks;

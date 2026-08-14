@@ -120,13 +120,48 @@ def truncate_display(text: str, width: int) -> str:
     return "".join(out) + ELLIPSIS
 
 
+def _fit_chars(text: str, width: int) -> tuple[str, str]:
+    """Split ``text`` so ``head`` fits in ``width`` display columns."""
+    if width <= 0:
+        return "", text
+    if display_width(text) <= width:
+        return text, ""
+    out: list[str] = []
+    used = 0
+    for index, char in enumerate(text):
+        size = 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+        if used + size > width:
+            if not out:
+                return char, text[index + 1 :]
+            return "".join(out), text[index:]
+        out.append(char)
+        used += size
+    return "".join(out), ""
+
+
+def _wrap_unbroken(text: str, width: int) -> list[str]:
+    if display_width(text) <= width:
+        return [text]
+    lines: list[str] = []
+    rest = text
+    while rest:
+        head, rest = _fit_chars(rest, width)
+        if not head:
+            head, rest = rest[:1], rest[1:]
+        lines.append(head)
+    return lines
+
+
 def wrap_display(
     text: str,
     width: int,
     *,
     subsequent_indent: str | None = None,
 ) -> list[str]:
-    """Wrap ``text`` to ``width`` display columns (CJK-aware)."""
+    """Wrap ``text`` to ``width`` display columns (CJK-aware).
+
+    Oversized tokens continue on the next line; characters are never dropped.
+    """
     if width < 1:
         return [""]
     lead_n = len(text) - len(text.lstrip(" "))
@@ -135,31 +170,49 @@ def wrap_display(
     cont = subsequent_indent if subsequent_indent is not None else lead
     tokens = body.split()
     if not tokens:
-        return [truncate_display(text, width)] if display_width(text) > width else [text]
+        return _wrap_unbroken(text, width)
     lines: list[str] = []
     prefix = lead
-    buf = ""
+    parts: list[str] = []
 
-    def emit(current_prefix: str, current_buf: str) -> None:
-        line = current_prefix + current_buf
-        if display_width(line) > width:
-            line = truncate_display(line, width)
-        lines.append(line)
+    def current() -> str:
+        return prefix + " ".join(parts)
+
+    def flush() -> None:
+        nonlocal prefix, parts
+        lines.append(current())
+        prefix = cont
+        parts = []
 
     for token in tokens:
-        nxt = token if not buf else f"{buf} {token}"
-        if buf and display_width(prefix + nxt) > width:
-            emit(prefix, buf)
+        trial = prefix + " ".join(parts + [token])
+        if display_width(trial) <= width:
+            parts.append(token)
+            continue
+        if parts:
+            flush()
+            if display_width(prefix + token) <= width:
+                parts = [token]
+                continue
+        rest = token
+        while rest:
+            budget = width - display_width(prefix)
+            if budget < 1:
+                lines.append(prefix)
+                prefix = cont
+                budget = width - display_width(prefix)
+                if budget < 1:
+                    prefix = ""
+                    budget = width
+            head, rest = _fit_chars(rest, budget)
+            if not head and rest:
+                head, rest = rest[0], rest[1:]
+            lines.append(prefix + head)
             prefix = cont
-            buf = token
-            if display_width(prefix + buf) > width:
-                emit(prefix, buf)
-                buf = ""
-        else:
-            buf = nxt
-    if buf:
-        emit(prefix, buf)
-    return lines or [truncate_display(text, width)]
+        parts = []
+    if parts:
+        flush()
+    return lines or [lead]
 
 
 def _wrap_lines(lines: Sequence[str], columns: int) -> list[str]:
@@ -429,26 +482,43 @@ def format_presentation_human(state: Mapping[str, Any], *, columns: int = 120) -
         for member in (state.get("members") or [])
         if isinstance(member, Mapping)
     ]
-    out = _wrap_lines(header, columns)
-    if width_band(columns) == "narrow":
-        out.extend(_wrap_lines(_presentation_stacked_lines(members), columns))
-        return "\n".join(out).rstrip()
-    out.append(
-        _render_list_table(
-            members,
-            headers=(
-                "member",
-                "role",
-                "presentation_route",
-                "executor",
-                "attempt",
-                "status",
-            ),
-            cells=_presentation_cells,
-            columns=columns,
-        )
+    headers = (
+        "member",
+        "role",
+        "presentation_route",
+        "executor",
+        "attempt",
+        "status",
     )
-    return "\n".join(out)
+    table_rows = [_presentation_cells(member) for member in members]
+    out = _wrap_lines(header, columns)
+    if (
+        width_band(columns) != "narrow"
+        and _natural_table_width(headers, table_rows) <= columns
+    ):
+        out.append(
+            _render_list_table(
+                members,
+                headers=headers,
+                cells=_presentation_cells,
+                columns=columns,
+            )
+        )
+        return "\n".join(out)
+    out.extend(_wrap_lines(_presentation_stacked_lines(members), columns))
+    return "\n".join(out).rstrip()
+
+
+def _natural_table_width(
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[str, ...]],
+) -> int:
+    widths = [display_width(h) for h in headers]
+    for line in rows:
+        for index, cell in enumerate(line):
+            widths[index] = max(widths[index], display_width(cell))
+    gaps = 2 * max(0, len(widths) - 1)
+    return sum(widths) + gaps
 
 
 def _presentation_cells(member: Mapping[str, Any]) -> tuple[str, ...]:
