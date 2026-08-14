@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Static omg-* agent catalog exists; OmO discipline/category routing engine is not mirrored (#71). |
+| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Machine catalog of 13 omg-* agents landed (#71). OmO discipline/category routing engine is not mirrored (#131). |
 | `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#72). |
 | `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | No OmO-style background agents. Durable jobs plane landed under closed #68 (jobs.durable_background); remaining job-backed/live Team evidence is owned by #69. |
 | `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) landed (#69 PR7–PR13; execution_supported=false; partial catalog, not full OMX). Hyperplan/Security Research auto-worker execution, live Antigravity, and full OMX remain open under Team v3 (#69). |

@@ -1,0 +1,243 @@
+{
+  "schema": "omg-agents-catalog/v1",
+  "kind": "read_only_machine_catalog",
+  "note": "Single plugin-agent registry for oh-my-grok. Dual-host routing (#131) must consume this catalog — do not add a second registry. Not a routing runtime. Antigravity agent.md files are static projections only (not an installed AG plugin, not live AG evidence, not agy install).",
+  "allowed_capability_modes": ["read-only", "read-write"],
+  "forbidden_capability_modes": ["execute", "all"],
+  "agents": [
+    {
+      "id": "omg-analyst",
+      "file": "agents/omg-analyst.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "planner",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-analyst.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-analyst/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-architect",
+      "file": "agents/omg-architect.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "planner",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-architect.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-architect/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-code-reviewer",
+      "file": "agents/omg-code-reviewer.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "reviewer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-code-reviewer.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-code-reviewer/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-critic",
+      "file": "agents/omg-critic.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "reviewer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-critic.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-critic/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-debugger",
+      "file": "agents/omg-debugger.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-debugger.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-debugger/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-designer",
+      "file": "agents/omg-designer.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-designer.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-designer/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-executor",
+      "file": "agents/omg-executor.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-executor.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-executor/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-orchestrator",
+      "file": "agents/omg-orchestrator.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "orchestrator",
+      "spawn_policy": "parent",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-orchestrator.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-orchestrator/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-qa-tester",
+      "file": "agents/omg-qa-tester.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-qa-tester.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-qa-tester/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-security-reviewer",
+      "file": "agents/omg-security-reviewer.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "reviewer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-security-reviewer.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-security-reviewer/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-test-engineer",
+      "file": "agents/omg-test-engineer.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-test-engineer.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-test-engineer/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-verifier",
+      "file": "agents/omg-verifier.md",
+      "capability_mode": "read-only",
+      "permission_mode": "plan",
+      "tier": "verifier",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-verifier.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-verifier/agent.md"
+        }
+      }
+    },
+    {
+      "id": "omg-writer",
+      "file": "agents/omg-writer.md",
+      "capability_mode": "read-write",
+      "permission_mode": "default",
+      "tier": "implementer",
+      "spawn_policy": "leaf",
+      "projections": {
+        "grok": {
+          "kind": "plugin_agent",
+          "path": "agents/omg-writer.md"
+        },
+        "antigravity": {
+          "kind": "agent_md_projection",
+          "path": "docs/parity/projections/antigravity/agents/omg-writer/agent.md"
+        }
+      }
+    }
+  ]
+}

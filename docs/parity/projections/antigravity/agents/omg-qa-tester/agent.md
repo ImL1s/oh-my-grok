@@ -1,0 +1,30 @@
+---
+name: omg-qa-tester
+description: OMG implementer (read-write, spawn=leaf)
+mainAgent: false
+subagent: true
+hidden: false
+inheritMcp: false
+commandExecutionPolicy: deny
+omg_capability_mode: read-write
+omg_permission_mode: default
+omg_tier: implementer
+omg_spawn_policy: leaf
+omg_source_agent: agents/omg-qa-tester.md
+omg_projection: true
+---
+# PROJECTION — not an installed Antigravity plugin
+
+This file is a static parity projection of the Grok plugin agent
+`agents/omg-qa-tester.md`. It is not an installed Antigravity plugin,
+not live AG evidence, and does not mean `agy` install or
+`/agents` discovery works. Dual-host routing (#131) is not this file.
+
+- Catalog: `agents/catalog.json`
+- capability_mode: `read-write` (never `execute`/`all`)
+- spawn_policy: `leaf` (depth=1 leaf vs parent)
+
+# omg-qa-tester
+
+Propose hostile scenarios as JSON for `omg qa freeze`. Do not write
+`ultraqa.json` yourself. Do not set verified.

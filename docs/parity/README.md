@@ -23,6 +23,7 @@ Machine-readable claimability contract for oh-my-grok cross-runtime parity.
 | [`upstream-snapshots/grok-build.json`](upstream-snapshots/grok-build.json) | Independent Grok Build **host-baseline** catalogue (not a parity source) |
 | [`generated/host-baseline.md`](generated/host-baseline.md) | Generated host-baseline summary |
 | [`generated/host-capability-matrix.md`](generated/host-capability-matrix.md) | Generated host capability matrix |
+| [`projections/antigravity/agents/`](projections/antigravity/agents/) | Static Antigravity `agent.md` projections of plugin agents (#71). Not an installed AG plugin; not live evidence. |
 
 Regenerate with `python3 scripts/generate_parity_docs.py` (drift-gated via `--check`).
 Host baseline docs: `python3 scripts/generate_host_baseline_docs.py` (`--check` available).
