@@ -22,6 +22,7 @@ from omg_cli.team.compositions.execution import (
     fixture_pane_id,
     parse_composition_execution_v1,
     require_fixture_executor,
+    _assert_existing_matches_admitted,
     _lane_results_from_bundle,
 )
 from omg_cli.team.compositions.hyperplan import (
@@ -620,6 +621,46 @@ def test_execute_idempotent_refuses_conflicting_lane_digests(
             executor="fixture",
             bundle=other,
         )
+
+
+def test_existing_execution_must_match_admitted_lanes() -> None:
+    mapping = {
+        "synthesize": "t-synth",
+        "critique": "t-crit",
+        "decide": "t-decide",
+    }
+    topo = list(mapping)
+    truncated = {
+        "worker_evidence": [
+            {"lane_id": "synthesize", "task_id": "t-synth"},
+        ],
+        "lane_result_digests": [{"lane_id": "synthesize", "digest": DIGEST_A}],
+    }
+    with pytest.raises(CompositionExecutionError, match="admitted topo_order"):
+        _assert_existing_matches_admitted(
+            truncated, topo_order=topo, mapping=mapping
+        )
+    wrong_task = {
+        "worker_evidence": [
+            {"lane_id": lane, "task_id": "t-wrong"} for lane in topo
+        ],
+        "lane_result_digests": [
+            {"lane_id": lane, "digest": DIGEST_A} for lane in topo
+        ],
+    }
+    with pytest.raises(CompositionExecutionError, match="task_id mismatch"):
+        _assert_existing_matches_admitted(
+            wrong_task, topo_order=topo, mapping=mapping
+        )
+    ok = {
+        "worker_evidence": [
+            {"lane_id": lane, "task_id": mapping[lane]} for lane in topo
+        ],
+        "lane_result_digests": [
+            {"lane_id": lane, "digest": DIGEST_A} for lane in topo
+        ],
+    }
+    _assert_existing_matches_admitted(ok, topo_order=topo, mapping=mapping)
 
 
 @_POSIX

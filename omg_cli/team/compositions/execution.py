@@ -634,6 +634,53 @@ def _lane_results_from_bundle(
     return by_lane
 
 
+def _assert_existing_matches_admitted(
+    existing: Mapping[str, Any],
+    *,
+    topo_order: Sequence[str],
+    mapping: Mapping[str, str],
+) -> None:
+    """Refuse truncated/fabricated execution artifacts on the idempotent path.
+
+    ``parse_composition_execution_v1`` only requires a nonempty self-consistent
+    evidence set. Idempotent execute must still bind that evidence to the
+    admitted batch (``topo_order`` + lane→task mapping) before returning
+    ``execution_supported=true``.
+    """
+    expected = [str(x) for x in topo_order]
+    evidence = list(existing.get("worker_evidence") or [])
+    evidence_lanes = [str(row.get("lane_id")) for row in evidence]
+    if sorted(evidence_lanes) != sorted(expected):
+        raise CompositionExecutionError(
+            "existing composition execution lanes do not match admitted topo_order",
+            code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
+            details={"stored": sorted(evidence_lanes), "admitted": sorted(expected)},
+        )
+    for row in evidence:
+        lane_id = str(row.get("lane_id"))
+        expected_task = mapping.get(lane_id)
+        if expected_task is None or str(row.get("task_id")) != str(expected_task):
+            raise CompositionExecutionError(
+                f"existing composition execution task_id mismatch for {lane_id!r}",
+                code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
+                details={
+                    "lane_id": lane_id,
+                    "stored": row.get("task_id"),
+                    "admitted": expected_task,
+                },
+            )
+    digest_lanes = [
+        str(row.get("lane_id")) for row in existing.get("lane_result_digests") or []
+    ]
+    if sorted(digest_lanes) != sorted(expected):
+        raise CompositionExecutionError(
+            "existing composition execution lane_result_digests do not match "
+            "admitted topo_order",
+            code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
+            details={"stored": sorted(digest_lanes), "admitted": sorted(expected)},
+        )
+
+
 def _lane_result_digests_from_results(
     by_lane: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, str]]:
@@ -920,6 +967,9 @@ def execute_composition_tasks_v1(
                     f"existing composition execution {key} conflict",
                     code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
                 )
+        _assert_existing_matches_admitted(
+            existing, topo_order=topo_order, mapping=mapping
+        )
         incoming_digests = _lane_result_digests_from_results(by_lane)
         stored_digests = sorted(
             list(existing["lane_result_digests"]),

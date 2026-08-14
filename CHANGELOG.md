@@ -58,6 +58,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#69 Codex review:** idempotent execute also binds stored worker
+  evidence to the admitted `topo_order` / lane→task mapping, so a
+  truncated or wrong-`task_id` artifact cannot false-green as
+  `execution_supported=true`. Refs #69 (does not close).
 - **#69 PR14 execute `--input` fail-closed:** fixture execute now
   normalizes the composition ResultBundleV1 (foreign writer, claimed
   digest, artifact_kind, exact keys) before lane submit, and idempotent
