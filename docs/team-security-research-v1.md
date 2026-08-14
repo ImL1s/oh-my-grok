@@ -49,10 +49,13 @@ provider launch. `execution_supported=false` retained.
 `execute` is **leader-only** and **fixture-only** (shared Hyperplan driver).
 It runs claim-lane / submit-lane-result with fixture workers, then
 collect-tasks, and writes `security-research-v1-execution.json`
-(`omg.team.composition_execution_v1`) **last**. Safe-PoC policy is unchanged:
-no PoC, network, or weaponized research. grok / agy / antigravity / cursor
-and job topology fail closed. Compile/produce/collect stay
-`execution_supported=false`.
+(`omg.team.composition_execution_v1`) **last**. `--input` is a
+`SecurityResearchResultBundleV1` and is normalized with the same exact-key /
+foreign-writer / digest / `artifact_kind` contract as `produce-report`
+**before** fixture workers submit `LaneTaskResultV1` payloads. Safe-PoC
+policy is unchanged: no PoC, network, or weaponized research. grok / agy /
+antigravity / cursor and job topology fail closed. Compile/produce/collect
+stay `execution_supported=false`.
 
 `produce-report` derives a report from a bounded
 `SecurityResearchResultBundleV1` (exactly one receipt per manifest lane;
@@ -128,6 +131,11 @@ closed. Survivors that fail validation land in `rejected_candidates`.
 - Never sets `verified` / `passes`
 - Never launches panes, Jobs, providers, Antigravity, MCP, or PoC execution
 - Worker claim/submit refuse leader / partial / non-Team spawn contexts
+- Execute `--input` uses the ResultBundleV1 normalizer (foreign writer /
+  claimed digest / artifact_kind / unexpected fields refused)
+- Idempotent re-execute with a different per-lane result digest → refuse
+- Interrupted fixture execute (some lanes completed, no execution artifact)
+  stays refuse-until-repair; this slice does not auto-resume mixed state
 
 ## Honesty
 

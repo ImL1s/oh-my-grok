@@ -22,10 +22,12 @@ from omg_cli.team.compositions.execution import (
     fixture_pane_id,
     parse_composition_execution_v1,
     require_fixture_executor,
+    _lane_results_from_bundle,
 )
 from omg_cli.team.compositions.hyperplan import (
     HYPERPLAN_RESULT_BUNDLE_KIND,
     HyperplanError,
+    _HyperplanTaskAdapter,
     admit_hyperplan_tasks_v1,
     compile_hyperplan_v1,
     execute_hyperplan_tasks_v1,
@@ -269,6 +271,21 @@ def _sr_bundle(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hp_lane_ids(manifest: dict[str, Any]) -> list[str]:
+    return [str(row["lane_id"]) for row in manifest["lanes"]]
+
+
+def _parse_hp_execute_bundle(
+    bundle: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    return _lane_results_from_bundle(
+        bundle,
+        adapter=_HyperplanTaskAdapter(),
+        manifest=manifest,
+        expected_lanes=_hp_lane_ids(manifest),
+    )
+
+
 def _patch_no_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("execution surface touched")
@@ -342,6 +359,47 @@ def test_require_fixture_executor_refuses_live_providers() -> None:
         require_fixture_executor("")
     with pytest.raises(CompositionExecutionError, match="unsupported"):
         require_fixture_executor("mystery")
+
+
+def test_execute_input_accepts_canonical_result_bundle() -> None:
+    manifest = compile_hyperplan_v1(_hp_spec())
+    parsed = _parse_hp_execute_bundle(_hp_bundle(manifest), manifest)
+    assert set(parsed) == set(_hp_lane_ids(manifest))
+    for row in parsed.values():
+        assert row["status"] == "complete"
+        assert "payload" in row
+
+
+def test_execute_input_refuses_foreign_writer() -> None:
+    manifest = compile_hyperplan_v1(_hp_spec())
+    bundle = _hp_bundle(manifest)
+    bundle["writer"] = "attacker"
+    with pytest.raises(CompositionExecutionError, match="foreign writer"):
+        _parse_hp_execute_bundle(bundle, manifest)
+
+
+def test_execute_input_refuses_claimed_digest_mismatch() -> None:
+    manifest = compile_hyperplan_v1(_hp_spec())
+    bundle = _hp_bundle(manifest)
+    bundle["digest"] = "a" * 64
+    with pytest.raises(CompositionExecutionError, match="digest mismatch"):
+        _parse_hp_execute_bundle(bundle, manifest)
+
+
+def test_execute_input_refuses_wrong_artifact_kind() -> None:
+    manifest = compile_hyperplan_v1(_hp_spec())
+    bundle = _hp_bundle(manifest)
+    bundle["receipts"][0]["artifact_kind"] = "omg.team.hyperplan.synthesis"
+    with pytest.raises(CompositionExecutionError, match="artifact_kind"):
+        _parse_hp_execute_bundle(bundle, manifest)
+
+
+def test_execute_input_refuses_unexpected_fields() -> None:
+    manifest = compile_hyperplan_v1(_hp_spec())
+    bundle = _hp_bundle(manifest)
+    bundle["unexpected"] = True
+    with pytest.raises(CompositionExecutionError, match="key mismatch"):
+        _parse_hp_execute_bundle(bundle, manifest)
 
 
 def test_parse_rejects_forged_execution_supported_true() -> None:
@@ -529,6 +587,39 @@ def test_hyperplan_fixture_execute_collects_and_stamps_evidence(
     )
     assert again["idempotent"] is True
     assert again["execution"]["digest"] == execution["digest"]
+
+
+@_POSIX
+def test_execute_idempotent_refuses_conflicting_lane_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed(tmp_path, monkeypatch)
+    _patch_no_exec(monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    bundle = _hp_bundle(manifest)
+    first = execute_hyperplan_tasks_v1(
+        tmp_path,
+        run_id,
+        TEAM,
+        executor="fixture",
+        bundle=bundle,
+    )
+    assert first["idempotent"] is False
+    other = _hp_bundle(manifest)
+    for receipt in other["receipts"]:
+        if receipt["lane_id"] == "synthesize":
+            receipt["payload"]["summary"] = "A different synthetic summary."
+            break
+    with pytest.raises(HyperplanError, match="lane result digest conflict"):
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="fixture",
+            bundle=other,
+        )
 
 
 @_POSIX
@@ -752,8 +843,6 @@ def test_cli_execute_refuses_cursor(
 
 
 def test_execute_composition_tasks_refuses_agy_without_run() -> None:
-    from omg_cli.team.compositions.hyperplan import _HyperplanTaskAdapter
-
     with pytest.raises(CompositionExecutionError, match="refused"):
         execute_composition_tasks_v1(
             ".",

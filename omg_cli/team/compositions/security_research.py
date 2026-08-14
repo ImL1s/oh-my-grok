@@ -2222,6 +2222,11 @@ class _SecurityResearchTaskAdapter:
             label="LaneTaskResultV1.payload",
         )
 
+    def normalize_result_bundle(
+        self, raw: Any, *, manifest: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return _normalize_result_bundle(raw, manifest=manifest)
+
     def raise_error(
         self,
         message: str,

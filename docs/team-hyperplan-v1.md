@@ -54,13 +54,16 @@ transition the Team task to `completed`. `execution_supported=false` retained.
 each pending lane through the real claim-lane / submit-lane-result protocol
 using in-process fixture workers (`pane_id=fx-{worker_id}`), then
 collect-tasks, and writes `.omg/state/runs/<run>/team/compositions/hyperplan-v1-execution.json`
-(`omg.team.composition_execution_v1`) **last**. That evidence document may
-stamp `execution_supported=true` only with worker evidence (run ids, fixture
-pane ids, lane result/claim digests). Forged `{execution_supported:true}`
-without evidence is refused. The materialized manifest and collect return
-keep `execution_supported=false`. grok / agy / antigravity / cursor
-executors and `worker_topology=job` fail closed. No tmux, Jobs, MCP, PoC,
-or `live_*`. Never writes `passes` / `verified`.
+(`omg.team.composition_execution_v1`) **last**. `--input` is a
+`HyperplanResultBundleV1` and is normalized with the same exact-key /
+foreign-writer / digest / `artifact_kind` contract as `produce-decision`
+**before** fixture workers submit `LaneTaskResultV1` payloads. That evidence
+document may stamp `execution_supported=true` only with worker evidence
+(run ids, fixture pane ids, lane result/claim digests). Forged
+`{execution_supported:true}` without evidence is refused. The materialized
+manifest and collect return keep `execution_supported=false`. grok / agy /
+antigravity / cursor executors and `worker_topology=job` fail closed. No
+tmux, Jobs, MCP, PoC, or `live_*`. Never writes `passes` / `verified`.
 
 `collect-tasks` remains leader-only: requires a committed batch with exact lane
 coverage, every mapped task `completed` + claim-free + still bound, parses
@@ -146,6 +149,11 @@ conflicts) fail closed rather than being silently normalized.
 - Worker claim/submit refuse leader / partial / non-Team spawn contexts
 - Concurrent same-lane claims yield exactly one winner
 - Same-result submit is idempotent; conflicting submit is refused
+- Execute `--input` uses the ResultBundleV1 normalizer (foreign writer /
+  claimed digest / artifact_kind / unexpected fields refused)
+- Idempotent re-execute with a different per-lane result digest → refuse
+- Interrupted fixture execute (some lanes completed, no execution artifact)
+  stays refuse-until-repair; this slice does not auto-resume mixed state
 
 ## Honesty
 

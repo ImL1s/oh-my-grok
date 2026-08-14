@@ -7,8 +7,11 @@ protocol with **fixture** workers, collects lane results, and persists
 ``execution_supported=true`` is allowed **only** on that evidence document,
 and only when worker evidence is complete (run ids, fixture pane ids, lane
 result digests). Forged ``{execution_supported: true}`` without evidence is
-refused. Compile / produce / admit / collect / claim contracts keep
-``execution_supported=false``.
+refused. ``--input`` is a composition ``ResultBundleV1`` and is normalized
+with the same exact-key / foreign-writer / digest / artifact_kind contract
+as produce-decision / produce-report **before** fixture workers submit
+``LaneTaskResultV1`` payloads. Compile / produce / admit / collect / claim
+contracts keep ``execution_supported=false``.
 
 This slice is fixture-only: grok / agy / antigravity / cursor (and other
 live providers) auto-execution is fail-closed. No PoC, Jobs, tmux, MCP,
@@ -556,37 +559,36 @@ def compile_composition_execution_v1(
     return parse_composition_execution_v1(draft)
 
 
+def _wrap_bundle(exc: BaseException) -> CompositionExecutionError:
+    code = getattr(exc, "code", None) or "E_TEAM_COMPOSITION_EXEC_BUNDLE"
+    details = getattr(exc, "details", None)
+    return CompositionExecutionError(
+        str(exc),
+        code=str(code),
+        details=details if isinstance(details, Mapping) else None,
+    )
+
+
 def _lane_results_from_bundle(
     bundle: Mapping[str, Any] | Any,
     *,
-    expected_kind: str,
-    composition_id: str,
-    composition_digest: str,
+    adapter: CompositionTaskAdapter,
+    manifest: Mapping[str, Any],
     expected_lanes: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
+    """Parse ``--input`` as the composition ResultBundleV1, then LaneTaskResultV1.
+
+    Uses the same exact-key / foreign-writer / digest / artifact_kind contract
+    as produce-decision / produce-report so a forged bundle cannot be
+    stripped down and reauthored into CLI-trusted lane submissions.
+    """
     try:
-        body = require_object(bundle, label="result_bundle")
-    except ContractValidationError as exc:
-        raise CompositionExecutionError(
-            str(exc),
-            code="E_TEAM_COMPOSITION_EXEC_BUNDLE",
-        ) from exc
-    if body.get("kind") != expected_kind:
-        raise CompositionExecutionError(
-            "result bundle kind mismatch",
-            code="E_TEAM_COMPOSITION_EXEC_BUNDLE",
-        )
-    if body.get("composition_id") != composition_id:
-        raise CompositionExecutionError(
-            "result bundle composition_id mismatch",
-            code="E_TEAM_COMPOSITION_EXEC_BUNDLE",
-        )
-    if body.get("composition_digest") != composition_digest:
-        raise CompositionExecutionError(
-            "result bundle composition_digest mismatch",
-            code="E_TEAM_COMPOSITION_EXEC_BUNDLE",
-        )
-    receipts = body.get("receipts")
+        normalized = adapter.normalize_result_bundle(bundle, manifest=manifest)
+    except CompositionExecutionError:
+        raise
+    except ValueError as exc:
+        raise _wrap_bundle(exc) from exc
+    receipts = normalized.get("receipts")
     if not isinstance(receipts, list) or not receipts:
         raise CompositionExecutionError(
             "result bundle receipts must be a non-empty array",
@@ -630,6 +632,18 @@ def _lane_results_from_bundle(
             details={"expected": sorted(expected), "actual": sorted(by_lane)},
         )
     return by_lane
+
+
+def _lane_result_digests_from_results(
+    by_lane: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    return sorted(
+        (
+            {"lane_id": lane_id, "digest": _result_digest(result)}
+            for lane_id, result in by_lane.items()
+        ),
+        key=lambda row: row["lane_id"],
+    )
 
 
 def _fixture_worker_env(
@@ -750,6 +764,12 @@ def _assert_tasks_pending_for_execute(
     mapping: Mapping[str, str],
     topo_order: Sequence[str],
 ) -> None:
+    """Refuse unless every mapped lane is still pending and claim-free.
+
+    Partial fixture execute (some lanes completed, no execution artifact) is
+    fail-closed: retry must not silently resume mixed state. Operator repair
+    of the task board is required. Live crash-resume remains #69 follow-up.
+    """
     for lane_id in topo_order:
         task_id = mapping[str(lane_id)]
         task = _read_task(root, run_id, team_id, task_id)
@@ -879,9 +899,8 @@ def execute_composition_tasks_v1(
     topo_order = [str(x) for x in compiled["topo_order"]]
     by_lane = _lane_results_from_bundle(
         bundle,
-        expected_kind=adapter.result_bundle_kind,
-        composition_id=str(manifest["composition_id"]),
-        composition_digest=str(manifest["digest"]),
+        adapter=adapter,
+        manifest=manifest,
         expected_lanes=topo_order,
     )
 
@@ -901,6 +920,20 @@ def execute_composition_tasks_v1(
                     f"existing composition execution {key} conflict",
                     code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
                 )
+        incoming_digests = _lane_result_digests_from_results(by_lane)
+        stored_digests = sorted(
+            list(existing["lane_result_digests"]),
+            key=lambda row: str(row["lane_id"]),
+        )
+        if stored_digests != incoming_digests:
+            raise CompositionExecutionError(
+                "existing composition execution lane result digest conflict",
+                code="E_TEAM_COMPOSITION_EXEC_CONFLICT",
+                details={
+                    "stored": stored_digests,
+                    "incoming": incoming_digests,
+                },
+            )
         return {
             "ok": True,
             "idempotent": True,

@@ -58,6 +58,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#69 PR14 execute `--input` fail-closed:** fixture execute now
+  normalizes the composition ResultBundleV1 (foreign writer, claimed
+  digest, artifact_kind, exact keys) before lane submit, and idempotent
+  re-execute conflicts when per-lane result digests differ. Interrupted
+  partial execute remains refuse-until-repair (not auto-resume). Refs #69
+  (does not close).
 - **Capabilities lock LF-canonical hashes:** `generate_capabilities_lock.py`
   hashes skill/agent/source bytes after CRLF/CR → LF so a Windows
   `core.autocrlf` checkout matches Linux CI `--check`. Lock JSON is written
