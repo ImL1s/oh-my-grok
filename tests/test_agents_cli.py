@@ -57,6 +57,7 @@ def test_agents_explain_human_and_json(capsys, monkeypatch, tmp_path: Path) -> N
     agent = payload["data"]["agent"]
     assert agent["agent_id"] == "omg-orchestrator"
     assert agent["baseline_mode"] == "inherit"
+    assert agent["effective_route"] is None
     assert payload["data"]["resume"]["policy_digest"] == agent["policy_digest"]
     rc = main(["agents", "explain", "explore", "--project-root", str(tmp_path)])
     assert rc == 0

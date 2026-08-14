@@ -75,6 +75,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#134 Codex review:** `omg agents explain --json` leaves `effective_route`
+  null until a receipt or negotiated model exists; `--width` wraps free-form
+  reason/action lines; Team status omits `route=unknown` on locked tasks;
+  presentation human copy honors terminal width; adapter schema requires the
+  full typed view (nullable `effective_route` included). Refs #134.
 - **#70 Codex review:** `omg skill list` exits 1 on a fail-closed catalog
   load; `omg skill show` looks up exact ids (alias rows keep `kind: alias`);
   short trigger matching requires token boundaries so `task`/`steam` no

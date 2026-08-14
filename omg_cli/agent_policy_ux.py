@@ -120,6 +120,56 @@ def truncate_display(text: str, width: int) -> str:
     return "".join(out) + ELLIPSIS
 
 
+def wrap_display(
+    text: str,
+    width: int,
+    *,
+    subsequent_indent: str | None = None,
+) -> list[str]:
+    """Wrap ``text`` to ``width`` display columns (CJK-aware)."""
+    if width < 1:
+        return [""]
+    lead_n = len(text) - len(text.lstrip(" "))
+    lead = text[:lead_n]
+    body = text[lead_n:]
+    cont = subsequent_indent if subsequent_indent is not None else lead
+    tokens = body.split()
+    if not tokens:
+        return [truncate_display(text, width)] if display_width(text) > width else [text]
+    lines: list[str] = []
+    prefix = lead
+    buf = ""
+
+    def emit(current_prefix: str, current_buf: str) -> None:
+        line = current_prefix + current_buf
+        if display_width(line) > width:
+            line = truncate_display(line, width)
+        lines.append(line)
+
+    for token in tokens:
+        nxt = token if not buf else f"{buf} {token}"
+        if buf and display_width(prefix + nxt) > width:
+            emit(prefix, buf)
+            prefix = cont
+            buf = token
+            if display_width(prefix + buf) > width:
+                emit(prefix, buf)
+                buf = ""
+        else:
+            buf = nxt
+    if buf:
+        emit(prefix, buf)
+    return lines or [truncate_display(text, width)]
+
+
+def _wrap_lines(lines: Sequence[str], columns: int) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        indent = "    " if line.startswith(" ") else ""
+        out.extend(wrap_display(line, columns, subsequent_indent=indent))
+    return out
+
+
 def host_policy_label(view: object) -> str:
     if getattr(view, "requested_extension", None):
         return "optional extension"
@@ -152,7 +202,7 @@ def render_list_human(
     _ = color_enabled(env)
     band = width_band(columns)
     if band == "narrow":
-        return _render_list_narrow(rows)
+        return _render_list_narrow(rows, columns=columns)
     if band == "wide":
         return _render_list_table(
             rows,
@@ -180,7 +230,7 @@ def render_list_human(
     )
 
 
-def _render_list_narrow(rows: Sequence[object]) -> str:
+def _render_list_narrow(rows: Sequence[object], *, columns: int) -> str:
     blocks: list[str] = []
     for row in rows:
         reasons = getattr(row, "reasons", ()) or ()
@@ -190,14 +240,17 @@ def _render_list_narrow(rows: Sequence[object]) -> str:
         aliases = ", ".join(getattr(row, "aliases", ()) or ())
         blocks.append(
             "\n".join(
-                [
-                    str(getattr(row, "agent_id")),
-                    f"  aliases: {aliases or '(none)'}",
-                    f"  host policy: {host_policy_label(row)}",
-                    f"  model intent: {model_intent_label(row, band='narrow')}",
-                    f"  status: {getattr(row, 'status')}",
-                    f"  next: {next_action}",
-                ]
+                _wrap_lines(
+                    [
+                        str(getattr(row, "agent_id")),
+                        f"  aliases: {aliases or '(none)'}",
+                        f"  host policy: {host_policy_label(row)}",
+                        f"  model intent: {model_intent_label(row, band='narrow')}",
+                        f"  status: {getattr(row, 'status')}",
+                        f"  next: {next_action}",
+                    ],
+                    columns,
+                )
             )
         )
     return "\n\n".join(blocks)
@@ -312,7 +365,7 @@ def render_explain_human(
         out.append(name)
         out.extend(sections[name])
     out.append(f"status: {getattr(view, 'status')}")
-    return "\n".join(out)
+    return "\n".join(_wrap_lines(out, columns))
 
 
 def _reason_lines(reasons: Sequence[object]) -> list[str]:
@@ -364,48 +417,75 @@ def format_doctor_routing_human(snapshot: object) -> str:
 
 def format_presentation_human(state: Mapping[str, Any], *, columns: int = 120) -> str:
     """Human Team Presentation V1. Does not change locked ``omg team status --json``."""
-    _ = columns
-    lines = [
+    header = [
         "Team presentation (schema v1; not omg team status --json)",
         f"run_id: {state.get('run_id')}",
         f"team_id: {state.get('team_id')}",
         f"  {POLICY_NATIVE_NOTE}",
         "",
-        "  ".join(
-            pad_display(h, w)
-            for h, w in (
-                ("member", 16),
-                ("role", 14),
-                ("presentation_route", 22),
-                ("executor", 12),
-                ("attempt", 8),
-                ("status", 12),
-            )
-        ),
     ]
-    for member in state.get("members") or []:
-        if not isinstance(member, Mapping):
-            continue
-        route = member.get("route") if isinstance(member.get("route"), Mapping) else {}
-        current = (
-            member.get("current_attempt")
-            if isinstance(member.get("current_attempt"), Mapping)
-            else {}
+    members = [
+        member
+        for member in (state.get("members") or [])
+        if isinstance(member, Mapping)
+    ]
+    out = _wrap_lines(header, columns)
+    if width_band(columns) == "narrow":
+        out.extend(_wrap_lines(_presentation_stacked_lines(members), columns))
+        return "\n".join(out).rstrip()
+    out.append(
+        _render_list_table(
+            members,
+            headers=(
+                "member",
+                "role",
+                "presentation_route",
+                "executor",
+                "attempt",
+                "status",
+            ),
+            cells=_presentation_cells,
+            columns=columns,
         )
-        kind = str(route.get("kind") or "unknown")
-        lines.append(
-            "  ".join(
-                [
-                    pad_display(str(member.get("logical_worker_id") or ""), 16),
-                    pad_display(str(member.get("role") or ""), 14),
-                    pad_display(kind, 22),
-                    pad_display(str(route.get("executor") or "-"), 12),
-                    pad_display(str(current.get("attempt") or "-"), 8),
-                    pad_display(str(current.get("status") or "-"), 12),
-                ]
-            )
+    )
+    return "\n".join(out)
+
+
+def _presentation_cells(member: Mapping[str, Any]) -> tuple[str, ...]:
+    route = member.get("route") if isinstance(member.get("route"), Mapping) else {}
+    current = (
+        member.get("current_attempt")
+        if isinstance(member.get("current_attempt"), Mapping)
+        else {}
+    )
+    kind = str(route.get("kind") or "unknown")
+    return (
+        str(member.get("logical_worker_id") or ""),
+        str(member.get("role") or ""),
+        kind,
+        str(route.get("executor") or "-"),
+        str(current.get("attempt") or "-"),
+        str(current.get("status") or "-"),
+    )
+
+
+def _presentation_stacked_lines(members: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for member in members:
+        cells = _presentation_cells(member)
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                cells[0] or "(member)",
+                f"  role: {cells[1] or '-'}",
+                f"  presentation_route: {cells[2]}",
+                f"  executor: {cells[3]}",
+                f"  attempt: {cells[4]}",
+                f"  status: {cells[5]}",
+            ]
         )
-    return "\n".join(lines)
+    return lines
 
 
 __all__ = [
@@ -422,4 +502,5 @@ __all__ = [
     "terminal_width",
     "truncate_display",
     "width_band",
+    "wrap_display",
 ]

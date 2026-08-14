@@ -177,11 +177,17 @@ class AgentPolicyViewV1:
             "reasons": [item.to_json() for item in self.reasons],
             "host_facts": dict(self.host_facts),
             "requested_policy": {"binding": self.baseline_mode},
-            "effective_route": {
-                "kind": self.route_kind,
-                "selected_model_ref": self.selected_model_ref,
-                "route_receipt_digest": self.route_receipt_digest,
-            },
+            "effective_route": self._effective_route_json(),
+        }
+
+    def _effective_route_json(self) -> dict[str, Any] | None:
+        """Pre-execution inspect leaves this unset; a receipt or negotiated model is evidence."""
+        if self.route_receipt_digest is None and self.selected_model_ref is None:
+            return None
+        return {
+            "kind": self.route_kind,
+            "selected_model_ref": self.selected_model_ref,
+            "route_receipt_digest": self.route_receipt_digest,
         }
 
 
