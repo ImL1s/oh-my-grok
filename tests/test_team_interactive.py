@@ -122,12 +122,44 @@ def test_exec_script_is_0700_and_has_no_prompt(tmp_path: Path) -> None:
     assert "supervisor" not in cmd
 
 
+def test_exec_argv_rejects_prompt_file_option_not_path_substring(
+    tmp_path: Path,
+) -> None:
+    dest = tmp_path / "t1.interactive.sh"
+    with pytest.raises(InteractiveTeamError, match="prompt-file"):
+        write_interactive_exec_script(
+            dest=dest,
+            argv=["grok", "--prompt-file", "x"],
+            worktree=tmp_path,
+        )
+    with pytest.raises(InteractiveTeamError, match="prompt-file"):
+        write_interactive_exec_script(
+            dest=dest,
+            argv=["grok", "--prompt-file=secret"],
+            worktree=tmp_path,
+        )
+    write_interactive_exec_script(
+        dest=dest,
+        argv=["grok", "--cwd", str(tmp_path / "no--prompt-file-demo")],
+        worktree=tmp_path,
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert "no--prompt-file-demo" in text
+    assert "--prompt-file " not in text
+    assert "--prompt-file=" not in text
+
+
 def test_inbox_is_not_a_secret_dump(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("managed atomic inbox write requires POSIX")
     p = write_worker_inbox(dest=tmp_path / "inbox.txt", body="task_id=t1\ndo the work\n")
     assert "do the work" in p.read_text(encoding="utf-8")
+    assert (p.stat().st_mode & 0o777) == 0o600
 
 
 def test_inbox_refuses_symlink_destination(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("managed atomic inbox write requires POSIX")
     target = tmp_path / "outside.txt"
     target.write_text("secret\n", encoding="utf-8")
     dest = tmp_path / "inbox.txt"

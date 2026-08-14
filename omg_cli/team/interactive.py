@@ -17,7 +17,11 @@ import stat
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Final, Mapping, Sequence
+from omg_cli.contracts.path_keys import (
+    DATA_FILE_MODE,
+    ContractPathError,
+    atomic_write_bytes,
+)
 
 REQUESTED_HEADLESS: Final = "headless"
 REQUESTED_INTERACTIVE: Final = "interactive"
@@ -115,7 +119,7 @@ def grok_interactive_argv(
     elif yolo:
         argv.extend(["--permission-mode", "bypassPermissions"])
         argv.append("--always-approve")
-    if "--prompt-file" in argv:
+    if any(_is_prompt_file_option(tok) for tok in argv):
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
     return argv
 
@@ -139,15 +143,24 @@ def _refuse_symlink_artifact(dest: Path) -> None:
         raise InteractiveTeamError(f"refused symlink parent for {target}")
 
 
+def _is_prompt_file_option(tok: str) -> bool:
+    """True for ``--prompt-file`` / ``--prompt-file=...``, not path substrings."""
+    return tok == "--prompt-file" or tok.startswith("--prompt-file=")
+
+
 def write_worker_inbox(*, dest: Path, body: str) -> Path:
-    """Bounded worker inbox (no credentials). Mode 0o600."""
+    """Bounded worker inbox (no credentials). Mode 0o600, published atomically."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     _refuse_symlink_artifact(dest)
-    dest.write_text(body, encoding="utf-8")
     try:
-        os.chmod(dest, 0o600)
-    except OSError:
-        pass
+        atomic_write_bytes(
+            dest,
+            body.encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
+    except ContractPathError as exc:
+        raise InteractiveTeamError(f"inbox write refused: {exc}") from exc
     return dest
 
 
@@ -164,7 +177,7 @@ def write_interactive_exec_script(
     for tok in argv:
         if not isinstance(tok, str) or tok == "":
             raise InteractiveTeamError("interactive exec argv contains an empty token")
-        if "--prompt-file" in tok:
+        if _is_prompt_file_option(tok):
             raise InteractiveTeamError("interactive exec argv must not use --prompt-file")
     wt = Path(worktree).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)

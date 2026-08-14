@@ -133,6 +133,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `focused=true` when `$TMUX` is a different server than
   `proof.tmux_socket_path`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains
   open #147 work. Refs #147.
+- **#147 Codex review:** interactive inbox is published with atomic
+  `0600` (no umask-window `write_text` then chmod). Exec argv rejects the
+  `--prompt-file` / `--prompt-file=` option tokens, not path substrings.
+  Refs #147.
 - **#147 AG skill projection:** regenerate
   `docs/parity/projections/antigravity/skills/omg-team/SKILL.md` after
   `--io-mode` skill text (static #70 projection; not live AG evidence).
