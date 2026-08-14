@@ -111,6 +111,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#77 Codex review:** mergeable ``AGENTS.md`` records a post-setup
+  ``content_hash`` so inspect is not immediately stale; manifest writes
+  replace (never follow) a symlink; a failed commit-marker rolls the
+  manifest back with the transaction; claimed symlink artifacts count as
+  drift; ``omg doctor`` probes user-scope ``~/.omg-user`` as well as the
+  project manifest. Refs #77.
 - **#77 Codex review:** inspect compares recorded ``content_hash`` (hash
   mismatch is stale, not user_owned false-green); rollback unlinks files
   created in a failed transaction; ``--force`` replaces symlinks instead of

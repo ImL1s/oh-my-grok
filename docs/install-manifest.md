@@ -21,6 +21,12 @@ project `.omg`. Setup from `$HOME` as a project is refused unless `--here`.
 - Doctor JSON `host.auth.ok` and `host.live_evidence` stay false in this slice.
 - An invalid/placeholder API key cannot false-green.
 - Foreign and user-owned files are preserved unless `--force`.
-- Interrupted transactions restore backups from `.omg/install/tx/`.
+- Interrupted transactions restore backups from `.omg/install/tx/`
+  (including the manifest itself if the commit marker fails).
+- Manifest and artifact writes never follow a symlink; a claimed path that
+  becomes a symlink is drift.
+- Mergeable `AGENTS.md` records the on-disk hash after setup so doctor is
+  not immediately stale.
+- `omg doctor` probes both the project manifest and `~/.omg-user`.
 
 简体/繁體 indexes point at this English page.

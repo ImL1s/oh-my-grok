@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -278,3 +279,143 @@ def test_antigravity_runtime_skips_legacy_grok_setup(
     rc = main(["setup", "--runtime", "antigravity", "--here"])
     assert rc == 0
     assert "omg_cli.setup_cmd" not in sys.modules
+
+
+def test_mergeable_agents_records_content_hash(tmp_path: Path) -> None:
+    agents = tmp_path / "AGENTS.md"
+    body = "<!-- OMG:START -->\nmerged\n<!-- OMG:END -->\n"
+    agents.write_text(body, encoding="utf-8")
+    run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    raw = json.loads(
+        (tmp_path / ".omg" / "install" / "manifest.json").read_text(encoding="utf-8")
+    )
+    agents_row = next(row for row in raw["artifacts"] if row["id"] == "project.agents")
+    assert agents_row["content_hash"] == hashlib.sha256(agents.read_bytes()).hexdigest()
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is True
+    assert payload.get("drift") == []
+    agents.write_text(
+        "<!-- OMG:START -->\nchanged\n<!-- OMG:END -->\n", encoding="utf-8"
+    )
+    drifted = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert drifted["ok"] is False
+    assert any(
+        row["class"] == "stale" and row["id"] == "project.agents"
+        for row in drifted["drift"]
+    )
+
+
+def test_manifest_symlink_replaced_not_followed(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "install" / "manifest.json"
+    dest.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}\n", encoding="utf-8")
+    try:
+        dest.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    assert dest.is_symlink() is False
+    payload = json.loads(dest.read_text(encoding="utf-8"))
+    assert payload["schema"] == "omg-install-manifest/v1"
+    assert outside.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_failed_commit_rolls_back_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orig = Path.write_text
+
+    def wrapped(self, data="", *args, **kwargs):
+        if self.name == "current.json" and "committed" in str(data):
+            raise OSError("disk full")
+        return orig(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", wrapped)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+        )
+    dest = tmp_path / ".omg" / "install" / "manifest.json"
+    assert dest.exists() is False
+    projection = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    assert projection.exists() is False
+
+
+def test_claimed_symlink_is_drift(tmp_path: Path) -> None:
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("x\n", encoding="utf-8")
+    dest.unlink()
+    try:
+        dest.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is False
+    assert any(row["class"] == "foreign" for row in payload["drift"])
+
+
+def test_doctor_probes_user_scope_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli import doctor as doctor_mod
+
+    seen: list[str] = []
+
+    def fake_inspect(*, project_root, scope):
+        seen.append(scope)
+        if scope == "user":
+            return {
+                "ok": False,
+                "configured": True,
+                "installed": True,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "runtime": "grok",
+                "drift": [{"id": "user.manifest.marker", "class": "stale"}],
+            }
+        return {
+            "ok": True,
+            "configured": False,
+            "installed": False,
+            "observed": False,
+            "healthy": False,
+            "verified": False,
+            "drift": [],
+        }
+
+    monkeypatch.setattr("omg_cli.cli_util.project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.inspect_install_manifest", fake_inspect
+    )
+    name, level, detail = doctor_mod.check_install_manifest()
+    assert name == "install manifest"
+    assert seen == ["project", "user"]
+    assert level == "warn"
+    assert "user_configured=True" in detail
+    assert "project_configured=False" in detail

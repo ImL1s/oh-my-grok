@@ -1259,17 +1259,26 @@ def check_install_manifest() -> SoftResult:
         from omg_cli.cli_util import project_root
         from omg_cli.install_manifest import inspect_install_manifest
 
-        payload = inspect_install_manifest(project_root=project_root(), scope="project")
+        project = inspect_install_manifest(project_root=project_root(), scope="project")
+        user = inspect_install_manifest(project_root=None, scope="user")
+        drift = len(project.get("drift") or []) + len(user.get("drift") or [])
+        configured = bool(project.get("configured") or user.get("configured"))
+        ok = True
+        if project.get("configured") and not project.get("ok"):
+            ok = False
+        if user.get("configured") and not user.get("ok"):
+            ok = False
         detail = (
-            f"configured={payload.get('configured')}; "
-            f"installed={payload.get('installed')}; "
-            f"observed={payload.get('observed')}; "
-            f"healthy={payload.get('healthy')}; "
-            f"verified={payload.get('verified')}; "
-            f"runtime={payload.get('runtime')}; "
-            f"drift={len(payload.get('drift') or [])}"
+            f"project_configured={project.get('configured')}; "
+            f"user_configured={user.get('configured')}; "
+            f"installed={bool(project.get('installed') or user.get('installed'))}; "
+            f"observed=False; "
+            f"healthy=False; "
+            f"verified=False; "
+            f"runtime={project.get('runtime') or user.get('runtime')}; "
+            f"drift={drift}"
         )
-        if payload.get("configured") and not payload.get("ok"):
+        if configured and not ok:
             return (name, "warn", detail)
         return (name, "ok", detail)
     except Exception as exc:

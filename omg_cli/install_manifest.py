@@ -113,6 +113,68 @@ def _mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _write_text_nofollow(path: Path, text: str) -> None:
+    """Write a regular file. Never follow a symlink to an outside path."""
+    if path.is_symlink():
+        path.unlink()
+    path.write_text(text, encoding="utf-8")
+
+
+def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
+    prev = backup_dir / f"{ident}.prev.json"
+    if target.is_symlink():
+        _write_text_nofollow(
+            prev,
+            json.dumps(
+                {
+                    "target": str(target),
+                    "kind": "symlink",
+                    "link": os.readlink(target),
+                }
+            ),
+        )
+        target.unlink()
+        return
+    if target.is_file():
+        data = target.read_bytes()
+        if len(data) <= MAX_BACKUP_BYTES:
+            bak = backup_dir / f"{ident}.bak"
+            bak.write_bytes(data)
+            _write_text_nofollow(
+                bak.with_suffix(".json"), json.dumps({"target": str(target)})
+            )
+            _write_text_nofollow(
+                prev,
+                json.dumps(
+                    {
+                        "target": str(target),
+                        "kind": "file",
+                        "backup": str(bak),
+                    }
+                ),
+            )
+        return
+    _write_text_nofollow(
+        prev, json.dumps({"target": str(target), "kind": "created"})
+    )
+
+
+def _seal_observed_identity(row: dict[str, Any], target: Path) -> None:
+    """Record on-disk bytes for mergeable artifacts (e.g. AGENTS.md)."""
+    if row.get("content_hash"):
+        return
+    if target.is_symlink() or not target.is_file():
+        return
+    try:
+        data = target.read_bytes()
+        sample = data.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    if OMG_START in sample or MANAGED_MARKER in sample:
+        row["content_hash"] = _sha256_bytes(data)
+        row["classification"] = "exact"
+
+
 def desired_artifacts(
     *,
     runtime: str,
@@ -336,9 +398,15 @@ def apply_manifest(
     backup_dir = tx_root / tx_id
     _mkdir(backup_dir)
     marker = tx_root / "current.json"
-    marker.write_text(
-        json.dumps({"status": "committing", "transaction_id": tx_id, "backup_dir": str(backup_dir)}),
-        encoding="utf-8",
+    _write_text_nofollow(
+        marker,
+        json.dumps(
+            {
+                "status": "committing",
+                "transaction_id": tx_id,
+                "backup_dir": str(backup_dir),
+            }
+        ),
     )
     written: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -347,6 +415,7 @@ def apply_manifest(
             target = Path(row["target"])
             body = _desired_body(row, plugin=plugin)
             if body is None:
+                _seal_observed_identity(row, target)
                 continue
             klass = classify_path(target, desired=body)
             row["classification"] = klass
@@ -357,42 +426,7 @@ def apply_manifest(
                 skipped.append({"target": str(target), "class": klass})
                 continue
             _mkdir(target.parent)
-            prev = backup_dir / f"{row['id']}.prev.json"
-            if target.is_symlink():
-                prev.write_text(
-                    json.dumps(
-                        {
-                            "target": str(target),
-                            "kind": "symlink",
-                            "link": os.readlink(target),
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                target.unlink()
-            elif target.is_file():
-                data = target.read_bytes()
-                if len(data) <= MAX_BACKUP_BYTES:
-                    bak = backup_dir / f"{row['id']}.bak"
-                    bak.write_bytes(data)
-                    bak.with_suffix(".json").write_text(
-                        json.dumps({"target": str(target)}), encoding="utf-8"
-                    )
-                    prev.write_text(
-                        json.dumps(
-                            {
-                                "target": str(target),
-                                "kind": "file",
-                                "backup": str(bak),
-                            }
-                        ),
-                        encoding="utf-8",
-                    )
-            else:
-                prev.write_text(
-                    json.dumps({"target": str(target), "kind": "created"}),
-                    encoding="utf-8",
-                )
+            _backup_existing(backup_dir, str(row["id"]), target)
             target.write_bytes(body)
             written.append(str(target))
         dest = (
@@ -401,13 +435,14 @@ def apply_manifest(
             else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
         )
         _mkdir(dest.parent)
-        dest.write_text(
+        _backup_existing(backup_dir, "omg.install.manifest", dest)
+        _write_text_nofollow(
+            dest,
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
         )
-        marker.write_text(
+        _write_text_nofollow(
+            marker,
             json.dumps({"status": "committed", "transaction_id": tx_id}),
-            encoding="utf-8",
         )
         return {
             "ok": True,
@@ -437,7 +472,34 @@ def inspect_install_manifest(
     path = user_manifest_path() if scope == "user" else (
         project_manifest_path(project_root) if project_root is not None else None
     )
-    if path is None or not path.is_file():
+    if path is None:
+        return {
+            "ok": True,
+            "configured": False,
+            "installed": False,
+            "enabled": False,
+            "loadable": False,
+            "observed": False,
+            "healthy": False,
+            "verified": False,
+            "note": "no install manifest yet",
+        }
+    if path.is_symlink():
+        return {
+            "ok": False,
+            "configured": True,
+            "installed": False,
+            "enabled": False,
+            "loadable": False,
+            "observed": False,
+            "healthy": False,
+            "verified": False,
+            "drift": [
+                {"id": "manifest", "class": "foreign", "target": str(path)}
+            ],
+            "error": "manifest path is a symlink",
+        }
+    if not path.is_file():
         return {
             "ok": True,
             "configured": False,
@@ -481,7 +543,7 @@ def inspect_install_manifest(
         else:
             body = _desired_body(row, plugin=plugin)
             klass = classify_path(target, desired=body)
-        if klass in {"stale", "missing", "malformed"}:
+        if klass in {"stale", "missing", "malformed", "foreign"}:
             drift.append({"id": row.get("id"), "class": klass, "target": str(target)})
     return {
         "ok": not drift,
