@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,9 +68,18 @@ def test_grok_interactive_argv_has_no_prompt_file() -> None:
     assert argv[0] == "grok"
     assert "--cwd" in argv
     assert "--prompt-file" not in argv
-    assert "bypassPermissions" in argv
+    assert "bypassPermissions" not in argv
+    yolo = grok_interactive_argv(cwd="/tmp/wt", posture="read-write", yolo=True)
+    assert "bypassPermissions" in yolo
+    safe = grok_interactive_argv(
+        cwd="/tmp/wt", posture="read-write", safe=True, yolo=True
+    )
+    assert "--permission-mode" in safe and "plan" in safe
+    assert "bypassPermissions" not in safe
     ro = grok_interactive_argv(cwd="/tmp/wt", posture="read-only")
     assert "--permission-mode" in ro and "plan" in ro
+    modeled = grok_interactive_argv(cwd="/tmp/wt", model="grok-example")
+    assert modeled[modeled.index("-m") + 1] == "grok-example"
 
 
 def test_auto_stays_headless_until_live_qualification() -> None:
@@ -111,6 +121,19 @@ def test_exec_script_is_0700_and_has_no_prompt(tmp_path: Path) -> None:
 def test_inbox_is_not_a_secret_dump(tmp_path: Path) -> None:
     p = write_worker_inbox(dest=tmp_path / "inbox.txt", body="task_id=t1\ndo the work\n")
     assert "do the work" in p.read_text(encoding="utf-8")
+
+
+def test_inbox_refuses_symlink_destination(tmp_path: Path) -> None:
+    target = tmp_path / "outside.txt"
+    target.write_text("secret\n", encoding="utf-8")
+    dest = tmp_path / "inbox.txt"
+    try:
+        dest.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    with pytest.raises(InteractiveTeamError, match="symlink"):
+        write_worker_inbox(dest=dest, body="overwrite\n")
+    assert target.read_text(encoding="utf-8") == "secret\n"
 
 
 def test_interactive_pane_io_defaults() -> None:
@@ -178,7 +201,30 @@ def test_dry_run_interactive_grok_argv(
     assert rec["io_mode"] == "interactive_tty"
     assert "--prompt-file" not in rec["argv"]
     assert rec["argv"][0] == "grok"
+    assert "bypassPermissions" not in rec["argv"]
     assert "supervisor" not in rec["pane_command"]
+
+
+@_POSIX
+def test_dry_run_interactive_grok_honors_safe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive grok safe",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        io_mode="interactive",
+        safe=True,
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    argv = meta["tasks"][0]["argv"]
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert "bypassPermissions" not in argv
 
 
 def test_interactive_job_topology_fails_closed(
@@ -284,6 +330,102 @@ def test_tui_ready_marker_is_exact_line_only() -> None:
     assert not capture_contains_tui_ready(f"{marker}EVIL\n", nonce)
     assert not capture_contains_tui_ready("TUI_READY:other\n", nonce)
     assert not capture_contains_tui_ready("", nonce)
+
+
+def test_sanitize_tty_payload_drops_csi_and_empty() -> None:
+    from tests.fixtures.providers.interactive_tty import sanitize_tty_payload
+
+    assert sanitize_tty_payload("") == ""
+    assert sanitize_tty_payload("\r\n") == ""
+    assert sanitize_tty_payload("\x1b[?1;2c") == ""
+    assert sanitize_tty_payload("\x1b[?1;2comg147-echo-1") == "omg147-echo-1"
+    assert sanitize_tty_payload("omg147-echo-1\r") == "omg147-echo-1"
+
+
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
+def test_fixture_echoes_payload_after_stray_pty_bytes() -> None:
+    """Spurious CR/DA1 must not consume the TTY read; PROVIDER_ECHO is the write.
+
+    This is the hermetic shape of the real-tmux CI timeout: TUI_READY appeared,
+    then send-keys never produced PROVIDER_ECHO:<payload> because a leftover
+    newline had already ended the fixture.
+    """
+    import select
+    import subprocess
+    import time
+
+    pty = pytest.importorskip("pty")
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "providers"
+        / "interactive_tty.py"
+    )
+    master, slave = pty.openpty()
+    slave_open = True
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        env = {
+            **os.environ,
+            "OMG_TEAM_INTERACTIVE_NONCE": "deadbeef",
+            "OMG_TEAM_PROVIDER_HOLD_S": "8",
+            "TERM": "xterm",
+        }
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(script)],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave)
+        slave_open = False
+        # tmux-shaped leftover: CR + DA1 + CRLF sitting on the PTY.
+        os.write(master, b"\r\x1b[?1;2c\r\n")
+
+        def _read_until(needle: bytes, timeout_s: float) -> bytes:
+            deadline = time.monotonic() + timeout_s
+            buf = b""
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if needle in buf:
+                    return buf
+            return buf
+
+        ready_buf = _read_until(b"TUI_READY:deadbeef", 5.0)
+        assert b"TUI_READY:deadbeef" in ready_buf, ready_buf
+        assert b"PROVIDER_ECHO:" not in ready_buf
+        payload = b"omg147-pty-payload"
+        os.write(master, payload + b"\r")
+        echo_buf = ready_buf + _read_until(b"PROVIDER_ECHO:omg147-pty-payload", 5.0)
+        assert b"PROVIDER_ECHO:omg147-pty-payload" in echo_buf, echo_buf
+        proc.wait(timeout=5)
+        assert proc.returncode == 0
+    finally:
+        if slave_open:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
 
 
 def test_wait_for_tui_ready_does_not_write_or_self_promote() -> None:

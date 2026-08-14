@@ -115,6 +115,14 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
         assert meta.get("startup_gate_phase") == "tui_ready"
         assert task.get("input_ready") is True
 
+        ready_cap = leader.capture_pane(pane_id)
+        assert marker in ready_cap
+        if "PROVIDER_ECHO:" in ready_cap:
+            raise AssertionError(
+                "fixture printed PROVIDER_ECHO before operator send "
+                f"(spurious TTY consume): {ready_cap!r}"
+            )
+
         line = f"omg147-echo-{os.getpid()}"
         operator.input_worker(
             repo,
@@ -132,7 +140,12 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
             scroll_holder["text"] = leader.capture_pane(pane_id)
             return f"PROVIDER_ECHO:{line}" in scroll_holder["text"]
 
-        wait_until(_echoed, timeout_s=15.0, label="PROVIDER_ECHO after TTY read")
+        try:
+            wait_until(_echoed, timeout_s=15.0, label="PROVIDER_ECHO after TTY read")
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"{exc}; pane={pane_id}; capture={scroll_holder['text']!r}"
+            ) from exc
         scroll = scroll_holder["text"]
         assert f"PROVIDER_ECHO:{line}" in scroll
         # Local echo of the typed bytes (if any) is not the proof.

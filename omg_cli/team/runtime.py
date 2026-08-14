@@ -2255,6 +2255,12 @@ def worker_pane_descriptors(
                 else None,
                 window_id=window_id,
                 pane_owner_nonce=pane_owner_nonce,
+                socket_path=(
+                    str(meta["tmux_socket_path"])
+                    if isinstance(meta.get("tmux_socket_path"), str)
+                    and meta.get("tmux_socket_path")
+                    else None
+                ),
             )
             if status_label == "live":
                 capture_allowed = True

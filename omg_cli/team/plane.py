@@ -1915,6 +1915,7 @@ def _probe_tmux_launch_nonce_for_pane(
     session: str,
     *,
     allow_session_fallback: bool = False,
+    socket_path: str | None = None,
 ) -> tuple[str | None, bool]:
     """Probe pane-scoped launch nonce with an explicit ok/unknown bit.
 
@@ -1925,7 +1926,8 @@ def _probe_tmux_launch_nonce_for_pane(
     if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id) is not None:
         try:
             r = _tmux_run(
-                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION]
+                ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION],
+                socket_path=socket_path,
             )
         except OSError:
             return None, False
@@ -1948,6 +1950,7 @@ def _read_tmux_launch_nonce_for_pane(
     session: str,
     *,
     allow_session_fallback: bool = False,
+    socket_path: str | None = None,
 ) -> str | None:
     """Read pane-scoped launch nonce; session fallback is legacy-only.
 
@@ -1960,7 +1963,10 @@ def _read_tmux_launch_nonce_for_pane(
     into DEAD_OR_FOREIGN (relaunch / side-effect paths).
     """
     nonce, ok = _probe_tmux_launch_nonce_for_pane(
-        pane_id, session, allow_session_fallback=allow_session_fallback
+        pane_id,
+        session,
+        allow_session_fallback=allow_session_fallback,
+        socket_path=socket_path,
     )
     return nonce if ok else None
 
@@ -3556,13 +3562,25 @@ def start_team(
                         argv = fixture_interactive_argv()
                         provider = "fixture"
                     else:
-                        argv = grok_interactive_argv(cwd=wt, posture=posture)
+                        routed_model = None
+                        if multi_cli and resolved is not None:
+                            routed_model = resolved.for_role(role).model
+                        argv = grok_interactive_argv(
+                            cwd=wt,
+                            posture=posture,
+                            model=routed_model,
+                            safe=safe,
+                            yolo=yolo,
+                        )
                     inbox_path = tdir / f"{tid}.inbox.txt"
+                    exec_script = tdir / f"{tid}.interactive.sh"
+                    if not created_team_dir:
+                        _note_start_file_backup(file_backups, inbox_path)
+                        _note_start_file_backup(file_backups, exec_script)
                     write_worker_inbox(
                         dest=inbox_path,
                         body=f"task_id={tid}\n{goal}\n",
                     )
-                    exec_script = tdir / f"{tid}.interactive.sh"
                     interactive_nonce = make_interactive_nonce()
                     write_interactive_exec_script(
                         dest=exec_script,
@@ -4380,6 +4398,7 @@ def _worker_pane_liveness(
     launch_nonce: str | None,
     expected_pid_start: str | None,
     expected_pid: int | None,
+    socket_path: str | None = None,
 ) -> Literal["alive", "proven_absent", "present_foreign", "unknown"]:
     """Fail-closed pane liveness for status / resume / relaunch.
 
@@ -4397,9 +4416,9 @@ def _worker_pane_liveness(
     try:
         from omg_cli.team.tmux import probe_worker_pane_identity
 
-        probed = probe_worker_pane_identity(pane_id)
+        probed = probe_worker_pane_identity(pane_id, socket_path=socket_path)
         if probed is None:
-            absent, _err = _pane_proven_absent(pane_id)
+            absent, _err = _pane_proven_absent(pane_id, socket_path=socket_path)
             if absent is True:
                 return "proven_absent"
             return "unknown"
@@ -4408,7 +4427,10 @@ def _worker_pane_liveness(
         if probed.get("session_id") != expected_session_id:
             return "present_foreign"
         live_nonce, nonce_ok = _probe_tmux_launch_nonce_for_pane(
-            pane_id, session, allow_session_fallback=False
+            pane_id,
+            session,
+            allow_session_fallback=False,
+            socket_path=socket_path,
         )
         if not nonce_ok:
             return "unknown"
@@ -4976,7 +4998,9 @@ def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
     return False, None
 
 
-def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
+def _pane_proven_absent(
+    pane_id: str, *, socket_path: str | None = None
+) -> tuple[bool | None, str | None]:
     """Prove pane absence only via a successful complete ``list-panes -a``.
 
     Returns:
@@ -4988,7 +5012,9 @@ def _pane_proven_absent(pane_id: str) -> tuple[bool | None, str | None]:
     if _TMUX_PANE_ID.fullmatch(pane_id) is None:
         return None, f"invalid pane id for absence probe {pane_id!r}"
     try:
-        listed = _tmux_run(["list-panes", "-a", "-F", "#{pane_id}"])
+        listed = _tmux_run(
+            ["list-panes", "-a", "-F", "#{pane_id}"], socket_path=socket_path
+        )
     except OSError as exc:
         return None, f"pane absence probe OSError pane={pane_id}: {exc}"
     if listed.returncode != 0:

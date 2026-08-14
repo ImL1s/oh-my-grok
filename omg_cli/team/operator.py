@@ -407,6 +407,7 @@ def classify_exact_pane_live(
     expected_pid_start: str | None,
     window_id: str | None,
     pane_owner_nonce: str | None,
+    socket_path: str | None = None,
 ) -> str:
     """Classify pane liveness using #102 owner-nonce when present, else #98.
 
@@ -428,6 +429,7 @@ def classify_exact_pane_live(
                 expected_session_id=session_id,
                 expected_window_id=window_id,
                 pane_owner_nonce=pane_owner_nonce,
+                socket_path=socket_path,
             )
         except TmuxTeamError:
             return STATUS_MISMATCH
@@ -441,7 +443,7 @@ def classify_exact_pane_live(
                 return STATUS_MISMATCH
         # Defense in depth: launch nonce must still match on the exact pane.
         live_nonce, nonce_ok = plane_mod._probe_tmux_launch_nonce_for_pane(
-            pane_id, session, allow_session_fallback=False
+            pane_id, session, allow_session_fallback=False, socket_path=socket_path
         )
         if not nonce_ok:
             return STATUS_UNKNOWN
@@ -457,6 +459,7 @@ def classify_exact_pane_live(
         launch_nonce=launch_nonce,
         expected_pid_start=expected_pid_start,
         expected_pid=expected_pid,
+        socket_path=socket_path,
     )
     return _liveness_status(state)
 
@@ -472,6 +475,7 @@ def probe_exact_worker(proof: ExactPaneProof) -> str:
         expected_pid_start=proof.expected_pid_start,
         window_id=proof.window_id,
         pane_owner_nonce=proof.pane_owner_nonce,
+        socket_path=proof.tmux_socket_path,
     )
 
 

@@ -322,6 +322,48 @@ def test_exact_pane_proof_carries_tmux_socket_path() -> None:
     assert proof.tmux_socket_path == "/tmp/omg-op-test.sock"
 
 
+def test_probe_exact_worker_threads_tmux_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_read(**kwargs: Any) -> int:
+        seen.update(kwargs)
+        return 7000
+
+    monkeypatch.setattr(operator, "tmux_available", lambda: True)
+    monkeypatch.setattr(operator, "read_exact_worker_pane_identity", fake_read)
+    monkeypatch.setattr(
+        plane,
+        "_probe_tmux_launch_nonce_for_pane",
+        lambda *args, **kwargs: ("b" * 32, True),
+    )
+    proof = ExactPaneProof(
+        run_id="run",
+        team_id="team",
+        worker_id="w1",
+        attempt=1,
+        generation=0,
+        session="omg-op-session",
+        session_id="$42",
+        launch_nonce="b" * 32,
+        pane_id="%10",
+        window_id="@9",
+        expected_pid=7000,
+        expected_pid_start=None,
+        pane_owner_nonce="owner-nonce",
+        owner_token_sha256=None,
+        leader_pane_id="%1",
+        role=None,
+        provider=None,
+        posture=None,
+        worktree=None,
+        state=None,
+        ready=None,
+        tmux_socket_path="/tmp/omg-op-test.sock",
+    )
+    assert probe_exact_worker(proof) == STATUS_LIVE
+    assert seen.get("socket_path") == "/tmp/omg-op-test.sock"
+
+
 def test_parser_registers_operator_family() -> None:
     parser = build_parser()
     for action in ("panes", "capture", "focus", "key", "input", "watch"):

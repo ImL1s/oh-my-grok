@@ -97,15 +97,21 @@ def grok_interactive_argv(
     cwd: Path | str,
     posture: str = "read-write",
     model: str | None = None,
+    safe: bool = False,
+    yolo: bool = False,
 ) -> list[str]:
-    """Persistent Grok TUI argv — no one-shot ``--prompt-file`` transport."""
+    """Persistent Grok TUI argv — no one-shot ``--prompt-file`` transport.
+
+    Permission flags match headless ``build_grok_argv``: ``safe`` / read-only
+    → ``plan``; ``yolo`` → ``bypassPermissions``; default omits elevation.
+    """
     worktree = str(Path(cwd))
     argv: list[str] = ["grok", "--cwd", worktree]
     if model:
         argv.extend(["-m", str(model)])
-    if posture == "read-only":
+    if posture == "read-only" or safe:
         argv.extend(["--permission-mode", "plan"])
-    else:
+    elif yolo:
         argv.extend(["--permission-mode", "bypassPermissions"])
     if "--prompt-file" in argv:
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
@@ -121,9 +127,20 @@ def _default_fixture_script() -> Path:
     return Path(__file__).resolve().parents[2] / INTERACTIVE_FIXTURE_RELATIVE
 
 
+def _refuse_symlink_artifact(dest: Path) -> None:
+    """Refuse symlink destinations and parents (no follow-and-chmod)."""
+    target = Path(dest)
+    if target.is_symlink():
+        raise InteractiveTeamError(f"refused symlink artifact {target}")
+    parent = target.parent
+    if parent.is_symlink():
+        raise InteractiveTeamError(f"refused symlink parent for {target}")
+
+
 def write_worker_inbox(*, dest: Path, body: str) -> Path:
     """Bounded worker inbox (no credentials). Mode 0o600."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink_artifact(dest)
     dest.write_text(body, encoding="utf-8")
     try:
         os.chmod(dest, 0o600)
@@ -149,6 +166,7 @@ def write_interactive_exec_script(
             raise InteractiveTeamError("interactive exec argv must not use --prompt-file")
     wt = Path(worktree).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink_artifact(dest)
     exports: list[str] = []
     for key, val in sorted((extra_env or {}).items()):
         if key != INTERACTIVE_NONCE_ENV:
