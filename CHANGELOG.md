@@ -111,17 +111,22 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
-- **#77 Codex review:** mergeable ``AGENTS.md`` records a post-setup
-  ``content_hash`` so inspect is not immediately stale; manifest writes
+- **#77 Codex review:** mergeable `AGENTS.md` records a post-setup
+  `content_hash` so inspect is not immediately stale; manifest writes
   replace (never follow) a symlink; a failed commit-marker rolls the
   manifest back with the transaction; claimed symlink artifacts count as
-  drift; ``omg doctor`` probes user-scope ``~/.omg-user`` as well as the
+  drift; `omg doctor` probes user-scope `~/.omg-user` as well as the
   project manifest. Refs #77.
-- **#77 Codex review:** inspect compares recorded ``content_hash`` (hash
+- **#77 Codex review:** rollback restores only paths under the install root
+  and the expected `tx/<id>` backup directory; parent-directory symlinks
+  (including `.omg`) are refused; preserved user-owned/foreign rows drop
+  their managed hash so doctor is not immediately stale; overwrites larger
+  than the backup cap fail closed. Refs #77.
+- **#77 Codex review:** inspect compares recorded `content_hash` (hash
   mismatch is stale, not user_owned false-green); rollback unlinks files
-  created in a failed transaction; ``--force`` replaces symlinks instead of
-  following them; ``omg setup --scope user`` skips project-root discovery;
-  ``--runtime antigravity`` does not run legacy Grok global setup. Refs #77.
+  created in a failed transaction; `--force` replaces symlinks instead of
+  following them; `omg setup --scope user` skips project-root discovery;
+  `--runtime antigravity` does not run legacy Grok global setup. Refs #77.
 - **#73 Codex review:** MCP `capability_mode` cannot escalate above the
   server ceiling; hover/definition/rename forward `--line`/`--character`;
   `didOpen` is per URI; missing `--lsp-command` raises `E_LSP_COMMAND`.

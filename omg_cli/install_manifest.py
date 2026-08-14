@@ -109,6 +109,43 @@ def classify_path(path: Path, *, desired: bytes | None = None) -> str:
     return classify_bytes(desired=desired, actual=actual)
 
 
+def _install_root(scope: str, project_root: Path | None) -> Path:
+    if scope == "user":
+        return user_store()
+    if project_root is None:
+        raise InstallManifestError("E_SCOPE", "project scope requires a project root")
+    return Path(project_root)
+
+
+def _lexical_under(path: Path, root: Path) -> bool:
+    try:
+        path.absolute().relative_to(root.absolute())
+        return True
+    except ValueError:
+        return False
+
+
+def _assert_parents_not_symlink(path: Path, root: Path) -> None:
+    """Refuse writes that would follow a symlinked parent under the install root."""
+    root_abs = root.absolute()
+    path_abs = path.absolute()
+    if not _lexical_under(path_abs, root_abs):
+        raise InstallManifestError("E_PATH", f"target escapes install root: {path}")
+    current = path_abs.parent
+    while True:
+        if current.is_symlink():
+            raise InstallManifestError(
+                "E_SYMLINK",
+                f"refusing symlinked path component: {current}",
+            )
+        if current == root_abs:
+            return
+        parent = current.parent
+        if parent == current:
+            raise InstallManifestError("E_PATH", f"target escapes install root: {path}")
+        current = parent
+
+
 def _mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -137,22 +174,26 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
         return
     if target.is_file():
         data = target.read_bytes()
-        if len(data) <= MAX_BACKUP_BYTES:
-            bak = backup_dir / f"{ident}.bak"
-            bak.write_bytes(data)
-            _write_text_nofollow(
-                bak.with_suffix(".json"), json.dumps({"target": str(target)})
+        if len(data) > MAX_BACKUP_BYTES:
+            raise InstallManifestError(
+                "E_BACKUP",
+                f"refusing to overwrite {target}; file exceeds backup limit",
             )
-            _write_text_nofollow(
-                prev,
-                json.dumps(
-                    {
-                        "target": str(target),
-                        "kind": "file",
-                        "backup": str(bak),
-                    }
-                ),
-            )
+        bak = backup_dir / f"{ident}.bak"
+        bak.write_bytes(data)
+        _write_text_nofollow(
+            bak.with_suffix(".json"), json.dumps({"target": str(target)})
+        )
+        _write_text_nofollow(
+            prev,
+            json.dumps(
+                {
+                    "target": str(target),
+                    "kind": "file",
+                    "backup": str(bak),
+                }
+            ),
+        )
         return
     _write_text_nofollow(
         prev, json.dumps({"target": str(target), "kind": "created"})
@@ -327,6 +368,9 @@ def _tx_dir(scope: str, project_root: Path | None) -> Path:
 def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any]:
     tx_root = _tx_dir(scope, project_root)
     marker = tx_root / "current.json"
+    if marker.is_symlink():
+        marker.unlink(missing_ok=True)
+        return {"ok": True, "rolled_back": False, "note": "symlinked tx marker removed"}
     if not marker.is_file():
         return {"ok": True, "rolled_back": False}
     try:
@@ -336,42 +380,75 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         return {"ok": True, "rolled_back": False, "note": "malformed tx marker removed"}
     if state.get("status") == "committed":
         return {"ok": True, "rolled_back": False}
+    try:
+        install_root = _install_root(scope, project_root)
+    except InstallManifestError:
+        marker.unlink(missing_ok=True)
+        return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
+    tx_id = str(state.get("transaction_id") or "")
     backups = Path(state.get("backup_dir") or "")
+    expected = (tx_root / tx_id).absolute() if tx_id else None
+    if (
+        not tx_id
+        or expected is None
+        or backups.is_symlink()
+        or backups.absolute() != expected
+        or not backups.is_dir()
+    ):
+        marker.unlink(missing_ok=True)
+        return {
+            "ok": True,
+            "rolled_back": False,
+            "note": "tx marker backup_dir rejected",
+        }
     restored = []
     created_removed = []
-    if backups.is_dir():
-        for prev in backups.glob("*.prev.json"):
-            try:
-                meta = json.loads(prev.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            target = Path(meta.get("target") or "")
-            kind = meta.get("kind")
-            if kind == "created":
-                if target.is_symlink() or target.is_file():
-                    target.unlink(missing_ok=True)
-                created_removed.append(str(target))
-            elif kind == "symlink":
+    for prev in backups.glob("*.prev.json"):
+        try:
+            meta = json.loads(prev.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        target = Path(meta.get("target") or "")
+        if not _lexical_under(target, install_root):
+            continue
+        kind = meta.get("kind")
+        if kind == "created":
+            if target.is_symlink() or target.is_file():
                 target.unlink(missing_ok=True)
-                link = meta.get("link")
-                if isinstance(link, str) and link:
-                    target.symlink_to(link)
-                restored.append(str(target))
-            elif kind == "file":
-                bak = Path(meta.get("backup") or "")
-                if bak.is_file():
-                    target.write_bytes(bak.read_bytes())
-                    restored.append(str(target))
-        for backup in backups.glob("*.bak"):
-            meta_path = backup.with_suffix(".json")
-            if not meta_path.is_file():
-                continue
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            target = Path(meta["target"])
-            if any(row == str(target) for row in restored):
-                continue
-            target.write_bytes(backup.read_bytes())
+            created_removed.append(str(target))
+        elif kind == "symlink":
+            target.unlink(missing_ok=True)
+            link = meta.get("link")
+            if isinstance(link, str) and link:
+                target.symlink_to(link)
             restored.append(str(target))
+        elif kind == "file":
+            bak = Path(meta.get("backup") or "")
+            if (
+                bak.is_symlink()
+                or not bak.is_file()
+                or not _lexical_under(bak, backups)
+            ):
+                continue
+            target.write_bytes(bak.read_bytes())
+            restored.append(str(target))
+    for backup in backups.glob("*.bak"):
+        if backup.is_symlink() or not _lexical_under(backup, backups):
+            continue
+        meta_path = backup.with_suffix(".json")
+        if not meta_path.is_file() or meta_path.is_symlink():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        target = Path(meta.get("target") or "")
+        if not _lexical_under(target, install_root):
+            continue
+        if any(row == str(target) for row in restored):
+            continue
+        target.write_bytes(backup.read_bytes())
+        restored.append(str(target))
     marker.unlink(missing_ok=True)
     return {
         "ok": True,
@@ -393,11 +470,14 @@ def apply_manifest(
     scope = manifest["scope"]
     runtime = manifest["runtime"]
     tx_id = manifest["transaction_id"]
+    install_root = _install_root(scope, project_root)
     rollback_interrupted(scope, project_root)
     tx_root = _tx_dir(scope, project_root)
     backup_dir = tx_root / tx_id
+    _assert_parents_not_symlink(backup_dir, install_root)
     _mkdir(backup_dir)
     marker = tx_root / "current.json"
+    _assert_parents_not_symlink(marker, install_root)
     _write_text_nofollow(
         marker,
         json.dumps(
@@ -421,10 +501,18 @@ def apply_manifest(
             row["classification"] = klass
             if klass in {"user_owned", "user_owned_conflict", "foreign"} and not force:
                 skipped.append({"target": str(target), "class": klass})
+                row["content_hash"] = None
+                row["enabled"] = False
+                row["ownership"] = (
+                    "user-owned" if str(klass).startswith("user") else "foreign"
+                )
                 continue
             if klass == "malformed" and not force:
                 skipped.append({"target": str(target), "class": klass})
+                row["content_hash"] = None
+                row["enabled"] = False
                 continue
+            _assert_parents_not_symlink(target, install_root)
             _mkdir(target.parent)
             _backup_existing(backup_dir, str(row["id"]), target)
             target.write_bytes(body)
@@ -434,6 +522,7 @@ def apply_manifest(
             if scope == "user"
             else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
         )
+        _assert_parents_not_symlink(dest, install_root)
         _mkdir(dest.parent)
         _backup_existing(backup_dir, "omg.install.manifest", dest)
         _write_text_nofollow(
@@ -525,6 +614,8 @@ def inspect_install_manifest(
     plugin = plugin_root()
     for row in raw.get("artifacts") or []:
         if not isinstance(row, dict):
+            continue
+        if row.get("enabled") is False:
             continue
         target = Path(row.get("target") or "")
         claimed = row.get("content_hash")

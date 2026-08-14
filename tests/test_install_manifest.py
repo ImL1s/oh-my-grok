@@ -58,6 +58,9 @@ def test_preserve_user_owned_without_force(tmp_path: Path) -> None:
     assert result["verified"] is False
     assert dest.read_text(encoding="utf-8") == "user kept this\n"
     assert any(row["class"] == "user_owned" for row in result["skipped"])
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is True
+    assert payload.get("drift") == []
 
 
 def test_force_replaces_user_owned(tmp_path: Path) -> None:
@@ -276,6 +279,7 @@ def test_antigravity_runtime_skips_legacy_grok_setup(
     monkeypatch.setattr(
         "omg_cli.install_manifest.refuse_home_project", lambda *_a, **_k: None
     )
+    sys.modules.pop("omg_cli.setup_cmd", None)
     rc = main(["setup", "--runtime", "antigravity", "--here"])
     assert rc == 0
     assert "omg_cli.setup_cmd" not in sys.modules
@@ -419,3 +423,67 @@ def test_doctor_probes_user_scope_manifest(
     assert level == "warn"
     assert "user_configured=True" in detail
     assert "project_configured=False" in detail
+
+
+def test_rollback_ignores_escape_target(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("keep\n", encoding="utf-8")
+    tx_root = project / ".omg" / "install" / "tx"
+    backup = tx_root / ("e" * 32)
+    backup.mkdir(parents=True)
+    (backup / "evil.prev.json").write_text(
+        json.dumps({"target": str(secret), "kind": "created"}), encoding="utf-8"
+    )
+    (tx_root / "current.json").write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "transaction_id": "e" * 32,
+                "backup_dir": str(backup),
+            }
+        ),
+        encoding="utf-8",
+    )
+    rollback_interrupted("project", project)
+    assert secret.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_refuses_symlinked_omg_parent(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (project / ".omg").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    with pytest.raises(InstallManifestError, match="E_SYMLINK"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=project,
+            here=True,
+            plugin=ROOT,
+        )
+    assert not (outside / "projections").exists()
+
+
+def test_oversize_file_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("omg_cli.install_manifest.MAX_BACKUP_BYTES", 8)
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("0123456789 extra\n", encoding="utf-8")
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            force=True,
+            plugin=ROOT,
+        )
+    assert dest.read_text(encoding="utf-8") == "0123456789 extra\n"
