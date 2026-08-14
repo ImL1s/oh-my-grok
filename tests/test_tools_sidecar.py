@@ -130,6 +130,16 @@ def test_rename_apply_requires_read_write(tmp_path: Path) -> None:
             capability_mode="read-only",
             new_name="Y",
         )
+    with pytest.raises(ToolsError, match="E_LSP_APPLY_UNSUPPORTED"):
+        lsp_operation(
+            "rename",
+            root=tmp_path,
+            path="a.py",
+            transport=transport,
+            apply=True,
+            capability_mode="read-write",
+            new_name="Y",
+        )
 
 
 def test_execute_capability_mode_rejected() -> None:
@@ -312,3 +322,48 @@ def test_lsp_timeout_and_crash_fail_closed(tmp_path: Path) -> None:
     hanging = FakeLspTransport(hang_on="textDocument/hover")
     with pytest.raises(ToolsError, match="E_LSP_TIMEOUT"):
         lsp_operation("hover", root=tmp_path, path="a.py", transport=hanging)
+
+
+def test_lsp_initialize_precedes_semantic_request(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+    names = [name for name, _ in transport.calls]
+    assert names[0] == "initialize"
+    assert "initialized" in names
+    assert "textDocument/didOpen" in names
+    assert "textDocument/hover" in names
+
+
+def test_mcp_lsp_hover_uses_supplied_transport(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    called = handle_mcp_rpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "omg.tools.lsp.hover", "arguments": {"path": "a.py"}},
+        },
+        root=tmp_path,
+        transport=transport,
+    )
+    assert called["result"]["isError"] is False
+    assert "initialize" in {name for name, _ in transport.calls}
+
+
+def test_stdio_transport_timeout_does_not_block(tmp_path: Path) -> None:
+    import sys
+
+    from omg_cli.tools_sidecar import StdioLspTransport
+
+    script = tmp_path / "hang_lsp.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=0.3
+    )
+    try:
+        with pytest.raises(ToolsError, match="E_LSP_TIMEOUT"):
+            transport.request("initialize", {})
+    finally:
+        transport.close()

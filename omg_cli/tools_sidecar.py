@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -287,7 +289,7 @@ class FakeLspTransport:
             return []
         if method == "codeAction/resolve":
             return body
-        if method in {"shutdown", "initialized"}:
+        if method in {"shutdown", "initialized", "textDocument/didOpen"}:
             return None
         raise ToolsError("E_LSP_METHOD", f"unsupported LSP method {method}")
 
@@ -308,6 +310,7 @@ class StdioLspTransport:
         if not argv:
             raise ToolsError("E_LSP_COMMAND", "lsp command is empty")
         self.timeout_s = timeout_s
+        self._next_id = 1
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -316,49 +319,93 @@ class StdioLspTransport:
             cwd=str(cwd),
         )
 
-    def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
-        if self._proc.poll() is not None:
-            raise ToolsError("E_LSP_CRASH", "language server exited")
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": dict(params or {}),
-        }
+    def _write_message(self, payload: Mapping[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         header = f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii")
         assert self._proc.stdin is not None
-        assert self._proc.stdout is not None
         try:
             self._proc.stdin.write(header + raw)
             self._proc.stdin.flush()
         except OSError as exc:
             raise ToolsError("E_LSP_CRASH", "language server stdin closed") from exc
-        deadline = time.monotonic() + self.timeout_s
-        buf = b""
-        while time.monotonic() < deadline:
-            chunk = self._proc.stdout.read(1)
+
+    def _read_byte(self, deadline: float) -> bytes:
+        stdout = self._proc.stdout
+        assert stdout is not None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+        if os.name != "nt":
+            ready, _, _ = select.select([stdout], [], [], remaining)
+            if not ready:
+                raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+            chunk = stdout.read(1)
             if not chunk:
                 raise ToolsError("E_LSP_CRASH", "language server stdout closed")
-            buf += chunk
-            if b"\r\n\r\n" in buf:
-                head, rest = buf.split(b"\r\n\r\n", 1)
-                length = None
-                for line in head.decode("ascii", "replace").split("\r\n"):
-                    if line.lower().startswith("content-length:"):
-                        length = int(line.split(":", 1)[1].strip())
-                if length is None:
-                    raise ToolsError("E_LSP_PROTOCOL", "missing Content-Length")
-                while len(rest) < length:
-                    more = self._proc.stdout.read(length - len(rest))
-                    if not more:
-                        raise ToolsError("E_LSP_CRASH", "truncated LSP response")
-                    rest += more
-                msg = json.loads(rest[:length].decode("utf-8"))
-                if "error" in msg:
-                    raise ToolsError("E_LSP_RPC", str(msg["error"]))
-                return msg.get("result")
-        raise ToolsError("E_LSP_TIMEOUT", f"{method} exceeded {self.timeout_s}s")
+            return chunk
+        holder: list[bytes] = []
+        error: list[BaseException] = []
+
+        def _read() -> None:
+            try:
+                holder.append(stdout.read(1))
+            except BaseException as exc:  # noqa: BLE001 — surface into timeout loop
+                error.append(exc)
+
+        worker = threading.Thread(target=_read, daemon=True)
+        worker.start()
+        worker.join(remaining)
+        if worker.is_alive():
+            raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+        if error:
+            raise ToolsError("E_LSP_CRASH", "language server stdout closed") from error[0]
+        chunk = holder[0] if holder else b""
+        if not chunk:
+            raise ToolsError("E_LSP_CRASH", "language server stdout closed")
+        return chunk
+
+    def _read_message(self, deadline: float) -> dict[str, Any]:
+        buf = b""
+        while True:
+            buf += self._read_byte(deadline)
+            if b"\r\n\r\n" not in buf:
+                continue
+            head, rest = buf.split(b"\r\n\r\n", 1)
+            length = None
+            for line in head.decode("ascii", "replace").split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    length = int(line.split(":", 1)[1].strip())
+            if length is None:
+                raise ToolsError("E_LSP_PROTOCOL", "missing Content-Length")
+            while len(rest) < length:
+                rest += self._read_byte(deadline)
+            return json.loads(rest[:length].decode("utf-8"))
+
+    def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
+        if self._proc.poll() is not None:
+            raise ToolsError("E_LSP_CRASH", "language server exited")
+        self._write_message(
+            {"jsonrpc": "2.0", "method": method, "params": dict(params or {})}
+        )
+
+    def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
+        if self._proc.poll() is not None:
+            raise ToolsError("E_LSP_CRASH", "language server exited")
+        msg_id = self._next_id
+        self._next_id += 1
+        self._write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "method": method,
+                "params": dict(params or {}),
+            }
+        )
+        deadline = time.monotonic() + self.timeout_s
+        msg = self._read_message(deadline)
+        if "error" in msg:
+            raise ToolsError("E_LSP_RPC", str(msg["error"]))
+        return msg.get("result")
 
     def close(self) -> None:
         if self._proc.poll() is None:
@@ -399,6 +446,79 @@ _LSP_METHODS = {
 }
 
 
+def _language_id_for(path: Path) -> str:
+    return {
+        ".py": "python",
+        ".ts": "typescript",
+        ".js": "javascript",
+        ".go": "go",
+        ".rs": "rust",
+        ".c": "c",
+        ".h": "c",
+        ".cpp": "cpp",
+        ".json": "json",
+        ".md": "markdown",
+    }.get(path.suffix.lower(), "plaintext")
+
+
+def _lsp_notify_or_request(
+    transport: LspTransport, method: str, params: Mapping[str, Any] | None = None
+) -> None:
+    notify = getattr(transport, "notify", None)
+    if callable(notify):
+        notify(method, params)
+        return
+    try:
+        transport.request(method, params)
+    except ToolsError as exc:
+        if exc.code != "E_LSP_METHOD":
+            raise
+
+
+def ensure_lsp_session(
+    transport: LspTransport, *, root: Path, path: str | None
+) -> None:
+    """Send initialize/initialized (and didOpen when a path is known)."""
+    if getattr(transport, "_omg_lsp_ready", False):
+        return
+    root_uri = Path(root).resolve().as_uri()
+    transport.request(
+        "initialize",
+        {
+            "processId": os.getpid(),
+            "rootUri": root_uri,
+            "capabilities": {},
+            "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
+        },
+    )
+    _lsp_notify_or_request(transport, "initialized", {})
+    if path:
+        confined = confine_path(root, path)
+        text = ""
+        if confined.is_file():
+            try:
+                raw = confined.read_bytes()
+            except OSError:
+                raw = b""
+            text = raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
+        _lsp_notify_or_request(
+            transport,
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": confined.as_uri(),
+                    "languageId": _language_id_for(confined),
+                    "version": 1,
+                    "text": text,
+                }
+            },
+        )
+    try:
+        setattr(transport, "_omg_lsp_ready", True)
+    except (AttributeError, TypeError):
+        pass
+
+
 def lsp_operation(
     operation: str,
     *,
@@ -430,9 +550,14 @@ def lsp_operation(
     mode = capability_mode_of(capability_mode)
     if operation in {"rename", "code_action"} and apply:
         require_read_write(mode, f"lsp.{operation}")
+        raise ToolsError(
+            "E_LSP_APPLY_UNSUPPORTED",
+            "sidecar --apply does not write WorkspaceEdit; omit --apply for preview",
+        )
     elif operation in {"rename", "code_action"} and not apply:
         # Preview is allowed read-only.
         pass
+    ensure_lsp_session(transport, root=root, path=path)
     params: dict[str, Any]
     if operation == "workspace_symbols":
         params = {"query": query or ""}
@@ -867,6 +992,7 @@ def run_tools_stdio(
     stdout=None,
     env: Mapping[str, str] | None = None,
     capability_mode: str = READ_ONLY,
+    transport: LspTransport | None = None,
 ) -> int:
     inn = stdin if stdin is not None else sys.stdin
     out = stdout if stdout is not None else sys.stdout
@@ -883,7 +1009,11 @@ def run_tools_stdio(
         if message.get("method") == "notifications/cancelled":
             continue
         reply = handle_mcp_rpc(
-            message, root=root, env=env, capability_mode=capability_mode
+            message,
+            root=root,
+            env=env,
+            capability_mode=capability_mode,
+            transport=transport,
         )
         out.write(json.dumps(reply, ensure_ascii=False) + "\n")
         out.flush()

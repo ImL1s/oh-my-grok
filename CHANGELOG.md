@@ -101,6 +101,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#73 Codex review:** sidecar LSP sends `initialize`/`initialized`/`didOpen`
+  before semantic requests; `omg tools serve --stdio` accepts
+  `--lsp-command`/`--fake-lsp`; stdio reads honor the timeout without
+  blocking forever; `--apply` fail-closes (`E_LSP_APPLY_UNSUPPORTED`)
+  instead of claiming a write. Refs #73.
 - **#72 Codex review:** `omg doctor` prints hooks-registry `installed`
   and `enabled` so `OMG_DISABLE_HOOKS` / `DISABLE_OMG` is visible (not
   only `omg capabilities`). Refs #72.

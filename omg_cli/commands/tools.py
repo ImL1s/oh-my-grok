@@ -80,9 +80,16 @@ def cmd_tools(args: argparse.Namespace) -> int:
                     )
                 )
                 return 2
-            return int(
-                run_tools_stdio(root, capability_mode=mode)
-            )
+            transport = _transport_from_args(args, root)
+            try:
+                return int(
+                    run_tools_stdio(
+                        root, capability_mode=mode, transport=transport
+                    )
+                )
+            finally:
+                if transport is not None:
+                    transport.close()
         if action == "lsp":
             op = getattr(args, "lsp_op", None) or "servers"
             transport = _transport_from_args(args, root)
@@ -194,6 +201,13 @@ def register_tools_parsers(
         dest="capability_mode",
         choices=("read-only", "read-write"),
         default="read-only",
+    )
+    p_serve.add_argument("--fake-lsp", action="store_true", help="in-process fake protocol")
+    p_serve.add_argument(
+        "--lsp-command",
+        nargs="+",
+        default=None,
+        help="language server argv wired into MCP omg.tools.lsp.* tools",
     )
     p_serve.set_defaults(func=cmd_tools, tools_action="serve")
 
