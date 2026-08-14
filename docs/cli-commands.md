@@ -61,5 +61,6 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `dual-review` | modes | critic then verifier |
 | `mcp-server` | mcp | stdio MCP server |
 | `mcp-install` | mcp | install MCP registration |
+| `tools` | mcp | OMG-owned LSP/AST-grep/CodeGraph/research sidecar (not Grok-native; #73) |
 <!-- OMG:CLI-COMMANDS:END -->
 

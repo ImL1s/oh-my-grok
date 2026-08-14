@@ -51,6 +51,10 @@ from omg_cli.commands.mcp import (  # #29 Phase 2+4' — mcp family
     cmd_mcp_server,  # noqa: F401
     register_mcp_parsers,
 )
+from omg_cli.commands.tools import (  # #73 — tools sidecar
+    cmd_tools,  # noqa: F401 — re-export for tests
+    register_tools_parsers,
+)
 from omg_cli.commands.memory import (  # #29 Phase 2+4' — memory family
     cmd_compact,  # noqa: F401 — re-export for tests
     cmd_memory,  # noqa: F401
@@ -235,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
     register_mcp_parsers(sub, common)
+    register_tools_parsers(sub, common)
 
 
     return parser

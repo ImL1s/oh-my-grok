@@ -101,6 +101,11 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("dual-review", "critic then verifier", "modes"),
     CommandSpec("mcp-server", "stdio MCP server", "mcp"),
     CommandSpec("mcp-install", "install MCP registration", "mcp"),
+    CommandSpec(
+        "tools",
+        "OMG-owned LSP/AST-grep/CodeGraph/research sidecar (not Grok-native; #73)",
+        "mcp",
+    ),
 )
 
 KNOWN_SUBCOMMANDS: Final[frozenset[str]] = frozenset(s.name for s in COMMAND_SPECS)

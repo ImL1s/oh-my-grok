@@ -10,6 +10,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#73 tools sidecar (first cut):** `omg tools doctor|serve|lsp|ast|codegraph|research`
+  is an OMG-owned sidecar (`omg_cli/tools_sidecar.py`). Semantic LSP uses an
+  explicit transport (fake protocol or `--lsp-command`); it is **not**
+  Grok-native and does **not** change `omg lsp` (`E_LSP_HOST_OWNED`).
+  `omg mcp-server` still forbids `lsp.*`. Missing ast-grep is blocked, not
+  faked; replace defaults to dry-run. CodeGraph modes `off|auto|shared|local`
+  label branch accuracy and never claim a shared index has worktree dirt.
+  Network research is opt-in (`OMG_TOOLS_NETWORK=1`) with no bundled
+  credentials. MCP image results are bounded descriptors (no raw bytes in
+  state). Antigravity files under
+  `docs/parity/projections/antigravity/mcp/` are **not** an installed AG
+  plugin and **not** live AG evidence. Does not set `verified`. Refs #73
+  (does not close).
 - **#72 lifecycle registry (first cut):** host-neutral hook registry
   `hooks/registry.json` plus in-process dispatcher
   `omg_cli/hooks_registry.py`. Grok mappings are explicit:
