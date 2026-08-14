@@ -10,6 +10,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#134 Grok-side dual-host agent-routing UX:** host-neutral
+  `AgentPolicyViewV1` human layouts (narrow/normal/wide, `NO_COLOR`, CJK
+  display width), doctor routing addendum, Team presentation human route-kind
+  labels, and adapter schema `docs/schemas/omg.agent_policy_view.v1.json`.
+  Locked `omg team status --json` keys are unchanged. Medley TUI/#290 remains
+  a Ref — no native-host TUI claimed. Refs #134 (does not close).
 - **#131 Grok-side dual-host agent/model policy (runtime):** versioned
   capability registry (`omg_cli/host_capabilities.py`) with outcomes
   supported/unsupported/unavailable/incompatible/unknown. Policy overlay

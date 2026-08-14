@@ -862,9 +862,15 @@ def cmd_team(args: argparse.Namespace) -> int:
                 if getattr(args, "as_json", False):
                     emit_data(args, "team.presentation", presentation)
                 else:
+                    from omg_cli.agent_policy_ux import (
+                        format_presentation_human,
+                        terminal_width,
+                    )
+
                     print(
-                        json.dumps(
-                            presentation, indent=2, ensure_ascii=False, sort_keys=True
+                        format_presentation_human(
+                            presentation,
+                            columns=terminal_width(),
                         )
                     )
                 return 0

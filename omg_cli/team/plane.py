@@ -6051,6 +6051,11 @@ def format_status_table(status: Mapping[str, Any]) -> str:
         io_mode = str(io.get("io_mode") or "unproven")
         op_in = "yes" if io.get("operator_input_supported") is True else "no"
         ready = "yes" if io.get("input_ready") is True else "no"
+        route = t.get("route")
+        if isinstance(route, Mapping) and route.get("kind"):
+            route_s = f" route={route.get('kind')}"
+        else:
+            route_s = " route=unknown"
         lines.append(
             f"{tid:<16} "
             f"{int(t.get('window_index') or 0):>3} "
@@ -6060,6 +6065,7 @@ def format_status_table(status: Mapping[str, Any]) -> str:
             f"{op_in:<5} "
             f"{ready:<5} "
             f"{t.get('worktree') or ''}"
+            f"{route_s}"
         )
     return "\n".join(lines)
 

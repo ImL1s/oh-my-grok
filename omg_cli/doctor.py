@@ -1488,6 +1488,15 @@ def run_doctor(
         tag = _format_soft_tag(level, strict=strict)
         print(f"[{tag}] {name}: {detail}")
 
+    try:
+        from omg_cli.agent_policy_ux import format_doctor_routing_human
+        from omg_cli.host_capabilities import stock_grok_snapshot
+
+        print("-" * 48)
+        print(format_doctor_routing_human(stock_grok_snapshot()))
+    except Exception:
+        pass
+
     # compat.claude isolation scan (always runs)
     print("-" * 48)
     print("compat.claude isolation")

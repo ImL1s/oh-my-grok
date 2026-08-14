@@ -113,11 +113,11 @@ human+JSON 成对示例（含 stock host 的 unsupported／unavailable）只以�
 路由／后端完成 **不是** UI／TUI 完成。OMG **不拥有**任意 stock-host renderer／panel。
 
 - Stock Grok Build：只经 host 已支持的宣告式 Agents／Tasks／child surfaces
-- OMG：[#134](https://github.com/ImL1s/oh-my-grok/issues/134) 的 policy／Team／external-executor 投影（planned / contract-only）
+- OMG：[#134](https://github.com/ImL1s/oh-my-grok/issues/134) 的 CLI／JSON／doctor／Team presentation 投影 **已出货**；Medley TUI 仍是 planned / **contract-only**，**今日不可运行**
 - Medley：[ImL1s/medley#290](https://github.com/ImL1s/medley/issues/290) Agents／lifecycle TUI；[ImL1s/medley#207](https://github.com/ImL1s/medley/issues/207) provider／route／statusline
 
 增强栏位 capability-gated；stock host 以 **unsupported**／**unavailable** 诚实回报。
-narrow-width／no-color／无障碍是 **contract target**，本页不宣称已出货 runtime。
+CLI narrow-width／no-color **已出货**；Medley TUI 无障碍仍是 **contract-only**，本页不宣称 TUI runtime。
 
 英文规范：[Presentation ownership and accessibility](./agent-model-routing.md#presentation-ownership-and-accessibility)。
 

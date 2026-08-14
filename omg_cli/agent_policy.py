@@ -174,6 +174,11 @@ class AgentPolicyViewV1:
             "reasons": [item.to_json() for item in self.reasons],
             "host_facts": dict(self.host_facts),
             "requested_policy": {"binding": self.baseline_mode},
+            "effective_route": {
+                "kind": self.route_kind,
+                "selected_model_ref": self.selected_model_ref,
+                "route_receipt_digest": self.route_receipt_digest,
+            },
         }
 
 
