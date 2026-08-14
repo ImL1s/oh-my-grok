@@ -61,6 +61,8 @@ def test_preserve_user_owned_without_force(tmp_path: Path) -> None:
     payload = inspect_install_manifest(project_root=tmp_path, scope="project")
     assert payload["ok"] is True
     assert payload.get("drift") == []
+    assert payload.get("enabled") is False
+    assert payload.get("installed") is False
 
 
 def test_force_replaces_user_owned(tmp_path: Path) -> None:
@@ -96,6 +98,7 @@ def test_rollback_interrupted_restores_backup(tmp_path: Path) -> None:
         json.dumps(
             {
                 "status": "committing",
+                "runtime": "antigravity",
                 "transaction_id": "deadbeef",
                 "backup_dir": str(backup),
             }
@@ -235,6 +238,7 @@ def test_rollback_unlinks_created_artifact(tmp_path: Path) -> None:
         json.dumps(
             {
                 "status": "committing",
+                "runtime": "antigravity",
                 "transaction_id": "d" * 32,
                 "backup_dir": str(tx),
             }
@@ -440,6 +444,7 @@ def test_rollback_ignores_escape_target(tmp_path: Path) -> None:
         json.dumps(
             {
                 "status": "committing",
+                "runtime": "antigravity",
                 "transaction_id": "e" * 32,
                 "backup_dir": str(backup),
             }
@@ -521,6 +526,7 @@ def test_rollback_skips_symlinked_parent_target(tmp_path: Path) -> None:
         json.dumps(
             {
                 "status": "committing",
+                "runtime": "antigravity",
                 "transaction_id": "f" * 32,
                 "backup_dir": str(backup),
             }
@@ -557,6 +563,7 @@ def test_rollback_does_not_follow_symlink_file_target(tmp_path: Path) -> None:
         json.dumps(
             {
                 "status": "committing",
+                "runtime": "antigravity",
                 "transaction_id": "g" * 32,
                 "backup_dir": str(backup),
             }
@@ -608,3 +615,28 @@ def test_inspect_reports_symlinked_omg_parent(tmp_path: Path) -> None:
     payload = inspect_install_manifest(project_root=project, scope="project")
     assert payload["ok"] is False
     assert payload.get("error")
+
+
+def test_rollback_does_not_unlink_git_config(tmp_path: Path) -> None:
+    git_config = tmp_path / ".git" / "config"
+    git_config.parent.mkdir()
+    git_config.write_text("[core]\n", encoding="utf-8")
+    tx_root = tmp_path / ".omg" / "install" / "tx"
+    backup = tx_root / ("h" * 32)
+    backup.mkdir(parents=True)
+    (backup / "evil.prev.json").write_text(
+        json.dumps({"target": str(git_config), "kind": "created"}), encoding="utf-8"
+    )
+    (tx_root / "current.json").write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "runtime": "antigravity",
+                "transaction_id": "h" * 32,
+                "backup_dir": str(backup),
+            }
+        ),
+        encoding="utf-8",
+    )
+    rollback_interrupted("project", tmp_path)
+    assert git_config.read_text(encoding="utf-8") == "[core]\n"

@@ -323,6 +323,32 @@ def _desired_body(row: Mapping[str, Any], *, plugin: Path) -> bytes | None:
     return None
 
 
+def _writable_restore_paths(
+    *,
+    runtime: str,
+    scope: str,
+    project_root: Path | None,
+    plugin: Path | None = None,
+) -> set[Path]:
+    """Paths this transaction may create or overwrite (not mergeable AGENTS.md)."""
+    plugin = plugin or plugin_root()
+    allowed: set[Path] = set()
+    for row in desired_artifacts(
+        runtime=runtime,
+        scope=scope,
+        project_root=project_root,
+        plugin=plugin,
+    ):
+        if _desired_body(row, plugin=plugin) is None:
+            continue
+        allowed.add(Path(row["target"]).absolute())
+    if scope == "user":
+        allowed.add(user_manifest_path().absolute())
+    elif project_root is not None:
+        allowed.add(project_manifest_path(project_root).absolute())
+    return allowed
+
+
 def build_manifest(
     *,
     runtime: str,
@@ -386,10 +412,12 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         marker.unlink(missing_ok=True)
         return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
     tx_id = str(state.get("transaction_id") or "")
+    runtime = str(state.get("runtime") or "")
     backups = Path(state.get("backup_dir") or "")
     expected = (tx_root / tx_id).absolute() if tx_id else None
     if (
         not tx_id
+        or runtime not in RUNTIMES
         or expected is None
         or backups.is_symlink()
         or backups.absolute() != expected
@@ -401,6 +429,11 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
             "rolled_back": False,
             "note": "tx marker backup_dir rejected",
         }
+    allowed_targets = _writable_restore_paths(
+        runtime=runtime,
+        scope=scope,
+        project_root=project_root,
+    )
     restored = []
     created_removed = []
     for prev in backups.glob("*.prev.json"):
@@ -410,6 +443,8 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
             continue
         target = Path(meta.get("target") or "")
         if not _lexical_under(target, install_root):
+            continue
+        if target.absolute() not in allowed_targets:
             continue
         try:
             _assert_parents_not_symlink(target, install_root)
@@ -449,6 +484,8 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
             continue
         target = Path(meta.get("target") or "")
         if not _lexical_under(target, install_root):
+            continue
+        if target.absolute() not in allowed_targets:
             continue
         try:
             _assert_parents_not_symlink(target, install_root)
@@ -496,6 +533,8 @@ def apply_manifest(
                 "status": "committing",
                 "transaction_id": tx_id,
                 "backup_dir": str(backup_dir),
+                "runtime": runtime,
+                "scope": scope,
             }
         ),
     )
@@ -701,12 +740,13 @@ def inspect_install_manifest(
             klass = classify_path(target, desired=body)
         if klass in {"stale", "missing", "malformed", "foreign"}:
             drift.append({"id": row.get("id"), "class": klass, "target": str(target)})
+    enabled_rows = [row for row in rows if row.get("enabled") is not False]
     return {
         "ok": not drift,
         "configured": True,
-        "installed": True,
-        "enabled": True,
-        "loadable": True,
+        "installed": bool(enabled_rows),
+        "enabled": bool(enabled_rows),
+        "loadable": bool(enabled_rows),
         "observed": False,
         "healthy": False,
         "verified": False,
