@@ -126,6 +126,62 @@ def test_dispatch_skip_named_hook() -> None:
     assert any(row["status"] == "skipped" for row in result["results"])
 
 
+def test_dispatch_legacy_skip_names() -> None:
+    stop = dispatch("stop.request", {}, root=ROOT, env={"OMG_SKIP_HOOKS": "stop"})
+    assert any(row["id"] == "omg.stop.gate" and row["status"] == "skipped" for row in stop["results"])
+    pre = dispatch(
+        "tool.pre",
+        {"toolName": "read_file"},
+        root=ROOT,
+        env={"OMG_SKIP_HOOKS": "pre_tool_use"},
+    )
+    assert any(
+        row["id"] == "omg.pretool.deny" and row["status"] == "skipped" for row in pre["results"]
+    )
+
+
+def test_aggregate_budget_fail_closed_does_not_false_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses
+    import time
+
+    from omg_cli import hooks_registry as hr
+
+    monkeypatch.setattr(hr, "AGGREGATE_BUDGET_MS", 10)
+    registry = load_hooks_registry(ROOT)
+    guard = registry.by_id()["omg.continuation.guard"]
+    decoy = dataclasses.replace(
+        guard,
+        id="omg.workflow.decoy",
+        fail_policy="fail-open",
+        priority=1,
+        timeout_ms=5_000,
+        handler="observe",
+    )
+    cloned = hr.HooksRegistry(schema=registry.schema, hooks=(decoy, guard))
+
+    def slow(_record, _payload):
+        time.sleep(0.05)
+        return {"status": "ok"}
+
+    def unused(_record, _payload):
+        return {"status": "ok"}
+
+    result = dispatch(
+        "workflow.transition",
+        {"active_owner": "ralph", "requested": "autopilot"},
+        registry=cloned,
+        handlers={"omg.workflow.decoy": slow, "omg.continuation.guard": unused},
+        env={},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "E_HOOK_FAIL_CLOSED"
+    row = next(item for item in result["results"] if item["id"] == "omg.continuation.guard")
+    assert row["status"] == "budget_exceeded"
+    assert row.get("fail_open") is not True
+
+
 def test_dispatch_pretool_delegates_to_deny_without_weakening() -> None:
     result = dispatch(
         "tool.pre",

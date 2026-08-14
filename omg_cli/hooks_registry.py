@@ -5,7 +5,9 @@ invent UserPromptSubmit injection. Does not replace deny.py / stop_gate.py
 behavior: those handlers are delegated unchanged.
 
 Kill switches (bus): ``OMG_DISABLE_HOOKS`` and ``DISABLE_OMG`` disable the
-dispatcher; ``OMG_SKIP_HOOKS`` skips named hook ids. Grok plugin scripts still
+dispatcher; ``OMG_SKIP_HOOKS`` skips named hook ids, canonical events, and
+legacy ``hooks/bin`` logical names (``stop``, ``pre_tool_use``,
+``session_start``, ``subagent_stop``). Grok plugin scripts still
 honor ``DISABLE_OMG`` / ``OMG_SKIP_HOOKS`` via ``hooks/bin/_common.py``.
 
 Antigravity files under ``docs/parity/projections/antigravity/hooks/`` are
@@ -29,6 +31,14 @@ ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/hooks"
 MAX_HOOK_OUTPUT_BYTES = 16_384
 MAX_HANDOFF_BYTES = 8_192
 AGGREGATE_BUDGET_MS = 2_000
+
+# Logical names honored by hooks/bin/_common.py hook_disabled().
+_LEGACY_SKIP_ALIASES: dict[str, tuple[str, ...]] = {
+    "stop": ("stop.request", "omg.stop.gate", "Stop"),
+    "pre_tool_use": ("tool.pre", "omg.pretool.deny", "PreToolUse"),
+    "session_start": ("session.start", "omg.session.start.observe", "SessionStart"),
+    "subagent_stop": ("subagent.stop", "omg.subagent.stop.observe", "SubagentStop"),
+}
 
 CANONICAL_EVENTS = (
     "prompt.submit",
@@ -349,7 +359,24 @@ def bus_disabled(env: Mapping[str, str] | None = None) -> bool:
 def skipped_hook_ids(env: Mapping[str, str] | None = None) -> set[str]:
     e = env if env is not None else os.environ
     raw = str(e.get("OMG_SKIP_HOOKS", ""))
-    return {token.strip().lower() for chunk in raw.split(",") for token in chunk.split() if token.strip()}
+    tokens = {
+        token.strip().lower()
+        for chunk in raw.split(",")
+        for token in chunk.split()
+        if token.strip()
+    }
+    expanded = set(tokens)
+    for alias, targets in _LEGACY_SKIP_ALIASES.items():
+        if alias in tokens:
+            expanded.update(item.lower() for item in targets)
+    return expanded
+
+
+def _hook_skipped(record: HookRecord, skip: set[str]) -> bool:
+    names = {record.id.lower(), record.event.lower()}
+    if record.host_hook:
+        names.add(record.host_hook.lower())
+    return bool(names & skip)
 
 
 def resolve_continuation(active_owner: str | None, requested: str) -> str:
@@ -492,12 +519,26 @@ def dispatch(
     results: list[dict[str, Any]] = []
     started = time.monotonic()
     for record in loaded.for_event(event):
-        if not record.enabled or record.id.lower() in skip or record.event.lower() in skip:
+        if not record.enabled or _hook_skipped(record, skip):
             results.append({"id": record.id, "status": "skipped"})
             continue
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if elapsed_ms >= AGGREGATE_BUDGET_MS:
-            results.append({"id": record.id, "status": "budget_exceeded", "fail_open": True})
+            row = {
+                "id": record.id,
+                "status": "budget_exceeded",
+                "fail_policy": record.fail_policy,
+            }
+            if record.fail_policy == "fail-closed":
+                return {
+                    "ok": False,
+                    "event": event,
+                    "results": results + [row],
+                    "verified": False,
+                    "error": "E_HOOK_FAIL_CLOSED",
+                }
+            row["fail_open"] = True
+            results.append(row)
             continue
         hook_started = time.monotonic()
         try:

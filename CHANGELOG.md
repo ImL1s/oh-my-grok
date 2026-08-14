@@ -94,7 +94,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#72 Codex review:** Grok `host_capability` must match `GROK_EVENT_MAP`
   exactly (no native_passive/native_blocking swap); `omg capabilities`
   reports hooks `enabled: false` when `OMG_DISABLE_HOOKS`/`DISABLE_OMG` is
-  set. In-process handler deadlines remain cooperative (post-return). Refs #72.
+  set. `OMG_SKIP_HOOKS` honors legacy `stop`/`pre_tool_use` names; aggregate
+  budget exhaustion fail-closes remaining `fail-closed` hooks. In-process
+  handler deadlines remain cooperative (post-return). Refs #72.
 - **#131 Codex review (follow-up):** `omg agents list` model-intent uses the
   requested extension's `host_capabilities` state, not the aggregate
   `medley_capability_outcome`, so mixed Medley caps cannot advertise
