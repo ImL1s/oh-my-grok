@@ -70,6 +70,7 @@ HOST_CAPABILITIES = frozenset(
     }
 )
 FAIL_POLICIES = frozenset({"fail-open", "fail-closed"})
+RUNTIME_PROJECTIONS = frozenset({"grok", "omg-cli", "antigravity", "none"})
 PRIVACY_CLASSES = frozenset(
     {"security", "workflow", "observability", "routing", "handoff"}
 )
@@ -190,17 +191,24 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
     event = _require_str(obj["event"], label=f"{label}.event")
     if event not in CANONICAL_EVENTS:
         raise HooksRegistryError(f"{hook_id}: unknown event {event!r}")
+    projection = _require_str(
+        obj["runtime_projection"], label=f"{label}.runtime_projection"
+    )
+    if projection not in RUNTIME_PROJECTIONS:
+        raise HooksRegistryError(
+            f"{hook_id}: runtime_projection must be one of {sorted(RUNTIME_PROJECTIONS)}"
+        )
     cap = _require_str(obj["host_capability"], label=f"{label}.host_capability")
     if cap not in HOST_CAPABILITIES:
         raise HooksRegistryError(f"{hook_id}: unknown host_capability {cap!r}")
-    if event == "prompt.submit" and obj["runtime_projection"] == "grok":
+    if event == "prompt.submit" and projection == "grok":
         if cap != "unsupported" or obj["enabled"] is not False:
             raise HooksRegistryError(
                 "prompt.submit on Grok must be unsupported and disabled "
                 "(no UserPromptSubmit injection)"
             )
     grok_expected = GROK_EVENT_MAP[event]
-    if obj["runtime_projection"] == "grok" and cap != grok_expected:
+    if projection == "grok" and cap != grok_expected:
         raise HooksRegistryError(
             f"{hook_id}: grok {event} must map as {grok_expected}, got {cap}"
         )
@@ -225,9 +233,7 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
     return HookRecord(
         id=hook_id,
         event=event,
-        runtime_projection=_require_str(
-            obj["runtime_projection"], label=f"{label}.runtime_projection"
-        ),
+        runtime_projection=projection,
         host_hook=host_hook,
         host_capability=cap,
         priority=int(obj["priority"]),
@@ -409,13 +415,19 @@ def write_compact_handoff(
 
         ensure_managed_dir(dest_dir)
         atomic_write_bytes(dest, body)
-    except Exception as exc:
-        from omg_cli.contracts.path_keys import ContractPathError
-
-        if not isinstance(exc, ContractPathError):
-            raise
-        if dest.is_symlink() or dest_dir.is_symlink():
-            raise HooksRegistryError("compact handoff may not be a symlink") from exc
+    except ContractPathError as exc:
+        detail = str(exc).lower()
+        posix_unsupported = "posix" in detail or "o_nofollow" in detail
+        if not posix_unsupported:
+            raise HooksRegistryError(f"compact handoff write refused: {exc}") from exc
+        current = dest
+        while True:
+            if current.is_symlink():
+                raise HooksRegistryError("compact handoff may not be a symlink") from exc
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
     return payload

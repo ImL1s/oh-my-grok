@@ -108,6 +108,17 @@ def test_grok_passive_cannot_claim_blocking(tmp_path: Path) -> None:
         load_hooks_registry(tmp_path)
 
 
+def test_unknown_runtime_projection_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["event"] == "session.start":
+            hook["runtime_projection"] = "Grok"
+            hook["host_capability"] = "native_blocking"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="runtime_projection"):
+        load_hooks_registry(tmp_path)
+
+
 def test_dispatch_disabled_skips_all() -> None:
     result = dispatch("tool.pre", {}, root=ROOT, env={"OMG_DISABLE_HOOKS": "1"})
     assert result["ok"] is True
@@ -354,6 +365,20 @@ def test_compact_handoff_refuses_symlink(tmp_path: Path) -> None:
     with pytest.raises(HooksRegistryError, match="symlink"):
         write_compact_handoff(tmp_path, run_id="run-1", session_id="sess-1")
     assert target.read_text(encoding="utf-8") == "secret\n"
+
+
+def test_compact_handoff_refuses_symlinked_omg(tmp_path: Path) -> None:
+    outside = tmp_path / "outside-omg"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret\n", encoding="utf-8")
+    try:
+        (tmp_path / ".omg").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not available")
+    with pytest.raises(HooksRegistryError, match="refused|symlink"):
+        write_compact_handoff(tmp_path, run_id="run-1", session_id="sess-1")
+    assert not (outside / "artifacts" / "compact-handoff.json").exists()
+    assert (outside / "secret.txt").read_text(encoding="utf-8") == "secret\n"
 
 
 def test_dispatch_compact_pre_writes_handoff(tmp_path: Path) -> None:
