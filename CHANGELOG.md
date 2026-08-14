@@ -122,11 +122,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   stamps headless supervisor panes). Refs #147.
 - **#147 Codex review:** interactive Grok argv now honors `--safe` /
   `--yolo` the same way as headless D1 (default no longer injects
-  `bypassPermissions`), passes the routed model, refuses symlink inbox /
-  exec-wrapper destinations, snapshots those artifacts for `--run` rollback,
-  and threads `ExactPaneProof.tmux_socket_path` through liveness probes
-  (not only the final `send-keys`). Real-Grok `TUI_READY` / PROVIDER_ECHO
-  remains open #147 work. Refs #147.
+  `bypassPermissions`; `--yolo` also adds `--always-approve`), passes the
+  routed model, refuses symlink inbox / exec-wrapper destinations, snapshots
+  those artifacts for `--run` rollback, and threads
+  `ExactPaneProof.tmux_socket_path` through liveness probes (not only the
+  final `send-keys`). `team start --plan-only` includes `io_mode` like
+  `team launch`. Real-Grok `TUI_READY` / PROVIDER_ECHO remains open #147
+  work. Refs #147.
 - **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
   and ignore CSI-only/empty lines before treating a TTY read as provider
   consume, so `PROVIDER_ECHO` is the operator payload. After echo the

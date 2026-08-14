@@ -519,6 +519,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "tasks": tasks,
                     "routing": routing,
                     "worker_topology": getattr(args, "worker_topology", None) or "pane",
+                    "io_mode": getattr(args, "io_mode", None) or "headless",
                     "note": (
                         "plan-only: no .omg mutation, no worktrees, no tmux "
                         "(#27). Use --dry-run/--materialize-only to materialize "

@@ -103,7 +103,8 @@ def grok_interactive_argv(
     """Persistent Grok TUI argv — no one-shot ``--prompt-file`` transport.
 
     Permission flags match headless ``build_grok_argv``: ``safe`` / read-only
-    → ``plan``; ``yolo`` → ``bypassPermissions``; default omits elevation.
+    → ``plan``; ``yolo`` → ``bypassPermissions`` + ``--always-approve``;
+    default omits elevation.
     """
     worktree = str(Path(cwd))
     argv: list[str] = ["grok", "--cwd", worktree]
@@ -113,6 +114,7 @@ def grok_interactive_argv(
         argv.extend(["--permission-mode", "plan"])
     elif yolo:
         argv.extend(["--permission-mode", "bypassPermissions"])
+        argv.append("--always-approve")
     if "--prompt-file" in argv:
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
     return argv

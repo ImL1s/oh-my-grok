@@ -72,11 +72,14 @@ def test_grok_interactive_argv_has_no_prompt_file() -> None:
     assert "bypassPermissions" not in argv
     yolo = grok_interactive_argv(cwd="/tmp/wt", posture="read-write", yolo=True)
     assert "bypassPermissions" in yolo
+    assert "--always-approve" in yolo
     safe = grok_interactive_argv(
         cwd="/tmp/wt", posture="read-write", safe=True, yolo=True
     )
     assert "--permission-mode" in safe and "plan" in safe
     assert "bypassPermissions" not in safe
+    assert "--always-approve" not in safe
+    assert "--always-approve" not in argv
     ro = grok_interactive_argv(cwd="/tmp/wt", posture="read-only")
     assert "--permission-mode" in ro and "plan" in ro
     modeled = grok_interactive_argv(cwd="/tmp/wt", model="grok-example")
