@@ -502,6 +502,19 @@ def test_check_plugin_enabled_ok(tmp_path, monkeypatch):
     assert "oh-my-grok" in detail
 
 
+def test_check_hooks_registry_includes_enabled_and_installed(monkeypatch):
+    monkeypatch.delenv("OMG_DISABLE_HOOKS", raising=False)
+    monkeypatch.delenv("DISABLE_OMG", raising=False)
+    name, level, detail = doctor.check_hooks_registry()
+    assert name == "hooks registry"
+    assert "installed=" in detail
+    assert "enabled=" in detail
+    monkeypatch.setenv("OMG_DISABLE_HOOKS", "1")
+    _name, _level, disabled = doctor.check_hooks_registry()
+    assert "enabled=False" in disabled
+    assert "installed=" in disabled
+
+
 def test_check_plugin_enabled_warn_when_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("GROK_HOME", str(tmp_path))
     (tmp_path / "config.toml").write_text(
@@ -743,6 +756,11 @@ def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
         doctor,
         "check_installed_release_identity",
         lambda: ("immutable install identity", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_hooks_registry",
+        lambda: ("hooks registry", "ok", "stub"),
     )
     monkeypatch.setattr(
         doctor,

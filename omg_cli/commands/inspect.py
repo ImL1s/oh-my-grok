@@ -373,6 +373,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     mcp_installed = importlib.util.find_spec("omg_cli.mcp.server") is not None
     workflow_installed = importlib.util.find_spec("omg_cli.workflows.runner") is not None
     from omg_cli.agents_catalog import inspect_agents_catalog, plugin_root as catalog_root
+    from omg_cli.hooks_registry import inspect_hooks_registry
     from omg_cli.skills_catalog import inspect_skills_catalog
 
     result = {
@@ -381,6 +382,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
         "version": __version__,
         "agents_catalog": inspect_agents_catalog(catalog_root()),
         "skills_catalog": inspect_skills_catalog(catalog_root()),
+        "hooks_registry": inspect_hooks_registry(catalog_root()),
         "surfaces": {
             "mcp": {
                 "configured": (root / ".mcp.json").is_file(),

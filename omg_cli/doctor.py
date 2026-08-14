@@ -1227,6 +1227,31 @@ def run_checks() -> list[tuple[str, bool, str]]:
     ]
 
 
+def check_hooks_registry() -> SoftResult:
+    """Report hook-registry load tiers. Never claims live AG or verified."""
+    name = "hooks registry"
+    try:
+        from omg_cli.hooks_registry import inspect_hooks_registry
+
+        payload = inspect_hooks_registry(plugin_root())
+        detail = (
+            f"configured={payload.get('configured')}; "
+            f"installed={payload.get('installed')}; "
+            f"enabled={payload.get('enabled')}; "
+            f"loadable={payload.get('loadable')}; "
+            f"observed={payload.get('observed')}; "
+            f"healthy={payload.get('healthy')}; "
+            f"verified={payload.get('verified')}; "
+            f"hooks={payload.get('hook_count', 0)}; "
+            "Grok UserPromptSubmit inject unsupported"
+        )
+        if not payload.get("ok"):
+            return (name, "warn", detail + f"; {payload.get('error')}")
+        return (name, "ok", detail)
+    except Exception as exc:
+        return (name, "warn", f"hooks registry probe failed ({type(exc).__name__})")
+
+
 def check_team_plane() -> SoftResult:
     """Report experimental team gate, tmux availability, and P0′ API surface."""
     name = "team plane"
@@ -1309,6 +1334,7 @@ def run_soft_checks(
         check_capabilities_lock(),
         check_installed_capabilities_lock(),
         check_installed_release_identity(),
+        check_hooks_registry(),
         check_team_plane(),
         check_agent_model_routing(),
     ]

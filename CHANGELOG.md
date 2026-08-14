@@ -10,6 +10,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#72 lifecycle registry (first cut):** host-neutral hook registry
+  `hooks/registry.json` plus in-process dispatcher
+  `omg_cli/hooks_registry.py`. Grok mappings are explicit:
+  `PreToolUse`/`Stop` may block; `SessionStart`/`SubagentStop` are passive;
+  `UserPromptSubmit` injection is **unsupported**. Dispatcher honors
+  `OMG_DISABLE_HOOKS` / `DISABLE_OMG` / `OMG_SKIP_HOOKS`, bounded untrusted
+  output, fail-open crashes, continuation
+  `refuse`/`adopt_existing`/`artifact_only`, and ids-only compact handoff
+  (no transcript). Existing `deny.py` / `stop_gate.py` behavior is delegated
+  unchanged. Antigravity files under
+  `docs/parity/projections/antigravity/hooks/` are **not** an installed AG
+  plugin and **not** live AG evidence. Does not set `verified`. Refs #72
+  (does not close).
 - **#69 PR14 Fixture-backed Composition Execution V1:** leader-only
   `execute_composition_tasks_v1` runs admitted Hyperplan / Security Research
   lanes through the existing claim-lane / submit-lane-result protocol with
@@ -75,6 +88,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#72 Codex review:** `omg doctor` prints hooks-registry `installed`
+  and `enabled` so `OMG_DISABLE_HOOKS` / `DISABLE_OMG` is visible (not
+  only `omg capabilities`). Refs #72.
+- **#72 Codex review:** Grok `host_capability` must match `GROK_EVENT_MAP`
+  exactly (no native_passive/native_blocking swap); `omg capabilities`
+  reports hooks `enabled: false` when `OMG_DISABLE_HOOKS`/`DISABLE_OMG` is
+  set. `OMG_SKIP_HOOKS` honors legacy `stop`/`pre_tool_use` names; aggregate
+  budget exhaustion fail-closes remaining `fail-closed` hooks. Continuation
+  guard delegates to `skills_catalog.resolve_continuation`. Compact handoff
+  uses no-follow managed writes. In-process handler deadlines remain
+  cooperative (post-return). Refs #72.
 - **#131 Codex review (follow-up):** `omg agents list` model-intent uses the
   requested extension's `host_capabilities` state, not the aggregate
   `medley_capability_outcome`, so mixed Medley caps cannot advertise

@@ -478,7 +478,7 @@ find_references/symbols/diagnostics）、
 | `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
-| `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog` 與 `skills_catalog`；不探測私有 sidecar。 |
+| `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`、`skills_catalog` 與 `hooks_registry`；不探測私有 sidecar。 |
 | `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）與 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗）。不做付費探測。Medley TUI 仍為 #290。 |
 | `omg skill list\|show\|resolve\|resources` | 唯讀 skill 目錄檢視（#70）。永不寫 `verified`。宿主名 `plan`/`goal` 只作為別名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
