@@ -3542,9 +3542,11 @@ def start_team(
 
                 if want_interactive:
                     from omg_cli.team.interactive import (
+                        INTERACTIVE_NONCE_ENV,
                         assert_not_supervisor_pane_command,
                         fixture_interactive_argv,
                         grok_interactive_argv,
+                        make_interactive_nonce,
                         pane_command_for_exec_script,
                         write_interactive_exec_script,
                         write_worker_inbox,
@@ -3561,8 +3563,12 @@ def start_team(
                         body=f"task_id={tid}\n{goal}\n",
                     )
                     exec_script = tdir / f"{tid}.interactive.sh"
+                    interactive_nonce = make_interactive_nonce()
                     write_interactive_exec_script(
-                        dest=exec_script, argv=argv, worktree=wt
+                        dest=exec_script,
+                        argv=argv,
+                        worktree=wt,
+                        extra_env={INTERACTIVE_NONCE_ENV: interactive_nonce},
                     )
                     pane_cmd = pane_command_for_exec_script(exec_script)
                     assert_not_supervisor_pane_command(pane_cmd)
@@ -3573,6 +3579,7 @@ def start_team(
                     )
                 else:
                     rec_inbox = None
+                    interactive_nonce = None
 
                 # Job-backed workers may take an explicit jobs-admitted provider
                 # from the task dict (fake|antigravity) when not using fixture.
@@ -3617,6 +3624,15 @@ def start_team(
                         owner_token=token,
                     ),
                 }
+                if interactive_nonce:
+                    from omg_cli.team.interactive import INTERACTIVE_NONCE_ENV
+
+                    rec["interactive_nonce"] = interactive_nonce
+                    merged_env = dict(rec["_env_pairs"])
+                    merged_env[INTERACTIVE_NONCE_ENV] = interactive_nonce
+                    rec["_env_pairs"] = sorted(
+                        merged_env.items(), key=lambda kv: kv[0]
+                    )
                 # #147 PR1: CLI-authoritative I/O capability on new task rows.
                 # Independent of needs_pty / provider name / startup status.
                 from omg_cli.team.io_capability import (

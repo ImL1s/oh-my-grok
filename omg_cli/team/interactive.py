@@ -11,11 +11,13 @@ Default / ``auto`` remain headless until live Grok evidence exists
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import stat
 import sys
+import time
 from pathlib import Path
-from typing import Any, Final, Sequence
+from typing import Any, Callable, Final, Mapping, Sequence
 
 REQUESTED_HEADLESS: Final = "headless"
 REQUESTED_INTERACTIVE: Final = "interactive"
@@ -31,6 +33,9 @@ E_TEAM_IO_MODE_UNSUPPORTED: Final = "E_TEAM_IO_MODE_UNSUPPORTED"
 QUALIFIED_INTERACTIVE_PROVIDERS: Final[frozenset[str]] = frozenset({"grok", "fixture"})
 
 INTERACTIVE_FIXTURE_RELATIVE: Final = "tests/fixtures/providers/interactive_tty.py"
+INTERACTIVE_NONCE_ENV: Final = "OMG_TEAM_INTERACTIVE_NONCE"
+TUI_READY_PREFIX: Final = "TUI_READY:"
+INTERACTIVE_GATE_PHASE: Final = "tui_ready"
 
 
 class InteractiveTeamError(Exception):
@@ -132,6 +137,7 @@ def write_interactive_exec_script(
     dest: Path,
     argv: Sequence[str],
     worktree: Path | str,
+    extra_env: Mapping[str, str] | None = None,
 ) -> Path:
     """Write a 0700 ``exec`` wrapper. No prompt body, no credentials."""
     if not argv:
@@ -143,10 +149,19 @@ def write_interactive_exec_script(
             raise InteractiveTeamError("interactive exec argv must not use --prompt-file")
     wt = Path(worktree).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
+    exports: list[str] = []
+    for key, val in sorted((extra_env or {}).items()):
+        if key != INTERACTIVE_NONCE_ENV:
+            raise InteractiveTeamError(f"refused interactive exec env {key!r}")
+        if not isinstance(val, str) or not val or "\x00" in val or "\n" in val:
+            raise InteractiveTeamError("interactive nonce env is invalid")
+        exports.append(f"export {shlex.quote(key)}={shlex.quote(val)}")
+    export_block = ("\n".join(exports) + "\n") if exports else ""
     quoted = " ".join(shlex.quote(str(t)) for t in argv)
     body = (
         "#!/bin/sh\n"
         "set -eu\n"
+        f"{export_block}"
         f"cd -- {shlex.quote(str(wt))}\n"
         f"exec {quoted}\n"
     )
@@ -183,4 +198,126 @@ def public_interactive_facts(row: dict[str, Any]) -> dict[str, Any]:
         "provider_tty_owner": row.get("provider_tty_owner"),
         "input_ready": row.get("input_ready"),
         "operator_input_supported": row.get("operator_input_supported"),
+    }
+
+
+def make_interactive_nonce() -> str:
+    """Leader-issued TUI-ready nonce (not a credential)."""
+    return secrets.token_hex(8)
+
+
+def tui_ready_marker(nonce: str) -> str:
+    token = str(nonce or "").strip()
+    if not token:
+        raise InteractiveTeamError("TUI_READY nonce is empty")
+    return f"{TUI_READY_PREFIX}{token}"
+
+
+def capture_contains_tui_ready(text: str, nonce: str) -> bool:
+    """True only when an exact ``TUI_READY:<nonce>`` line is present.
+
+    Substring / suffix-glue matches are refused. This helper never writes
+    state — workers must not treat a True result as ``input_ready``.
+    """
+    if not isinstance(text, str) or not isinstance(nonce, str):
+        return False
+    token = nonce.strip()
+    if not token:
+        return False
+    marker = tui_ready_marker(token)
+    for raw in text.splitlines():
+        if raw.strip() == marker:
+            return True
+    return False
+
+
+def wait_for_interactive_tui_ready(
+    workers: Sequence[Mapping[str, Any]],
+    *,
+    timeout_ms: int,
+    poll_s: float = 0.25,
+    capture_fn: Callable[[str], str],
+    sleep_fn: Callable[[float], None] | None = None,
+    clock_fn: Callable[[], float] | None = None,
+) -> dict[str, Any]:
+    """Poll identity-bound pane capture for ``TUI_READY:<nonce>``.
+
+    Does **not** wait for supervisor ACK receipts and does **not** write
+    ``input_ready``. Callers (leader CLI) promote after this returns.
+    """
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+        raise InteractiveTeamError("interactive ready timeout_ms must be >= 0")
+    clock = clock_fn or time.monotonic
+    sleeper = sleep_fn or time.sleep
+    deadline = clock() + (timeout_ms / 1000.0)
+    expected: list[str] = []
+    evidence: dict[str, dict[str, Any]] = {}
+    rows: list[Mapping[str, Any]] = []
+    for raw in workers:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "").strip()
+        if not tid:
+            continue
+        expected.append(tid)
+        rows.append(raw)
+
+    while True:
+        for raw in rows:
+            tid = str(raw.get("task_id") or "").strip()
+            if tid in evidence:
+                continue
+            pane_id = raw.get("pane_id")
+            nonce = raw.get("interactive_nonce")
+            if not isinstance(pane_id, str) or not pane_id.startswith("%"):
+                continue
+            if not isinstance(nonce, str) or not nonce.strip():
+                continue
+            try:
+                text = capture_fn(pane_id)
+            except Exception:
+                text = ""
+            if not capture_contains_tui_ready(text if isinstance(text, str) else "", nonce):
+                continue
+            pid_raw = raw.get("pid")
+            provider_pid = (
+                pid_raw
+                if isinstance(pid_raw, int) and not isinstance(pid_raw, bool) and pid_raw > 0
+                else None
+            )
+            attempt_raw = raw.get("attempt", 1)
+            attempt = (
+                attempt_raw
+                if isinstance(attempt_raw, int) and not isinstance(attempt_raw, bool) and attempt_raw >= 1
+                else 1
+            )
+            gen_raw = raw.get("generation", 0)
+            generation = (
+                gen_raw
+                if isinstance(gen_raw, int) and not isinstance(gen_raw, bool) and gen_raw >= 0
+                else 0
+            )
+            evidence[tid] = {
+                "task_id": tid,
+                "ready_marker": tui_ready_marker(nonce.strip()),
+                "pane_id": pane_id,
+                "provider_pid": provider_pid,
+                "attempt": attempt,
+                "generation": generation,
+            }
+        missing = [tid for tid in expected if tid not in evidence]
+        if not missing:
+            break
+        if clock() >= deadline:
+            break
+        sleeper(max(0.01, float(poll_s)))
+
+    ready_workers = [tid for tid in expected if tid in evidence]
+    missing_workers = [tid for tid in expected if tid not in evidence]
+    return {
+        "ready_workers": ready_workers,
+        "missing_workers": missing_workers,
+        "evidence": {tid: evidence[tid] for tid in ready_workers},
+        "timeout_ms": timeout_ms,
+        "gate_phase": INTERACTIVE_GATE_PHASE,
     }

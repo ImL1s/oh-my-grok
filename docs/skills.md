@@ -202,6 +202,10 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # (default 45000). Partial/zero/blocked_start leaves state for diagnosis
 # and exits non-zero (no silent dry-run fallback). --no-wait →
 # unverified_start only.
+# `--io-mode interactive` skips supervisor ACK receipts: the leader waits
+# the same timeout for TUI_READY:<nonce> on the pane TTY, then CLI-promotes
+# input_ready. Timeout fails closed (no headless downgrade). Default/auto
+# stay headless. Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK is optional.
 # Worker panes bootstrap silently (#100): no worker-ready JSON envelope and
 # no nested-.omg shadow warnings in pane scrollback. Failures print one
 # redacted line; details live in workers/<id>/bootstrap.log — inspect with

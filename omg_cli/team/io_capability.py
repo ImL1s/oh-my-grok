@@ -12,6 +12,7 @@ or ``input_ready`` to true via untrusted stdout scraping alone.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Final, Literal, Mapping
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,60 @@ def interactive_pane_io_defaults() -> WorkerIoCapability:
         operator_input_supported=True,
         interaction_evidence=None,
     )
+
+
+def interactive_pane_io_ready(
+    *,
+    ready_marker: str,
+    pane_id: str | None,
+    provider_pid: int | None = None,
+    attempt: int | None = None,
+    generation: int | None = None,
+    proven_at: str | None = None,
+) -> WorkerIoCapability:
+    """Leader-only ready stamp after proven ``TUI_READY:<nonce>`` evidence.
+
+    Never call this from worker/descriptor stdout scrape. Invalid markers
+    raise so a scrape cannot silently mint ``input_ready=true``.
+    """
+    marker = ready_marker if isinstance(ready_marker, str) else ""
+    if not marker.startswith("TUI_READY:") or len(marker) <= len("TUI_READY:"):
+        raise ValueError(
+            "leader-only interactive ready stamp requires TUI_READY:<nonce>"
+        )
+    ev_attempt = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 1
+    ev_generation = (
+        generation
+        if isinstance(generation, int) and not isinstance(generation, bool)
+        else 0
+    )
+    pid: int | None
+    if isinstance(provider_pid, int) and not isinstance(provider_pid, bool) and provider_pid > 0:
+        pid = provider_pid
+    else:
+        pid = None
+    pane = pane_id if isinstance(pane_id, str) and pane_id.startswith("%") else None
+    when = proven_at if isinstance(proven_at, str) and proven_at else _utc_now_iso()
+    evidence = {
+        "schema": INTERACTION_EVIDENCE_SCHEMA,
+        "attempt": ev_attempt,
+        "generation": ev_generation,
+        "ready_marker": marker,
+        "proven_at": when,
+        "pane_id": pane,
+        "provider_pid": pid,
+    }
+    return WorkerIoCapability(
+        io_mode=IO_MODE_INTERACTIVE_TTY,
+        provider_tty_owner=TTY_OWNER_PROVIDER,
+        input_ready=True,
+        operator_input_supported=True,
+        interaction_evidence=evidence,
+    )
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def supervisor_pane_io_defaults() -> WorkerIoCapability:
@@ -422,6 +477,8 @@ __all__ = [
     "WorkerIoCapability",
     "assert_operator_input_allowed",
     "background_job_io_defaults",
+    "interactive_pane_io_defaults",
+    "interactive_pane_io_ready",
     "io_defaults_for_worker_topology",
     "normalize_worker_io_capability",
     "operator_input_refusal",

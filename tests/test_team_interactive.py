@@ -9,10 +9,15 @@ import pytest
 
 from omg_cli.team.interactive import (
     E_TEAM_IO_MODE_UNSUPPORTED,
+    INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
+    capture_contains_tui_ready,
     grok_interactive_argv,
+    make_interactive_nonce,
     pane_command_for_exec_script,
     resolve_effective_io_mode,
+    tui_ready_marker,
+    wait_for_interactive_tui_ready,
     write_interactive_exec_script,
     write_worker_inbox,
 )
@@ -20,6 +25,7 @@ from omg_cli.team.io_capability import (
     IO_MODE_INTERACTIVE_TTY,
     TTY_OWNER_PROVIDER,
     interactive_pane_io_defaults,
+    interactive_pane_io_ready,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, TeamError, start_team
 
@@ -145,6 +151,11 @@ def test_dry_run_interactive_fixture_skips_supervisor(
     assert rec["provider"] == "fixture"
     assert any("interactive_tty.py" in str(x) for x in rec["argv"])
     assert rec.get("inbox_path")
+    nonce = rec.get("interactive_nonce")
+    assert isinstance(nonce, str) and nonce
+    exec_path = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.sh"
+    assert INTERACTIVE_NONCE_ENV in exec_path.read_text(encoding="utf-8")
+    assert nonce in exec_path.read_text(encoding="utf-8")
 
 
 @_POSIX
@@ -263,3 +274,225 @@ def test_fixture_refuses_without_controlling_tty() -> None:
     assert proc.returncode != 0
     assert "E_FIXTURE_NO_TTY" in combined or "E_FIXTURE_TIMEOUT" in combined
     assert "PROVIDER_ECHO:" not in combined
+
+
+def test_tui_ready_marker_is_exact_line_only() -> None:
+    nonce = make_interactive_nonce()
+    marker = tui_ready_marker(nonce)
+    assert capture_contains_tui_ready(f"{marker}\nnext\n", nonce)
+    assert not capture_contains_tui_ready(f"prefix {marker}\n", nonce)
+    assert not capture_contains_tui_ready(f"{marker}EVIL\n", nonce)
+    assert not capture_contains_tui_ready(f"TUI_READY:other\n", nonce)
+    assert not capture_contains_tui_ready("", nonce)
+
+
+def test_wait_for_tui_ready_does_not_write_or_self_promote() -> None:
+    nonce = "abc123de"
+    seen: list[str] = []
+
+    def _capture(pane_id: str) -> str:
+        seen.append(pane_id)
+        return f"TUI_READY:{nonce}\n"
+
+    workers = [
+        {
+            "task_id": "t1",
+            "pane_id": "%12",
+            "interactive_nonce": nonce,
+            "io_mode": IO_MODE_INTERACTIVE_TTY,
+            "input_ready": False,
+        }
+    ]
+    out = wait_for_interactive_tui_ready(
+        workers,
+        timeout_ms=1000,
+        poll_s=0.01,
+        capture_fn=_capture,
+        sleep_fn=lambda _s: None,
+    )
+    assert seen == ["%12"]
+    assert out["ready_workers"] == ["t1"]
+    assert out["missing_workers"] == []
+    assert out["evidence"]["t1"]["ready_marker"] == "TUI_READY:abc123de"
+    # Wait is evidence-only: the input row is unchanged (no self-promote).
+    assert workers[0]["input_ready"] is False
+
+
+def test_wait_for_tui_ready_timeout_without_marker() -> None:
+    out = wait_for_interactive_tui_ready(
+        [
+            {
+                "task_id": "t1",
+                "pane_id": "%1",
+                "interactive_nonce": "deadbeef",
+            }
+        ],
+        timeout_ms=0,
+        poll_s=0.01,
+        capture_fn=lambda _pane: "still booting\n",
+        sleep_fn=lambda _s: None,
+    )
+    assert out["ready_workers"] == []
+    assert out["missing_workers"] == ["t1"]
+    assert out["evidence"] == {}
+
+
+def test_wait_wrong_nonce_is_not_ready() -> None:
+    out = wait_for_interactive_tui_ready(
+        [{"task_id": "t1", "pane_id": "%1", "interactive_nonce": "want"}],
+        timeout_ms=0,
+        capture_fn=lambda _pane: "TUI_READY:other\n",
+        sleep_fn=lambda _s: None,
+    )
+    assert out["ready_workers"] == []
+
+
+def test_leader_ready_stamp_requires_tui_marker() -> None:
+    cap = interactive_pane_io_ready(
+        ready_marker="TUI_READY:aa",
+        pane_id="%9",
+        attempt=1,
+        generation=0,
+    )
+    assert cap.input_ready is True
+    assert cap.io_mode == IO_MODE_INTERACTIVE_TTY
+    assert cap.interaction_evidence is not None
+    assert cap.interaction_evidence["ready_marker"] == "TUI_READY:aa"
+    assert interactive_pane_io_defaults().input_ready is False
+    with pytest.raises(ValueError):
+        interactive_pane_io_ready(ready_marker="READY", pane_id="%9")
+
+
+@_POSIX
+def test_interactive_no_wait_does_not_promote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.runtime import apply_start_readiness
+    from omg_cli.team.supervisor import load_provider_descriptor
+    from omg_cli.team.plane import team_dir
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    out = apply_start_readiness(
+        tmp_path, {**meta, "dry_run": False}, dry_run=False, no_wait=True
+    )
+    assert out["startup_status"] == "unverified_start"
+    task = out["tasks"][0]
+    assert task["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert task["input_ready"] is False
+    desc = load_provider_descriptor(team_dir(tmp_path, meta["run_id"]) / "t1.provider.json")
+    assert desc["input_ready"] is False
+
+
+@_POSIX
+def test_interactive_timeout_fails_closed_no_headless_downgrade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.plane import mutate_team_meta
+    from omg_cli.team.runtime import apply_start_readiness
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%42"
+        return current
+
+    mutate_team_meta(tmp_path, str(meta["run_id"]), _pane)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: "nope\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "50"},
+    )
+    assert out["startup_status"] == "failed_start"
+    task = out["tasks"][0]
+    assert task["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert task["input_ready"] is False
+    assert "did not downgrade to headless" in str(out.get("startup_note") or "")
+
+
+@_POSIX
+def test_leader_promotes_input_ready_after_tui_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.io_capability import (
+        E_OPERATOR_INPUT_NOT_READY,
+        normalize_worker_io_capability,
+        operator_input_refusal,
+    )
+    from omg_cli.team.plane import mutate_team_meta, team_dir
+    from omg_cli.team.runtime import apply_start_readiness
+    from omg_cli.team.supervisor import load_provider_descriptor
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        return current
+
+    mutate_team_meta(tmp_path, str(meta["run_id"]), _pane)
+
+    # Before promotion, operator input stays not-ready.
+    before = normalize_worker_io_capability(meta["tasks"][0])
+    refusal = operator_input_refusal(before, action="input")
+    assert refusal is not None
+    assert refusal.code == E_OPERATOR_INPUT_NOT_READY
+
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: f"noise\nTUI_READY:{nonce}\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "2000"},
+    )
+    assert out["startup_status"] == "running"
+    assert out["startup_gate_phase"] == "tui_ready"
+    task = out["tasks"][0]
+    assert task["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert task["input_ready"] is True
+    assert task["interaction_evidence"]["ready_marker"] == f"TUI_READY:{nonce}"
+    desc = load_provider_descriptor(team_dir(tmp_path, meta["run_id"]) / "t1.provider.json")
+    assert desc["input_ready"] is False
+    assert desc["operator_input_supported"] is False
+    # Scraping the same stdout in-process must not be what flipped the descriptor.
+    assert "TUI_READY" not in json.dumps(desc)

@@ -151,6 +151,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Publication facts are uploaded as a workflow artifact. Does **not** close
   #169 until a tagged publish produces completion evidence and protection
   readback on `main`.
+- **#147 PR2 follow-up interactive TUI-ready gate:** `--io-mode interactive`
+  launch/start waits for `TUI_READY:<nonce>` on the pane TTY (bounded by
+  `OMG_TEAM_READY_TIMEOUT_MS`; `--no-wait` stays `unverified_start`) instead
+  of supervisor ACK receipts. Only the leader CLI promotes `input_ready`
+  after that proof; workers/descriptors never self-promote from stdout
+  scrape. Timeout fails closed with no silent headless downgrade.
+  Default/`auto` stay headless. Does **not** claim
+  `LIVE_TEAM_INTERACTIVE_TTY_OK`. Refs #147.
 - **#147 PR2 direct-exec interactive pane:** `--io-mode interactive` on
   `omg team launch`/`start` execs grok or the TTY fixture in the pane (0700
   wrapper, no `--prompt-file`, no supervisor between pane and provider).

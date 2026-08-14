@@ -172,7 +172,9 @@ omg accept --yes
 `provider_spawned` → `provider_ready` → `task_dispatched`；可选 `mailbox_ack`）。
 旧版 `worker-ready` v1 收据仅为 `wrapper_ready_legacy`，不能产生
 `startup_status=running`。认证/信任提示 → `blocked_start`。`--no-wait` →
-`unverified_start`。
+`unverified_start`。`--io-mode interactive` 不等 supervisor ACK，由 leader
+在同一超时内等待 pane TTY 上的 `TUI_READY:<nonce>` 后再提升 `input_ready`；
+超时 fail-closed，不会静默降为 headless。
 
 **静默 bootstrap（#100）：** worker pane 成功启动不打印 JSON / nested-`.omg` 警告；
 失败仅一行提示。详情见 `workers/<id>/bootstrap.log`，用

@@ -896,6 +896,7 @@ def launch_team_inside(
     env: Mapping[str, str] | None = None,
     provider: Path | None = None,
     view_mode: str | None = None,
+    io_mode: str | None = None,
 ) -> dict[str, Any]:
     """Call ``launch_team`` with ambient TMUX/TMUX_PANE from the leader pane."""
     from omg_cli.team.plane import EXPERIMENTAL_ENV
@@ -908,7 +909,7 @@ def launch_team_inside(
             monkeypatch.setenv(k, v)
         monkeypatch.setenv(EXPERIMENTAL_ENV, "1")
         monkeypatch.delenv("OMG_DISABLE_TMUX_TEAM", raising=False)
-        if provider is not None:
+        if provider is not None and (io_mode or "headless") != "interactive":
             install_fixture_provider(monkeypatch, provider)
         if env:
             for k, v in env.items():
@@ -928,6 +929,7 @@ def launch_team_inside(
         executor="fixture",
         detach=False,
         view_mode=view_mode,
+        io_mode=io_mode,
     )
 
 
