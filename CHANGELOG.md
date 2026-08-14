@@ -10,6 +10,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#72 lifecycle registry (first cut):** host-neutral hook registry
+  `hooks/registry.json` plus in-process dispatcher
+  `omg_cli/hooks_registry.py`. Grok mappings are explicit:
+  `PreToolUse`/`Stop` may block; `SessionStart`/`SubagentStop` are passive;
+  `UserPromptSubmit` injection is **unsupported**. Dispatcher honors
+  `OMG_DISABLE_HOOKS` / `DISABLE_OMG` / `OMG_SKIP_HOOKS`, bounded untrusted
+  output, fail-open crashes, continuation
+  `refuse`/`adopt_existing`/`artifact_only`, and ids-only compact handoff
+  (no transcript). Existing `deny.py` / `stop_gate.py` behavior is delegated
+  unchanged. Antigravity files under
+  `docs/parity/projections/antigravity/hooks/` are **not** an installed AG
+  plugin and **not** live AG evidence. Does not set `verified`. Refs #72
+  (does not close).
 - **#69 PR14 Fixture-backed Composition Execution V1:** leader-only
   `execute_composition_tasks_v1` runs admitted Hyperplan / Security Research
   lanes through the existing claim-lane / submit-lane-result protocol with

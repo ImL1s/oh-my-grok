@@ -23,6 +23,7 @@ Grok Build plugin + `omg` CLI 的使用者文档。
 | [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) · [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) | 简体**投影**；英文为 **canonical**；请勿另维一份 matrix |
 | [hash-edit.md](./hash-edit.md) | Hash-anchored 编辑 V1 + `omg edit plan\|apply`（补充宿主编辑；不把未观测宿主编辑当作 hash-anchored；不宣称 `omo.edit.hash_anchored`；英文） |
 | [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1（纯比较 + `omg visual compare`；无 approved/passes/verified；无图像 I/O；英文） |
+| [hooks-lifecycle.md](./hooks-lifecycle.md) | 生命周期注册表（#72；英文）：Grok PreToolUse/Stop 可拦截；SessionStart 被动；不注入 UserPromptSubmit |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | 维护者发版流程 |
 
 ## Skills 快速对照
