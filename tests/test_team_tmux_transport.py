@@ -4875,7 +4875,7 @@ def test_team_status_prefers_exact_pane_alive(
         },
     )
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         if pane_id == "%81":
             return {
                 "pane_id": "%81",
@@ -4953,7 +4953,7 @@ def test_team_status_same_start_id_different_pid_is_not_alive(
         },
     )
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         assert pane_id == "%81"
         return {
             "pane_id": "%81",
@@ -5021,7 +5021,7 @@ def test_team_status_probe_oserror_is_fail_closed(
         },
     )
 
-    def boom_probe(_pane: str):
+    def boom_probe(_pane: str, **_kwargs):
         raise OSError("tmux missing")
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
@@ -5073,7 +5073,7 @@ def test_team_status_pane_nonce_read_fail_closed(
         },
     )
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         return {
             "pane_id": pane_id,
             "dead": False,

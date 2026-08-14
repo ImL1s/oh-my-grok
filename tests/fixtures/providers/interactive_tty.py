@@ -10,6 +10,11 @@ ignored if it arrives as empty/CSI-only lines afterward — otherwise a
 leftover newline would consume the hold and the operator payload would
 never be echoed (false-red on a live send, or false-green if tests
 stopped at TUI_READY).
+
+After ``PROVIDER_ECHO`` the process lingers (``OMG_TEAM_PROVIDER_LINGER_S``,
+default 5s, capped by the hold deadline) so tmux can still capture the
+marker. macOS tmux 3.7 destroys the pane as soon as the fixture exits;
+linger is not a success signal — callers must still observe the marker.
 """
 from __future__ import annotations
 
@@ -125,6 +130,26 @@ def _split_complete_lines(buf: bytearray) -> tuple[list[str], bytearray]:
     return lines, bytearray(text.encode("utf-8"))
 
 
+def _linger_after_echo(hold_deadline: float) -> None:
+    """Stay alive briefly so capture-pane can read PROVIDER_ECHO.
+
+    ``OMG_TEAM_PROVIDER_LINGER_S=0`` disables linger (hermetic PTY tests).
+    """
+    raw = os.environ.get("OMG_TEAM_PROVIDER_LINGER_S")
+    try:
+        linger = float(raw) if raw not in (None, "") else 5.0
+    except ValueError:
+        linger = 5.0
+    if linger <= 0:
+        return
+    stop = min(hold_deadline, time.monotonic() + linger)
+    while time.monotonic() < stop:
+        remaining = stop - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.1, remaining))
+
+
 def _read_operator_line(fd: int, deadline: float) -> str | None:
     """Read until a non-empty sanitized line or *deadline* (monotonic)."""
     buf = bytearray()
@@ -192,6 +217,7 @@ def main() -> int:
             f"WINCH:{winsize['sigwinch']}:{winsize['rows']}x{winsize['cols']}",
             flush=True,
         )
+        _linger_after_echo(deadline)
         return 0
     finally:
         _restore_echo(fd, old)

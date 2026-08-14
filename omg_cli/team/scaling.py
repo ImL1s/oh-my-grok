@@ -3952,6 +3952,13 @@ def _scale_up(
     tasks_json: str | Sequence[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     tasks_all = list(meta.get("tasks") or [])
+    from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
+
+    if any(str(t.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY for t in tasks_all):
+        raise TeamError(
+            "scale --add refused for interactive TTY teams "
+            "(scale-up still materializes headless supervisor panes; remaining #147)"
+        )
     active = _active_tasks(tasks_all)
     effective_dry = bool(dry_run or meta.get("dry_run"))
     pending_generation = int(meta.get("identity_generation", 0)) + 1
@@ -5049,6 +5056,9 @@ def _reconcile_resume_tasks(
     if nonce is None:
         raw_nonce = meta.get("launch_nonce")
         nonce = raw_nonce if isinstance(raw_nonce, str) else None
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
 
     for raw in meta.get("tasks") or []:
         if not isinstance(raw, Mapping):
@@ -5089,6 +5099,7 @@ def _reconcile_resume_tasks(
                 launch_nonce=nonce,
                 expected_pid_start=expected_start_s,
                 expected_pid=expected_pid_i,
+                socket_path=sock,
             )
         else:
             # Legacy windows topology / hermetic mocks without pane_id.

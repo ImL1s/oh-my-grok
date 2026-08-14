@@ -1588,7 +1588,7 @@ def _prepare_live_relaunch_team(
     monkeypatch.setattr(
         scaling,
         "_pane_proven_absent",
-        lambda pane_id: (
+        lambda pane_id, **_kwargs: (
             (True, None)
             if pane_to_task.get(pane_id) in dead_ids
             else (False, None)
@@ -4226,7 +4226,7 @@ def test_resume_refuses_respawned_pane_same_id_new_pid(
     live["identity_receipt_sha256"] = receipt_hash
     _write_team_meta(tmp_path, rid, live)
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         # Pane object still exists (respawn kept %id) but hosts a new PID.
         if pane_id == "%81":
             return {
@@ -4302,7 +4302,7 @@ def test_resume_refuses_start_id_collision_with_different_pid(
 
     monkeypatch.setattr(
         "omg_cli.team.tmux.probe_worker_pane_identity",
-        lambda pane_id: {
+        lambda pane_id, **_kwargs: {
             "pane_id": "%81",
             "dead": False,
             "session_id": "$7",
@@ -4341,7 +4341,7 @@ def test_relaunch_skips_present_foreign_pid_drift(
     first = live["tasks"][0]
     second = live["tasks"][1]
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         if pane_id == str(first["pane_id"]):
             return {
                 "pane_id": pane_id,
@@ -4427,10 +4427,10 @@ def test_relaunch_skips_malformed_pane_dead_as_unknown(
     monkeypatch.setattr(tmux_mod, "_tmux_run", fake_tmux)
     monkeypatch.setattr(tmux_mod, "tmux_available", lambda: True)
     monkeypatch.setattr(
-        plane, "_pane_proven_absent", lambda _pane: (None, "not proven")
+        plane, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "not proven")
     )
     monkeypatch.setattr(
-        scaling, "_pane_proven_absent", lambda _pane: (None, "not proven")
+        scaling, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "not proven")
     )
     assert tmux_mod.probe_worker_pane_identity(str(first["pane_id"])) is None
     out = relaunch_dead_incomplete_workers(tmp_path, rid)
@@ -4459,7 +4459,7 @@ def test_relaunch_skips_when_probe_unknown(
     first = live["tasks"][0]
     second = live["tasks"][1]
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         if pane_id == str(first["pane_id"]):
             return None  # unknown — not confirmed dead
         if pane_id == str(second["pane_id"]):
@@ -4474,10 +4474,10 @@ def test_relaunch_skips_when_probe_unknown(
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", fake_probe)
     # Probe None must stay UNKNOWN unless absence is proven.
     monkeypatch.setattr(
-        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+        plane, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "probe unknown")
     )
     monkeypatch.setattr(
-        scaling, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+        scaling, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "probe unknown")
     )
     monkeypatch.setattr(
         plane,
@@ -4543,15 +4543,15 @@ def test_relaunch_skips_when_probe_raises_oserror(
         scaling, "_status_worker_alive", plane._status_worker_alive
     )
 
-    def boom_probe(_pane_id: str):
+    def boom_probe(_pane_id: str, **_kwargs):
         raise OSError("tmux display-message pipe broken")
 
     monkeypatch.setattr("omg_cli.team.tmux.probe_worker_pane_identity", boom_probe)
     monkeypatch.setattr(
-        plane, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+        plane, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "probe unknown")
     )
     monkeypatch.setattr(
-        scaling, "_pane_proven_absent", lambda _pane: (None, "probe unknown")
+        scaling, "_pane_proven_absent", lambda _pane, **_kwargs: (None, "probe unknown")
     )
 
     out = relaunch_dead_incomplete_workers(tmp_path, rid)
@@ -4600,7 +4600,7 @@ def _run_relaunch_nonce_probe_unknown(
     first = live["tasks"][0]
     second = live["tasks"][1]
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         if pane_id == str(first["pane_id"]):
             return {
                 "pane_id": pane_id,
@@ -4717,7 +4717,7 @@ def test_relaunch_skips_when_pid_start_probe_unknown(
     first = live["tasks"][0]
     second = live["tasks"][1]
 
-    def fake_probe(pane_id: str):
+    def fake_probe(pane_id: str, **_kwargs):
         if pane_id == str(first["pane_id"]):
             return {
                 "pane_id": pane_id,

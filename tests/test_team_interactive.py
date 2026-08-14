@@ -342,6 +342,17 @@ def test_sanitize_tty_payload_drops_csi_and_empty() -> None:
     assert sanitize_tty_payload("omg147-echo-1\r") == "omg147-echo-1"
 
 
+def test_linger_after_echo_disabled_is_immediate(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from tests.fixtures.providers.interactive_tty import _linger_after_echo
+
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_LINGER_S", "0")
+    started = time.monotonic()
+    _linger_after_echo(started + 30)
+    assert time.monotonic() - started < 0.5
+
+
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
 def test_fixture_echoes_payload_after_stray_pty_bytes() -> None:
     """Spurious CR/DA1 must not consume the TTY read; PROVIDER_ECHO is the write.
@@ -371,6 +382,7 @@ def test_fixture_echoes_payload_after_stray_pty_bytes() -> None:
             **os.environ,
             "OMG_TEAM_INTERACTIVE_NONCE": "deadbeef",
             "OMG_TEAM_PROVIDER_HOLD_S": "8",
+            "OMG_TEAM_PROVIDER_LINGER_S": "0",
             "TERM": "xterm",
         }
         proc = subprocess.Popen(

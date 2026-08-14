@@ -126,7 +126,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remains open #147 work. Refs #147.
 - **#147 interactive TTY fixture:** drain PTY startup junk (stray CR / DA1)
   and ignore CSI-only/empty lines before treating a TTY read as provider
-  consume, so ``PROVIDER_ECHO`` is the operator payload. Refs #147.
+  consume, so ``PROVIDER_ECHO`` is the operator payload. After echo the
+  fixture lingers (``OMG_TEAM_PROVIDER_LINGER_S``, default 5s) so macOS
+  tmux 3.7 can still capture the marker before the pane is destroyed.
+  Status/resume liveness mocks accept ``socket_path``. Refs #147.
 - **#146 PR3 installed-plugin Team routing smoke:** `omg doctor`'s global
   PreToolUse hard check now smoke-allows first-party `omg team` (bare and
   path-prefixed) so a pre-fix hook that still classifies Team as an external

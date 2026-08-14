@@ -143,8 +143,15 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
         try:
             wait_until(_echoed, timeout_s=15.0, label="PROVIDER_ECHO after TTY read")
         except TimeoutError as exc:
+            panes = leader.server.tmux(
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id}:dead=#{pane_dead}:pid=#{pane_pid}",
+            )
             raise TimeoutError(
-                f"{exc}; pane={pane_id}; capture={scroll_holder['text']!r}"
+                f"{exc}; pane={pane_id}; capture={scroll_holder['text']!r}; "
+                f"panes={(panes.stdout or '').strip()!r} rc={panes.returncode}"
             ) from exc
         scroll = scroll_holder["text"]
         assert f"PROVIDER_ECHO:{line}" in scroll

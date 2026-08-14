@@ -4465,6 +4465,7 @@ def _status_worker_alive(
     launch_nonce: str | None,
     expected_pid_start: str | None,
     expected_pid: int | None,
+    socket_path: str | None = None,
 ) -> bool | None:
     """Tri-state wrapper over :func:`_worker_pane_liveness` for status/resume.
 
@@ -4482,6 +4483,7 @@ def _status_worker_alive(
         launch_nonce=launch_nonce,
         expected_pid_start=expected_pid_start,
         expected_pid=expected_pid,
+        socket_path=socket_path,
     )
     if state == "alive":
         return True
@@ -4539,6 +4541,10 @@ def team_status(
         except WorkerError:
             ownership_present = False
 
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
+
     tasks_out: list[dict[str, Any]] = []
     for raw in meta.get("tasks") or []:
         if not isinstance(raw, Mapping):
@@ -4563,6 +4569,7 @@ def team_status(
                 if isinstance(raw.get("pid_start"), str)
                 else None,
                 expected_pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
+                socket_path=sock,
             )
             # Locked status schema keeps bool; unknown → not-alive display.
             alive = bool(probed_alive)
