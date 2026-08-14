@@ -411,6 +411,10 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         target = Path(meta.get("target") or "")
         if not _lexical_under(target, install_root):
             continue
+        try:
+            _assert_parents_not_symlink(target, install_root)
+        except InstallManifestError:
+            continue
         kind = meta.get("kind")
         if kind == "created":
             if target.is_symlink() or target.is_file():
@@ -444,6 +448,10 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
             continue
         target = Path(meta.get("target") or "")
         if not _lexical_under(target, install_root):
+            continue
+        try:
+            _assert_parents_not_symlink(target, install_root)
+        except InstallManifestError:
             continue
         if any(row == str(target) for row in restored):
             continue
@@ -600,6 +608,27 @@ def inspect_install_manifest(
             "verified": False,
             "note": "no install manifest yet",
         }
+    inspect_root = user_store() if scope == "user" else (
+        Path(project_root) if project_root is not None else None
+    )
+    if inspect_root is not None:
+        try:
+            _assert_parents_not_symlink(path, inspect_root)
+        except InstallManifestError as exc:
+            return {
+                "ok": False,
+                "configured": True,
+                "installed": False,
+                "enabled": False,
+                "loadable": False,
+                "observed": False,
+                "healthy": False,
+                "verified": False,
+                "drift": [
+                    {"id": "manifest", "class": "foreign", "target": str(path)}
+                ],
+                "error": str(exc),
+            }
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -610,6 +639,20 @@ def inspect_install_manifest(
             "verified": False,
             "error": f"malformed manifest: {exc}",
         }
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != SCHEMA
+        or raw.get("kind") != "omg_install_manifest"
+        or raw.get("scope") not in SCOPES
+        or not isinstance(raw.get("artifacts"), list)
+    ):
+        return {
+            "ok": False,
+            "configured": True,
+            "installed": False,
+            "verified": False,
+            "error": "malformed manifest: required schema/kind/scope/artifacts missing",
+        }
     drift = []
     plugin = plugin_root()
     for row in raw.get("artifacts") or []:
@@ -619,6 +662,14 @@ def inspect_install_manifest(
             continue
         target = Path(row.get("target") or "")
         claimed = row.get("content_hash")
+        if inspect_root is not None:
+            try:
+                _assert_parents_not_symlink(target, inspect_root)
+            except InstallManifestError:
+                drift.append(
+                    {"id": row.get("id"), "class": "foreign", "target": str(target)}
+                )
+                continue
         if target.is_symlink():
             klass = "foreign"
         elif isinstance(claimed, str) and claimed:

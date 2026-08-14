@@ -487,3 +487,67 @@ def test_oversize_file_not_overwritten(
             plugin=ROOT,
         )
     assert dest.read_text(encoding="utf-8") == "0123456789 extra\n"
+
+
+def test_inspect_rejects_empty_json_manifest(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "install" / "manifest.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("{}\n", encoding="utf-8")
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is False
+    assert payload.get("installed") is False
+
+
+def test_rollback_skips_symlinked_parent_target(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "victim.txt"
+    victim.write_text("keep\n", encoding="utf-8")
+    link = project / "link"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    tx_root = project / ".omg" / "install" / "tx"
+    backup = tx_root / ("f" * 32)
+    backup.mkdir(parents=True)
+    (backup / "evil.prev.json").write_text(
+        json.dumps({"target": str(link / "victim.txt"), "kind": "created"}),
+        encoding="utf-8",
+    )
+    (tx_root / "current.json").write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "transaction_id": "f" * 32,
+                "backup_dir": str(backup),
+            }
+        ),
+        encoding="utf-8",
+    )
+    rollback_interrupted("project", project)
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_inspect_reports_symlinked_omg_parent(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=project,
+        here=True,
+        plugin=ROOT,
+    )
+    real = tmp_path / "moved-omg"
+    omg = project / ".omg"
+    omg.rename(real)
+    try:
+        omg.symlink_to(real)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    payload = inspect_install_manifest(project_root=project, scope="project")
+    assert payload["ok"] is False
+    assert payload.get("error")

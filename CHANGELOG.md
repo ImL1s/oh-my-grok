@@ -121,7 +121,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   and the expected `tx/<id>` backup directory; parent-directory symlinks
   (including `.omg`) are refused; preserved user-owned/foreign rows drop
   their managed hash so doctor is not immediately stale; overwrites larger
-  than the backup cap fail closed. Refs #77.
+  than the backup cap fail closed. Rollback also refuses targets whose
+  parent is a symlink. Inspect fails closed on `{}` / missing schema and
+  on a symlinked `.omg` parent. Refs #77.
 - **#77 Codex review:** inspect compares recorded `content_hash` (hash
   mismatch is stale, not user_owned false-green); rollback unlinks files
   created in a failed transaction; `--force` replaces symlinks instead of
