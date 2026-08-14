@@ -95,6 +95,9 @@ _NATIVE_ONLY_KEYS: frozenset[str] = frozenset(
         "candidates",
     }
 )
+_EXTERNAL_ROUTE_KEYS: frozenset[str] = frozenset(
+    {"kind", "executor", "provider", "model_flag"}
+)
 
 
 class AgentPolicyError(ValueError):
@@ -636,6 +639,11 @@ def _merge_policy(
             f"{label}: model and models cannot both be set",
             code="E_AGENT_POLICY_CONFLICT",
         )
+    if "models" in overlay:
+        raise AgentPolicyError(
+            f"{label}.models is not valid on an override (use inherit/exact model)",
+            code="E_AGENT_POLICY_CONFLICT",
+        )
     extra = sorted(
         set(overlay)
         - {
@@ -645,7 +653,6 @@ def _merge_policy(
             "reasoning",
             "extensions",
             "model",
-            "models",
         }
     )
     if extra:
@@ -759,6 +766,11 @@ def parse_policy_route(
             raise AgentPolicyError(
                 "external_executor route cannot carry native catalog/receipt keys: "
                 + ", ".join(leaked)
+            )
+        extra = sorted(set(obj) - _EXTERNAL_ROUTE_KEYS)
+        if extra:
+            raise AgentPolicyError(
+                f"external_executor route has unknown keys: {', '.join(extra)}"
             )
         executor = obj.get("executor")
         provider = obj.get("provider")

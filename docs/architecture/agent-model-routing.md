@@ -557,7 +557,7 @@ Read-only. No paid probe. On a stock host, a Medley-only capability outcome is
 omg agents list
 
 Agent            Host policy          Model intent     Status
-omg-verifier     optional extension   inherit          ready
+omg-verifier     optional extension   inherit (unsupported)  ready
 omg-executor     baseline             inherit          ready
 ```
 

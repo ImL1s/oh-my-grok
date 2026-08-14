@@ -130,11 +130,16 @@ def model_intent_label(view: object, *, band: str) -> str:
     extension = getattr(view, "requested_extension", None)
     candidates = tuple(getattr(view, "candidate_ids", ()) or ())
     mode = str(getattr(view, "baseline_mode", "") or "")
-    if extension and candidates and band != "narrow":
-        shown = " -> ".join(str(item) for item in candidates[:2])
-        if len(candidates) > 2:
-            shown += " -> …"
-        return shown
+    facts = getattr(view, "host_facts", {}) or {}
+    outcome = facts.get("medley_capability_outcome") if isinstance(facts, dict) else None
+    if extension and candidates:
+        if outcome in {"unsupported", "unavailable", "incompatible"}:
+            return f"{mode} ({outcome})"
+        if band != "narrow":
+            shown = " -> ".join(str(item) for item in candidates[:2])
+            if len(candidates) > 2:
+                shown += " -> …"
+            return shown
     return mode
 
 

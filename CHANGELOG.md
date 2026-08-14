@@ -82,6 +82,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   path components for symlinks, empty resource allowlists deny undeclared
   files, and embedded NUL / non-UTF-8 catalog bytes raise
   `SkillsCatalogError`. Refs #70.
+- **#131 Codex review:** stock-host `omg agents list` shows inherit (plus
+  unsupported/unavailable) instead of Medley candidate ids; overrides
+  reject unimplemented `models`; external executor routes reject mixed
+  native/unknown fields. Refs #131.
 - **#69 Codex review:** idempotent execute also binds stored worker
   evidence to the admitted `topo_order` / lane→task mapping, so a
   truncated or wrong-`task_id` artifact cannot false-green as

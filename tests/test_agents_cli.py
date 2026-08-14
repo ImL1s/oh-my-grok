@@ -89,4 +89,6 @@ def test_agents_list_human_has_non_color_status(capsys, monkeypatch, tmp_path: P
     assert "Status" in out
     assert "omg-verifier" in out
     assert "ready" in out
+    assert "inherit" in out
+    assert "review-primary-example" not in out
     assert "\x1b[" not in out

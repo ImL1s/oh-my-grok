@@ -285,6 +285,24 @@ def test_native_and_external_routes_cannot_be_confused() -> None:
                 "catalog": "review-primary-example",
             }
         )
+    with pytest.raises(AgentPolicyError, match="unknown keys"):
+        parse_policy_route(
+            {
+                "kind": ROUTE_KIND_EXTERNAL,
+                "executor": "codex",
+                "policy_id": "executor.default",
+            }
+        )
+
+
+def test_override_models_without_model_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AgentPolicyError) as exc:
+        resolve_agent_policy(
+            "omg-executor",
+            root=ROOT,
+            per_run={"models": ["grok-example-1"]},
+        )
+    assert exc.value.code == "E_AGENT_POLICY_CONFLICT"
 
 
 def test_list_filter_and_deterministic_order() -> None:

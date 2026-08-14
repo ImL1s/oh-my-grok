@@ -99,6 +99,8 @@ def test_list_normal_and_wide_tables() -> None:
     assert "Status" in normal
     assert "omg-verifier" in normal
     assert "ready" in normal
+    assert "inherit (unsupported)" in normal
+    assert "review-primary-example" not in normal
     wide = render_list_human(rows, columns=160)
     assert "Source" in wide
     assert "Floor" in wide
