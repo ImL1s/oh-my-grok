@@ -731,6 +731,15 @@ def is_informational_question(text: str) -> bool:
     return bool(_INFO_QUESTION.search(text or ""))
 
 
+def _trigger_contained(haystack: str, needle: str) -> bool:
+    """True when *needle* appears on token/phrase boundaries (not as a substring)."""
+    token = needle.strip().lower()
+    if not token:
+        return False
+    pattern = r"(?<![A-Za-z0-9_])" + re.escape(token) + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, haystack) is not None
+
+
 def resolve_trigger(catalog: SkillsCatalog, text: str) -> SkillRecord | None:
     """Map user text to a canonical skill; suppress informational questions."""
     if is_informational_question(text):
@@ -746,7 +755,7 @@ def resolve_trigger(catalog: SkillsCatalog, text: str) -> SkillRecord | None:
         names = (record.id, record.id.removeprefix("omg-"), *record.aliases, *record.triggers)
         for name in names:
             needle = name.strip().lower()
-            if needle and needle in lowered:
+            if needle and _trigger_contained(lowered, needle):
                 candidates.append((len(needle), record))
     if not candidates:
         token = lowered.split()[0].lstrip("/")

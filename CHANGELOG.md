@@ -55,8 +55,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `verified`. `omg capabilities` embeds `skills_catalog`. Static
   Antigravity projections under
   `docs/parity/projections/antigravity/skills/` are **not** an installed
-  AG plugin and **not** live AG evidence. New in-session playbooks,
-  Wave B/C runtimes, and live promotion remain open. Refs #70 (does not
+  AG plugin and **not** live AG evidence.   New in-session playbooks,
+  Wave B/C runtimes, and live promotion remain open. `omg skill list`
+  exits 1 on a fail-closed catalog; `omg skill show` preserves alias
+  rows; trigger resolve uses token/phrase boundaries. Refs #70 (does not
   close).
 
 - **#71 agent catalog (PR slice):** read-only machine catalog
@@ -73,6 +75,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#70 Codex review:** `omg skill list` exits 1 on a fail-closed catalog
+  load; `omg skill show` looks up exact ids (alias rows keep `kind: alias`);
+  short trigger matching requires token boundaries so `task`/`steam` no
+  longer resolve to `omg-ask`/`omg-team`. Refs #70.
 - **#69 Codex review:** idempotent execute also binds stored worker
   evidence to the admitted `topo_order` / lane→task mapping, so a
   truncated or wrong-`task_id` artifact cannot false-green as

@@ -267,6 +267,8 @@ def test_informational_question_suppressed() -> None:
     hit = resolve_trigger(catalog, "ralph ship the login rewrite")
     assert hit is not None
     assert hit.id == "omg-ralph"
+    assert resolve_trigger(catalog, "task") is None
+    assert resolve_trigger(catalog, "steam") is None
 
 
 def test_required_capability_fail_fast() -> None:
@@ -331,6 +333,44 @@ def test_cli_skill_resolve_plan_is_alias(capsys) -> None:
     assert payload["ok"] is True
     assert payload["canonical"] == "omg-ralplan"
     assert payload["verified"] is False
+
+
+def test_cli_skill_show_plan_preserves_alias(capsys) -> None:
+    from omg_cli.main import main
+
+    code = main(["--json", "skill", "show", "plan"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    row = payload["skill"]
+    assert row["id"] == "plan"
+    assert row["kind"] == "alias"
+    assert row.get("host_native_protected") is True
+
+
+def test_cli_skill_list_malformed_catalog_exits_1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    from omg_cli.main import main
+
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "catalog.json").write_text("{", encoding="utf-8")
+    monkeypatch.setattr("omg_cli.skills_catalog.plugin_root", lambda: tmp_path)
+    code = main(["--json", "skill", "list"])
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error_code"] == "E_SKILL_CATALOG"
+
+
+def test_resolve_trigger_requires_token_boundaries() -> None:
+    catalog = load_skills_catalog(ROOT)
+    assert resolve_trigger(catalog, "task") is None
+    assert resolve_trigger(catalog, "steam") is None
+    hit = resolve_trigger(catalog, "ask")
+    assert hit is not None and hit.id == "omg-ask"
+    team = resolve_trigger(catalog, "team ship it")
+    assert team is not None and team.id == "omg-team"
 
 
 def test_write_helpers_are_idempotent(tmp_path: Path) -> None:

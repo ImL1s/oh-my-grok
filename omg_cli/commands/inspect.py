@@ -252,7 +252,18 @@ def cmd_skill(args: argparse.Namespace) -> int:
     action = getattr(args, "skill_action", None) or "list"
     root = skills_root()
     if action == "list":
-        emit_data(args, "skill.list", inspect_skills_catalog(root))
+        payload = inspect_skills_catalog(root)
+        if not payload.get("ok"):
+            emit_json(
+                failure(
+                    "skill.list",
+                    "E_SKILL_CATALOG",
+                    str(payload.get("error") or "catalog failed to load"),
+                    next_action="Fix skills/catalog.json and plugin SKILL.md files",
+                )
+            )
+            return 1
+        emit_data(args, "skill.list", payload)
         return 0
     try:
         catalog = load_skills_catalog(root)
@@ -267,7 +278,8 @@ def cmd_skill(args: argparse.Namespace) -> int:
         )
         return 1
     if action == "show":
-        record = catalog.resolve(str(args.id))
+        key = str(args.id).strip().lower()
+        record = catalog.by_id().get(key)
         if record is None:
             emit_json(
                 failure(
