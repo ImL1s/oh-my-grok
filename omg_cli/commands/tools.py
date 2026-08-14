@@ -103,6 +103,8 @@ def cmd_tools(args: argparse.Namespace) -> int:
                     transport=transport,
                     query=getattr(args, "query", None),
                     new_name=getattr(args, "new_name", None),
+                    line=getattr(args, "line", None),
+                    character=getattr(args, "character", None),
                 )
             finally:
                 if transport is not None:
@@ -235,6 +237,8 @@ def register_tools_parsers(
         ),
     )
     p_lsp.add_argument("--path", default=None)
+    p_lsp.add_argument("--line", type=int, default=None)
+    p_lsp.add_argument("--character", type=int, default=None)
     p_lsp.add_argument("--query", default=None)
     p_lsp.add_argument("--new-name", dest="new_name", default=None)
     p_lsp.add_argument("--apply", action="store_true")

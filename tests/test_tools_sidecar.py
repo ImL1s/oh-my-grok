@@ -155,6 +155,21 @@ def test_execute_capability_mode_rejected() -> None:
         )
 
 
+def test_mcp_cannot_escalate_server_capability_mode(tmp_path: Path) -> None:
+    with pytest.raises(ToolsError, match="E_CAPABILITY_MODE"):
+        dispatch_sidecar_tool(
+            "omg.tools.ast.replace",
+            {
+                "pattern": "foo",
+                "rewrite": "bar",
+                "write": True,
+                "capability_mode": "read-write",
+            },
+            root=tmp_path,
+            capability_mode="read-only",
+        )
+
+
 def test_ast_missing_is_blocked_not_fake(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("omg_cli.tools_sidecar.shutil.which", lambda _name: None)
     with pytest.raises(ToolsError, match="E_ASTGREP_MISSING"):
@@ -336,6 +351,42 @@ def test_lsp_initialize_precedes_semantic_request(tmp_path: Path) -> None:
     assert "initialized" in names
     assert "textDocument/didOpen" in names
     assert "textDocument/hover" in names
+
+
+def test_lsp_forwards_requested_position(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("alpha\nbeta\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    lsp_operation(
+        "hover",
+        root=tmp_path,
+        path="a.py",
+        transport=transport,
+        line=1,
+        character=2,
+    )
+    hover = next(params for name, params in transport.calls if name == "textDocument/hover")
+    assert hover["position"] == {"line": 1, "character": 2}
+
+
+def test_lsp_did_open_each_uri(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("a=1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("b=1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    lsp_operation("workspace_symbols", root=tmp_path, transport=transport, query="x")
+    lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+    lsp_operation("hover", root=tmp_path, path="b.py", transport=transport)
+    opens = [params for name, params in transport.calls if name == "textDocument/didOpen"]
+    assert len(opens) == 2
+    uris = {item["textDocument"]["uri"] for item in opens}
+    assert any(uri.endswith("a.py") for uri in uris)
+    assert any(uri.endswith("b.py") for uri in uris)
+
+
+def test_stdio_missing_command_is_tools_error(tmp_path: Path) -> None:
+    from omg_cli.tools_sidecar import StdioLspTransport
+
+    with pytest.raises(ToolsError, match="E_LSP_COMMAND"):
+        StdioLspTransport(["omg-missing-language-server-zzz"], cwd=tmp_path)
 
 
 def test_mcp_lsp_hover_uses_supplied_transport(tmp_path: Path) -> None:

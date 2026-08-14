@@ -136,6 +136,35 @@ def require_read_write(mode: str, operation: str) -> None:
         )
 
 
+_MODE_RANK = {READ_ONLY: 0, READ_WRITE: 1}
+
+
+def effective_capability_mode(server: str, requested: Any) -> str:
+    """Server launch mode is the ceiling; clients cannot escalate."""
+    floor = capability_mode_of(server)
+    if requested is None or str(requested).strip() == "":
+        return floor
+    asked = capability_mode_of(str(requested))
+    if _MODE_RANK[asked] > _MODE_RANK[floor]:
+        raise ToolsError(
+            "E_CAPABILITY_MODE",
+            f"cannot escalate capability_mode from {floor} to {asked}",
+        )
+    return asked
+
+
+def lsp_position(line: Any, character: Any) -> dict[str, int]:
+    if line is None:
+        line = 0
+    if character is None:
+        character = 0
+    if isinstance(line, bool) or not isinstance(line, int) or line < 0:
+        raise ToolsError("E_LSP_POSITION", "line must be a non-negative int")
+    if isinstance(character, bool) or not isinstance(character, int) or character < 0:
+        raise ToolsError("E_LSP_POSITION", "character must be a non-negative int")
+    return {"line": line, "character": character}
+
+
 def confine_path(root: Path, candidate: str | Path) -> Path:
     """Windows-safe workspace confinement (resolve + relative_to).
 
@@ -312,14 +341,20 @@ class StdioLspTransport:
         self.timeout_s = timeout_s
         self._next_id = 1
         self._pending = bytearray()
-        self._proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(cwd),
-            bufsize=0,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(cwd),
+                bufsize=0,
+            )
+        except OSError as exc:
+            raise ToolsError(
+                "E_LSP_COMMAND",
+                f"cannot launch lsp command {argv[0]!r}: {exc}",
+            ) from exc
 
     def _write_message(self, payload: Mapping[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -490,45 +525,57 @@ def _lsp_notify_or_request(
 def ensure_lsp_session(
     transport: LspTransport, *, root: Path, path: str | None
 ) -> None:
-    """Send initialize/initialized (and didOpen when a path is known)."""
-    if getattr(transport, "_omg_lsp_ready", False):
-        return
-    root_uri = Path(root).resolve().as_uri()
-    transport.request(
-        "initialize",
-        {
-            "processId": os.getpid(),
-            "rootUri": root_uri,
-            "capabilities": {},
-            "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
-        },
-    )
-    _lsp_notify_or_request(transport, "initialized", {})
-    if path:
-        confined = confine_path(root, path)
-        text = ""
-        if confined.is_file():
-            try:
-                raw = confined.read_bytes()
-            except OSError:
-                raw = b""
-            text = raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
-        _lsp_notify_or_request(
-            transport,
-            "textDocument/didOpen",
+    """Initialize once; send didOpen once per requested URI."""
+    if not getattr(transport, "_omg_lsp_initialized", False):
+        root_uri = Path(root).resolve().as_uri()
+        transport.request(
+            "initialize",
             {
-                "textDocument": {
-                    "uri": confined.as_uri(),
-                    "languageId": _language_id_for(confined),
-                    "version": 1,
-                    "text": text,
-                }
+                "processId": os.getpid(),
+                "rootUri": root_uri,
+                "capabilities": {},
+                "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
             },
         )
-    try:
-        setattr(transport, "_omg_lsp_ready", True)
-    except (AttributeError, TypeError):
-        pass
+        _lsp_notify_or_request(transport, "initialized", {})
+        try:
+            setattr(transport, "_omg_lsp_initialized", True)
+            setattr(transport, "_omg_lsp_ready", True)
+        except (AttributeError, TypeError):
+            pass
+    if not path:
+        return
+    confined = confine_path(root, path)
+    uri = confined.as_uri()
+    opened = getattr(transport, "_omg_lsp_opened", None)
+    if not isinstance(opened, set):
+        opened = set()
+        try:
+            setattr(transport, "_omg_lsp_opened", opened)
+        except (AttributeError, TypeError):
+            pass
+    if uri in opened:
+        return
+    text = ""
+    if confined.is_file():
+        try:
+            raw = confined.read_bytes()
+        except OSError:
+            raw = b""
+        text = raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
+    _lsp_notify_or_request(
+        transport,
+        "textDocument/didOpen",
+        {
+            "textDocument": {
+                "uri": uri,
+                "languageId": _language_id_for(confined),
+                "version": 1,
+                "text": text,
+            }
+        },
+    )
+    opened.add(uri)
 
 
 def lsp_operation(
@@ -541,6 +588,8 @@ def lsp_operation(
     transport: LspTransport | None = None,
     query: str | None = None,
     new_name: str | None = None,
+    line: Any = None,
+    character: Any = None,
 ) -> dict[str, Any]:
     if operation == "servers":
         return {
@@ -582,7 +631,7 @@ def lsp_operation(
         uri = confined.as_uri()
         params = {
             "textDocument": {"uri": uri, "version": 1},
-            "position": {"line": 0, "character": 0},
+            "position": lsp_position(line, character),
         }
         if operation == "rename":
             params["newName"] = new_name or "Renamed"
@@ -894,7 +943,7 @@ def dispatch_sidecar_tool(
     transport: LspTransport | None = None,
 ) -> dict[str, Any]:
     args = dict(arguments or {})
-    mode = capability_mode_of(str(args.get("capability_mode") or capability_mode))
+    mode = effective_capability_mode(capability_mode, args.get("capability_mode"))
     if name == "omg.tools.doctor":
         return doctor_payload(root=root, env=env, strict=bool(args.get("strict")))
     if name.startswith("omg.tools.lsp."):
@@ -908,6 +957,8 @@ def dispatch_sidecar_tool(
             transport=transport,
             query=args.get("query"),
             new_name=args.get("new_name"),
+            line=args.get("line"),
+            character=args.get("character"),
         )
     if name == "omg.tools.ast.search":
         return ast_search(

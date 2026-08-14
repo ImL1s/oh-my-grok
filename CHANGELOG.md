@@ -101,6 +101,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#73 Codex review:** MCP `capability_mode` cannot escalate above the
+  server ceiling; hover/definition/rename forward `--line`/`--character`;
+  `didOpen` is per URI; missing `--lsp-command` raises `E_LSP_COMMAND`.
+  Refs #73.
 - **#73 Codex review:** stdio LSP reads the raw pipe (leftover-aware,
   no buffered `select` false-timeout), waits for the matching JSON-RPC
   `id`, and only treats `sg` as ast-grep after an identity probe.
