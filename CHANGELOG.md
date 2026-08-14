@@ -37,6 +37,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ### Added
 - **#75 visual CLI compare:** public `omg visual compare --input <json>` wraps `compare()` only and emits a scored/blocked JSON envelope. Callers compare `aggregate` to `threshold`; the CLI never writes `passes`/`verified`, never decodes images, and never talks to agents. Capture adapters, overlay/diff, independent reviewers, and screenshot Ralph remain later #75 work. Parity `omc.quality.visual_release` / `omx.quality.visual_modes` stay catalogued/partial. Hermetic: `tests/test_visual_cli.py`. Refs #75 (does not close).
+- **#76 public hash-edit CLI:** `omg edit plan|apply --input <descriptor.json>`
+  wraps the V1 library. `plan` is read-only; `apply` calls `apply_hash_edit`
+  (re-read, re-plan, splice at offsets, atomic replace) and never
+  `patch(1)` the unified diff. JSON apply envelopes are copy-safe (no raw
+  source/replacement/diff text). Stale/ambiguous/path errors fail closed
+  with stable `E_HASH_EDIT_*` codes. Does not write `passes`/`verified` or
+  claim `omo.edit.hash_anchored` host parity. Docs: `docs/hash-edit.md`.
+  Hermetic: `tests/test_hash_edit_cli.py`. Refs #76 (does not close).
 - **#169 PR2 canonical bundle/evidence producers:** `omg parity release-bundle`
   writes the documented `release-bundle-manifest.json` layout;
   `omg parity release-evidence` is the only constructor for

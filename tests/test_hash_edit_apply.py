@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -30,7 +31,13 @@ from omg_cli.hash_edit import (
 )
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 
-pytestmark = pytest.mark.platform
+pytestmark = [
+    pytest.mark.platform,
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="apply_hash_edit requires POSIX O_NOFOLLOW/fcntl",
+    ),
+]
 
 
 def _digest_text(text: str) -> str:

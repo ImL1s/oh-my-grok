@@ -1,8 +1,10 @@
-"""Versioned hash-anchored edit protocol (#76 PR1).
+"""Versioned hash-anchored edit protocol (#76).
 
 This package is a library contract. It does not write ``.omg/state``,
 does not set ``verified``, and does not claim that unobserved host-native
-edits used this protocol. A public CLI is intentionally absent.
+edits used this protocol. The public CLI (``omg edit plan|apply``) wraps
+these functions; a protocol claim still requires ``apply_hash_edit`` to
+return ``HashEditApplyResultV1``.
 """
 
 from .descriptor import (

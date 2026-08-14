@@ -22,6 +22,10 @@ from omg_cli.commands.provider import (  # #67-A — provider probe
     cmd_provider,  # noqa: F401 — re-export for tests
     register_provider_parsers,
 )
+from omg_cli.commands.edit import (  # #76 — hash-anchored edit CLI
+    cmd_edit,  # noqa: F401 — re-export for tests
+    register_edit_parsers,
+)
 from omg_cli.commands.visual import (  # #75 — visual contract CLI
     cmd_visual,  # noqa: F401 — re-export for tests
     register_visual_parsers,
@@ -211,6 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_provider_parsers(sub, common)
 
+    register_edit_parsers(sub, common)
     register_visual_parsers(sub, common)
 
     register_job_parsers(sub, common)
