@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
+  `--scope project|user` (defaults remain `grok` + `project`). Versioned
+  `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records
+  managed artifacts, classifies missing/exact/stale/user-owned/foreign, preserves
+  foreign/user-owned unless `--force`, and rolls back interrupted transactions.
+  Refuses to invent project `.omg` in `$HOME` without `--here`. `omg doctor`
+  reports manifest drift; JSON `host` now separates `binary` / `version` /
+  `auth` / `capabilities` / `compatibility` / `live_evidence` (`auth.ok` and
+  `live_evidence` stay false — invalid keys cannot false-green). File copy is
+  not live AG/Grok verification. Refs #77 (does not close).
 - **#73 tools sidecar (first cut):** `omg tools doctor|serve|lsp|ast|codegraph|research`
   is an OMG-owned sidecar (`omg_cli/tools_sidecar.py`). Semantic LSP uses an
   explicit transport (fake protocol or `--lsp-command`); it is **not**
@@ -101,6 +111,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#77 Codex review:** mergeable `AGENTS.md` records a post-setup
+  `content_hash` so inspect is not immediately stale; manifest writes
+  replace (never follow) a symlink; a failed commit-marker rolls the
+  manifest back with the transaction; claimed symlink artifacts count as
+  drift; `omg doctor` probes user-scope `~/.omg-user` as well as the
+  project manifest. Refs #77.
+- **#77 Codex review:** rollback restores only paths under the install root
+  and the expected `tx/<id>` backup directory; parent-directory symlinks
+  (including `.omg`) are refused; preserved user-owned/foreign rows drop
+  their managed hash so doctor is not immediately stale; overwrites larger
+  than the backup cap fail closed. Rollback also refuses targets whose
+  parent is a symlink. Inspect fails closed on `{}` / missing schema and
+  on a symlinked `.omg` parent. File-backup restore refuses a symlink
+  leaf (does not follow it). Empty `artifacts` is not installed. Rollback
+  restores only writable catalog paths (not `.git/config`). All-preserved
+  installs report `enabled=false`. Commit-marker writes are atomic; a
+  truncated marker still rolls back via in-memory fallback. Refs #77.
+- **#77 Codex review:** inspect compares recorded `content_hash` (hash
+  mismatch is stale, not user_owned false-green); rollback unlinks files
+  created in a failed transaction; `--force` replaces symlinks instead of
+  following them; `omg setup --scope user` skips project-root discovery;
+  `--runtime antigravity` does not run legacy Grok global setup. Refs #77.
 - **#73 Codex review:** MCP `capability_mode` cannot escalate above the
   server ceiling; hover/definition/rename forward `--line`/`--character`;
   `didOpen` is per URI; missing `--lsp-command` raises `E_LSP_COMMAND`.

@@ -1252,6 +1252,39 @@ def check_hooks_registry() -> SoftResult:
         return (name, "warn", f"hooks registry probe failed ({type(exc).__name__})")
 
 
+def check_install_manifest() -> SoftResult:
+    """Report install-manifest drift. File copy is never live-verified."""
+    name = "install manifest"
+    try:
+        from omg_cli.cli_util import project_root
+        from omg_cli.install_manifest import inspect_install_manifest
+
+        project = inspect_install_manifest(project_root=project_root(), scope="project")
+        user = inspect_install_manifest(project_root=None, scope="user")
+        drift = len(project.get("drift") or []) + len(user.get("drift") or [])
+        configured = bool(project.get("configured") or user.get("configured"))
+        ok = True
+        if project.get("configured") and not project.get("ok"):
+            ok = False
+        if user.get("configured") and not user.get("ok"):
+            ok = False
+        detail = (
+            f"project_configured={project.get('configured')}; "
+            f"user_configured={user.get('configured')}; "
+            f"installed={bool(project.get('installed') or user.get('installed'))}; "
+            f"observed=False; "
+            f"healthy=False; "
+            f"verified=False; "
+            f"runtime={project.get('runtime') or user.get('runtime')}; "
+            f"drift={drift}"
+        )
+        if configured and not ok:
+            return (name, "warn", detail)
+        return (name, "ok", detail)
+    except Exception as exc:
+        return (name, "warn", f"install manifest probe failed ({type(exc).__name__})")
+
+
 def check_team_plane() -> SoftResult:
     """Report experimental team gate, tmux availability, and P0′ API surface."""
     name = "team plane"
@@ -1335,6 +1368,7 @@ def run_soft_checks(
         check_installed_capabilities_lock(),
         check_installed_release_identity(),
         check_hooks_registry(),
+        check_install_manifest(),
         check_team_plane(),
         check_agent_model_routing(),
     ]

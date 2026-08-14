@@ -764,6 +764,11 @@ def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
     )
     monkeypatch.setattr(
         doctor,
+        "check_install_manifest",
+        lambda: ("install manifest", "ok", "stub"),
+    )
+    monkeypatch.setattr(
+        doctor,
         "check_team_plane",
         lambda: ("team plane", "ok", "stub"),
     )

@@ -25,6 +25,7 @@ Grok Build plugin + `omg` CLI 的使用者文档。
 | [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1（纯比较 + `omg visual compare`；无 approved/passes/verified；无图像 I/O；英文） |
 | [hooks-lifecycle.md](./hooks-lifecycle.md) | 生命周期注册表（#72；英文）：Grok PreToolUse/Stop 可拦截；SessionStart 被动；不注入 UserPromptSubmit |
 | [tools-sidecar.md](./tools-sidecar.md) | Tools sidecar（#73；英文）：`omg tools`；不是 Grok 原生 LSP |
+| [install-manifest.md](./install-manifest.md) | 安装清单（#77；英文）：`--runtime/--scope`；文件复制不是 live 验证 |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | 维护者发版流程 |
 
 ## Skills 快速对照
