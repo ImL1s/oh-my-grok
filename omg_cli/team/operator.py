@@ -126,6 +126,7 @@ class ExactPaneProof:
     worktree: str | None
     state: str | None
     ready: bool | None
+    tmux_socket_path: str | None = None
 
 
 def _utc_now_iso() -> str:
@@ -367,6 +368,9 @@ def resolve_live_worker(
             window_id = norm_window
 
     team_id = str(meta.get("team_id") or "team")
+    sock = meta.get("tmux_socket_path")
+    if not isinstance(sock, str) or not sock or "\0" in sock:
+        sock = None
     return ExactPaneProof(
         run_id=run_id,
         team_id=team_id,
@@ -389,6 +393,7 @@ def resolve_live_worker(
         worktree=str(task["worktree"]) if task.get("worktree") else None,
         state=str(task["status"]) if task.get("status") else None,
         ready=None,
+        tmux_socket_path=sock,
     )
 
 
@@ -1077,7 +1082,12 @@ def capture_worker(
         )
     bound = _bound_lines(lines)
     try:
-        text = capture_pane(proof.pane_id, lines=bound, raw=raw)
+        text = capture_pane(
+            proof.pane_id,
+            lines=bound,
+            raw=raw,
+            socket_path=proof.tmux_socket_path,
+        )
     except TmuxTeamError as exc:
         raise OperatorError(
             str(exc),
@@ -1126,6 +1136,7 @@ def focus_worker(
         session_id=proof.session_id,
         pane_id=proof.pane_id,
         window_id=proof.window_id,
+        socket_path=proof.tmux_socket_path,
     )
     result: dict[str, Any] = {
         "ok": True,

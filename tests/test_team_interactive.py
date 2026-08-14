@@ -282,7 +282,7 @@ def test_tui_ready_marker_is_exact_line_only() -> None:
     assert capture_contains_tui_ready(f"{marker}\nnext\n", nonce)
     assert not capture_contains_tui_ready(f"prefix {marker}\n", nonce)
     assert not capture_contains_tui_ready(f"{marker}EVIL\n", nonce)
-    assert not capture_contains_tui_ready(f"TUI_READY:other\n", nonce)
+    assert not capture_contains_tui_ready("TUI_READY:other\n", nonce)
     assert not capture_contains_tui_ready("", nonce)
 
 

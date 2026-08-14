@@ -22,6 +22,7 @@ from omg_cli.team.io_capability import (
     TTY_OWNER_SUPERVISOR,
 )
 from omg_cli.team.operator import (
+    ExactPaneProof,
     OperatorError,
     STATUS_GONE,
     STATUS_LIVE,
@@ -292,6 +293,35 @@ def live_team(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     return {"root": tmp_path, "live": live, "run_id": str(live["run_id"])}
 
 
+def test_exact_pane_proof_carries_tmux_socket_path() -> None:
+    """Operator send/focus pin tmux -S off the proof; the field must exist."""
+    proof = ExactPaneProof(
+        run_id="run",
+        team_id="team",
+        worker_id="w1",
+        attempt=1,
+        generation=0,
+        session="omg-op-session",
+        session_id="$42",
+        launch_nonce="b" * 32,
+        pane_id="%10",
+        window_id="@9",
+        expected_pid=7000,
+        expected_pid_start=None,
+        pane_owner_nonce=None,
+        owner_token_sha256=None,
+        leader_pane_id="%1",
+        role=None,
+        provider=None,
+        posture=None,
+        worktree=None,
+        state=None,
+        ready=None,
+        tmux_socket_path="/tmp/omg-op-test.sock",
+    )
+    assert proof.tmux_socket_path == "/tmp/omg-op-test.sock"
+
+
 def test_parser_registers_operator_family() -> None:
     parser = build_parser()
     for action in ("panes", "capture", "focus", "key", "input", "watch"):
@@ -503,6 +533,8 @@ def test_key_and_input_audit_no_raw_text(
     plane._atomic_write_json(team_meta_path(root, str(live["run_id"])), live)
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
+    proof = resolve_live_worker(root, live_team["run_id"], "w1")
+    assert proof.tmux_socket_path == sock
 
     key_worker(
         root,
