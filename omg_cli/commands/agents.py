@@ -1,8 +1,10 @@
-"""Agent/model policy CLI (#131).
+"""Agent/model policy CLI (#131/#134).
 
-``omg agents list|explain`` is a read-only inspect surface. It performs no
-provider probe, paid inference, or ``verified`` write. Medley catalog facts
-stay unsupported/unavailable on stock Grok Build.
+``omg agents list|explain`` is a read-only inspect surface. Human layouts
+follow ``--width`` / ``COLUMNS`` (narrow/normal/wide) and never require color.
+JSON is the typed ``AgentPolicyViewV1``. No provider probe, paid inference, or
+``verified`` write. Medley catalog facts stay unsupported/unavailable on stock
+Grok Build.
 """
 
 from __future__ import annotations
@@ -70,7 +72,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if wants_json(args):
         emit_json(success("agents.list", data=payload))
         return 0
-    print(_render_list_human(rows))
+    from omg_cli.agent_policy_ux import render_list_human, terminal_width
+
+    columns = terminal_width(override=getattr(args, "width", None))
+    print(render_list_human(rows, columns=columns))
     return 0
 
 
@@ -98,7 +103,10 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     if wants_json(args):
         emit_json(success("agents.explain", data=payload))
         return 0
-    print(_render_explain_human(view))
+    from omg_cli.agent_policy_ux import render_explain_human, terminal_width
+
+    columns = terminal_width(override=getattr(args, "width", None))
+    print(render_explain_human(view, columns=columns))
     return 0
 
 
@@ -110,101 +118,6 @@ def _fail(args: argparse.Namespace, command: str, exc: Exception) -> int:
     else:
         print(f"omg {command.replace('.', ' ')}: {code}: {message}", file=sys.stderr)
     return 2 if code == "E_AGENT_NOT_FOUND" else 1
-
-
-def _intent_cell(row: object) -> str:
-    mode = str(getattr(row, "baseline_mode", ""))
-    extension = getattr(row, "requested_extension", None)
-    candidates = getattr(row, "candidate_ids", ())
-    if extension and candidates:
-        shown = " -> ".join(str(item) for item in candidates[:2])
-        if len(candidates) > 2:
-            shown += " -> …"
-        return shown
-    return mode
-
-
-def _policy_cell(row: object) -> str:
-    if getattr(row, "requested_extension", None):
-        return "optional extension"
-    return "baseline"
-
-
-def _render_list_human(rows: tuple[object, ...]) -> str:
-    headers = ("Agent", "Host policy", "Model intent", "Status")
-    table = [
-        (
-            str(getattr(row, "agent_id")),
-            _policy_cell(row),
-            _intent_cell(row),
-            str(getattr(row, "status")),
-        )
-        for row in rows
-    ]
-    widths = [len(h) for h in headers]
-    for line in table:
-        for index, cell in enumerate(line):
-            widths[index] = max(widths[index], len(cell))
-    out = [
-        "  ".join(headers[i].ljust(widths[i]) for i in range(len(headers)))
-    ]
-    for line in table:
-        out.append("  ".join(line[i].ljust(widths[i]) for i in range(len(headers))))
-    return "\n".join(out)
-
-
-def _render_explain_human(view: object) -> str:
-    facts = getattr(view, "host_facts", {}) or {}
-    reasons = getattr(view, "reasons", ())
-    sections = [
-        "Identity",
-        f"  agent_id: {getattr(view, 'agent_id')}",
-        f"  aliases: {', '.join(getattr(view, 'aliases', ()))}",
-        f"  category: {getattr(view, 'category')}",
-        f"  tier: {getattr(view, 'tier')}",
-        "Capability/tool floor",
-        f"  capability_floor: {getattr(view, 'capability_floor')}",
-        "Policy source and precedence winner",
-        f"  policy_id: {getattr(view, 'policy_id')}",
-        f"  policy_source: {getattr(view, 'policy_source')}",
-        f"  policy_digest: {getattr(view, 'policy_digest')}",
-        "Original Grok Build baseline behavior",
-        f"  baseline_mode: {getattr(view, 'baseline_mode')}",
-        f"  baseline_model: {getattr(view, 'baseline_model')}",
-        "Capability-gated Medley policy and candidate order",
-        f"  requested_extension: {getattr(view, 'requested_extension')}",
-        f"  candidate_ids: {', '.join(getattr(view, 'candidate_ids', ())) or '(none)'}",
-        f"  medley_capability_outcome: {facts.get('medley_capability_outcome')}",
-        f"  route_specific_facts: {facts.get('route_specific_facts')}",
-        "Prompt profile/reasoning preference",
-        f"  prompt_profile: {getattr(view, 'prompt_profile')}",
-        f"  reasoning_preference: {getattr(view, 'reasoning_preference')}",
-        "Selected host facts, when available",
-        f"  selected_model_ref: {getattr(view, 'selected_model_ref')}",
-        f"  route_kind: {getattr(view, 'route_kind')}",
-        f"  route_receipt_digest: {getattr(view, 'route_receipt_digest')}",
-        "Rejected/blocked reasons",
-    ]
-    if reasons:
-        for reason in reasons:
-            sections.append(
-                f"  {getattr(reason, 'code')}: {getattr(reason, 'message')}"
-            )
-    else:
-        sections.append("  (none)")
-    sections.extend(
-        [
-            "Resume/attempt lineage",
-            f"  attempt: {getattr(view, 'attempt')}",
-            "Next action",
-        ]
-    )
-    if reasons:
-        sections.append(f"  {getattr(reasons[0], 'next_action')}")
-    else:
-        sections.append("  baseline inherit is ready on original Grok Build")
-    sections.append(f"status: {getattr(view, 'status')}")
-    return "\n".join(sections)
 
 
 def register_agents_parsers(
@@ -247,6 +160,12 @@ def register_agents_parsers(
         help="filter by capability id or id=state",
     )
     p_list.add_argument("--status", default=None, help="filter by view status")
+    p_list.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="human layout columns (default: terminal / COLUMNS); JSON ignores this",
+    )
     p_list.set_defaults(func=cmd_agents, agents_action="list")
     p_explain = agents_sub.add_parser(
         "explain",
@@ -258,6 +177,12 @@ def register_agents_parsers(
         "--model",
         default=None,
         help="per-run exact model override for this explain only (not persisted)",
+    )
+    p_explain.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="human layout columns (default: terminal / COLUMNS); JSON ignores this",
     )
     p_explain.set_defaults(func=cmd_agents, agents_action="explain")
     p_agents.set_defaults(func=cmd_agents)

@@ -55,7 +55,10 @@ the same turn with the required mode. Do not fall back to solo work over one den
 Stock Grok Build model intent is explicit **inherit** (parent model) unless
 `omg agents explain` shows a blocked exact/requires_capability policy. Do not
 flatten Medley catalog ids onto spawn. Inspect with `omg agents list` /
-`omg agents explain` (read-only; no paid probe).
+`omg agents explain <agent>` (read-only; no paid probe). Baseline is
+first-class; optional Medley extensions stay unsupported on this host.
+Native policy routes are not Team `native_host_receipt` routes and are not
+external executors (`codex`/`agy`/`cursor`/`gemini`).
 </subagents>
 
 <verification>

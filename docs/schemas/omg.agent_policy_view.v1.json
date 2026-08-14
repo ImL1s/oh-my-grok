@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "omg.agent_policy_view/v1",
+  "title": "OMG AgentPolicyViewV1",
+  "description": "Secret-free typed projection shared by omg agents list/explain, doctor, Team presentation human copy, and optional Medley TUI adapters (ImL1s/medley#290). Stock original Grok Build never fabricates receipts. This schema is the OMG adapter contract; Medley TUI runtime is not claimed shipped.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "agent_id",
+    "baseline_mode",
+    "status",
+    "route_kind"
+  ],
+  "properties": {
+    "schema": { "const": "omg.agent_policy_view/v1" },
+    "agent_id": { "type": "string" },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "category": { "type": ["string", "null"] },
+    "tier": { "type": ["string", "null"] },
+    "capability_floor": { "type": "string", "enum": ["read-only", "read-write"] },
+    "tool_floor": { "type": "array", "items": { "type": "string" } },
+    "policy_id": { "type": "string" },
+    "policy_digest": { "type": "string" },
+    "policy_source": { "type": "string" },
+    "baseline_mode": { "type": "string", "enum": ["exact", "inherit", "requires_capability"] },
+    "baseline_model": { "type": ["string", "null"] },
+    "requested_extension": { "type": ["string", "null"] },
+    "candidate_ids": { "type": "array", "items": { "type": "string" } },
+    "prompt_profile": { "type": "string" },
+    "reasoning_preference": { "type": ["string", "null"] },
+    "host_capabilities": { "type": "array" },
+    "selected_model_ref": { "type": ["string", "null"] },
+    "route_kind": { "type": "string", "enum": ["native", "external_executor"] },
+    "route_receipt_digest": { "type": ["string", "null"] },
+    "attempt": { "type": ["integer", "null"] },
+    "status": {
+      "type": "string",
+      "enum": ["ready", "unsupported", "unavailable", "incompatible", "unknown", "blocked"]
+    },
+    "reasons": { "type": "array" },
+    "host_facts": { "type": "object" },
+    "requested_policy": { "type": "object" },
+    "effective_route": { "type": "object" }
+  }
+}

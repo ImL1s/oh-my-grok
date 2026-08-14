@@ -416,11 +416,15 @@ Medley-only capability outcome is **unsupported**; route-specific facts
 are **unavailable**. The stock host must report those honest states
 rather than fabricating a panel.
 
-Accessibility **contract targets** (not shipped runtime):
+Accessibility **CLI shipped** / **TUI contract-only**:
 
-- narrow-width layouts remain readable;
-- no-color / `NO_COLOR` environments remain usable;
-- human and JSON views of the same facts stay equivalent.
+- `omg agents list` / `omg agents explain <agent-or-profile>` narrow-width /
+  normal / wide layouts are **shipped** (`--width` / `COLUMNS`; Medley facts stay
+  **unsupported**; Medley TUI remains [medley#290](https://github.com/ImL1s/medley/issues/290)
+  **contract-only**);
+- no-color / `NO_COLOR` environments remain usable (status is never color-only);
+- human and JSON views of the same `AgentPolicyViewV1` stay equivalent
+  ([schema](../schemas/omg.agent_policy_view.v1.json)).
 
 No page may imply OMG can arbitrarily add a new stock Grok Build TUI
 panel.
