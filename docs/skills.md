@@ -275,7 +275,7 @@ omg team api replace-worker --input '{"run_id":"RUN","team_id":"t","worker":"t1"
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"t"}' --json
 omg team api bulk-create-tasks --input '{"schema_version":1,"run_id":"RUN","team_id":"t","batch_id":"b1","idempotency_key":"k1","source":{"kind":"fixture","source_id":"s1","digest":"<sha256>"},"tasks":[{"task_key":"root","subject":"s","description":"d","depends_on":[],"requires_code_change":false,"expected_artifact":{"kind":"omg.team.test.artifact","schema_version":1,"required_fields":["summary"]}}]}' --json
 omg team status --run RUN --presentation --json
-# Hyperplan V1 hermetic produce + task driver + lane protocol (#69 PR13; non-executing; execution_supported=false):
+# Hyperplan V1 hermetic produce + task driver + lane protocol + fixture execute (#69 PR14; compile execution_supported=false):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN --json
 omg team hyperplan validate-decision --run RUN --input DECISION.json --json
@@ -284,7 +284,8 @@ omg team hyperplan admit-tasks --run RUN --team-id TEAM --json
 omg team hyperplan collect-tasks --run RUN --team-id TEAM --json
 omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE --json
 omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
-# Security Research V1 hermetic produce + task driver + lane protocol (#69 PR13; execution_supported=false):
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+# Security Research V1 hermetic produce + task driver + lane protocol + fixture execute (#69 PR14; execution_supported=false on compile):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN --json
 omg team security-research validate-report --run RUN --input REPORT.json --json
@@ -293,6 +294,7 @@ omg team security-research admit-tasks --run RUN --team-id TEAM --json
 omg team security-research collect-tasks --run RUN --team-id TEAM --json
 omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE --json
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
 # P0′ ops + replace-worker + read-presentation-state + bulk-create-tasks; catalog v4 = 39 named / 28 implemented (see docs/team-operation-catalog-v4.md; v1/v2/v3 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
@@ -300,8 +302,8 @@ omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"
 
 See also `docs/team.md` for job-backed worker invariants (#69 PR4),
 `docs/team-hyperplan-v1.md` for Hyperplan V1 hermetic produce + task driver +
-lane worker protocol (#69 PR13), and `docs/team-security-research-v1.md` for
-Security Research V1 (#69 PR13).
+lane worker protocol + fixture execute (#69 PR14), and
+`docs/team-security-research-v1.md` for Security Research V1 (#69 PR14).
 
 ---
 

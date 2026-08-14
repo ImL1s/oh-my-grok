@@ -1,134 +1,134 @@
 {
   "version": "0.8.0",
   "files": {
-    "agents/omg-analyst.md": "b9962b590a679a5d644812c052276ef633c0937ee29abd873d865a0d55ddfb55",
-    "agents/omg-architect.md": "9c2841aa1b46d51871e7b4f19701d220f6fc3d8a522914e3f3de1cc5cc679576",
-    "agents/omg-code-reviewer.md": "a80e5ec8600e4af53af3155f51327fcb50c21ba90852865bc6e6c101221a811e",
-    "agents/omg-critic.md": "1bab25fc023e56ff74d73c305d7407b2d56cea4361212218b10844658e6f5d05",
-    "agents/omg-debugger.md": "f44275b6825fe24619485a5e99ebe518ac3ede088df42e3103a2ca72c6e54a28",
-    "agents/omg-designer.md": "7d70b6434cb4515e966843df0dddb6d7b979c48deb1c955461086327bb5a5d53",
-    "agents/omg-executor.md": "c9fc6b6b3ffbeac549d99209a846919389d510ad10199953517983eb4a0cb538",
-    "agents/omg-orchestrator.md": "b7749cb2acea06fe0b6784dd677f38d18de871f60e73cf928df9e3f22df9ffd8",
-    "agents/omg-qa-tester.md": "0dd086bf74a0c9632d45c7472a3e9e862f92905f6a15aef2ee8a905b8b0e2045",
-    "agents/omg-security-reviewer.md": "be43140948b22abfcaa92aa98303237b6fe7b920d0a3312254b262d974c973bb",
-    "agents/omg-test-engineer.md": "945c46a304df1ec9b6f518c30f7f38d1e010a997fe0a723730aeeda227495e2a",
-    "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
-    "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
-    "skills/omg-ask/SKILL.md": "b1e8be52a75ff5f026441211562e70d5b19af41d749c55314f88fd68de32b277",
-    "skills/omg-autopilot/SKILL.md": "ab19f8a00cfad781cadc06af8fc7129b4299d130af2ae9475924fae5869726c5",
-    "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
-    "skills/omg-deep-interview/SKILL.md": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
-    "skills/omg-dual-review/SKILL.md": "f19c495df050a6b38660a20754312541c963081c08d875ee558a29b183bc6fbe",
-    "skills/omg-hud/SKILL.md": "8dd721f9cef62c126e3b4f0d40d4d2d4f1d8508cfd581a3ba9ea09cb6825bfb2",
-    "skills/omg-lsp/SKILL.md": "e75297231980816ba74edf1204bcd4d8249b09b911572d2a5d3b9829996e1a26",
-    "skills/omg-pipeline/SKILL.md": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
-    "skills/omg-ralph/SKILL.md": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
-    "skills/omg-ralplan/SKILL.md": "c11c5de0b4705565976a0da85c90d957578bdab83aa33cf1b3ad634bb035f727",
-    "skills/omg-team/SKILL.md": "2b89dde70e3ff5eaef6a40cb8fa56a5b1a6692b43cc2f2d389b07f2265502a67",
-    "skills/omg-ultragoal/SKILL.md": "0f5849da19d50bc85556d5ed5eb785268b5a9b3a7ab001f146b551a11f1927e1",
-    "skills/omg-ultraqa/SKILL.md": "8e2c3cd4c9f8f40685e9ca278a9837cfe8aff12e46dca00c60ea598e5f957748",
-    "skills/omg-ultrawork/SKILL.md": "31ad59fd89d01fcdddadcb2eb8c6d62cc1ddc836cf64f1eeded2f10fd66fc123",
-    "skills/omg-using/SKILL.md": "304eb43595340e4897c72b2529d02b36a28ce17c860bfaa2ac03af76f7465e0e",
-    "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9"
+    "agents/omg-analyst.md": "146edf89d93a6de347827cfadd2295f4329ddca1afa97f1b4d13d8d85c87e3ea",
+    "agents/omg-architect.md": "a0321134e458f7203a115c75823b0b3bfa182952c586ccd148e2dfedda7f9aa9",
+    "agents/omg-code-reviewer.md": "8d4bc5ea43f51b2545570f9e0ba0d2eaff3f08d683a953626ce443ac8274a0a4",
+    "agents/omg-critic.md": "2b2d747b592c0220f01d3d6ce9dfc35ca060c96f23089a596a08a0185302a341",
+    "agents/omg-debugger.md": "6eda328d15bed17ef35bb4cdeb8277233b24b5cd970f6168659a11ec427cd79d",
+    "agents/omg-designer.md": "9ddc22c9c57754f238ed50266a3b59d8609d447ac0b4f74e9694e41f3f6c4c06",
+    "agents/omg-executor.md": "1c39713c72fba70a409308db10b1163cf49805d74f52caad4537db218574e591",
+    "agents/omg-orchestrator.md": "1f321c0191700fd1c4acc607a2426142f6c37407ba3677c4eac61c7825bd4921",
+    "agents/omg-qa-tester.md": "d628ecf00d42e1e2f516cc3524f01f2e52b34c00951ea263491b5dfc101c7dbd",
+    "agents/omg-security-reviewer.md": "0842ff02481365b43892011a6ddf09c66e7aa9a67f7235a5cc267963a4dfd6e9",
+    "agents/omg-test-engineer.md": "69a8bafaf3a91f153c50b49343e2cd0ccb9182e158e7fb58cffb1d7435694082",
+    "agents/omg-verifier.md": "3b26b8fc7efa60d6539209187ccb9cf15e3b084ee99f6344d6be83869ad7bdfc",
+    "agents/omg-writer.md": "245eb235760ef7aa4883a62f6bdea56af49b3a4d995b0554121a847ad597846d",
+    "skills/omg-ask/SKILL.md": "c79cdd7e5e6545245db1fbf157977cce4c4261718906c89d5a855425d955372a",
+    "skills/omg-autopilot/SKILL.md": "68522e3e249c1df30a39bea1ddd4e7b9ae2d8fc9cb5ad66752d052aadfec48b8",
+    "skills/omg-cancel/SKILL.md": "471b7e39aff76b567b86e41b42dd33671194a9635610d6ecbef54b6092d66767",
+    "skills/omg-deep-interview/SKILL.md": "c59b52326b330b1650135c52129698b2689ace9fb7c0148d7daaecb5799a647a",
+    "skills/omg-dual-review/SKILL.md": "9b865825b5c0de041e62baeb692e03ab23c30dd5736645921d2572993c509a3a",
+    "skills/omg-hud/SKILL.md": "dea29ca01731edcc148599b63d94ff88f82865f796a59369fda79783c7976e91",
+    "skills/omg-lsp/SKILL.md": "a9c32b7281035f374ab4af5a2ba2c1a724f24e3c032dc2e147418c788dad1902",
+    "skills/omg-pipeline/SKILL.md": "bb3c15eae78b5c8210f56270e30225af082dd4e4c04d01d503c28e90b6e6ebb2",
+    "skills/omg-ralph/SKILL.md": "f8f14d83d19418c46edf8f2210304dd13977d46f5de380d4c53d4af665f40a8d",
+    "skills/omg-ralplan/SKILL.md": "af39de5ed5117550b5bf4653da002d62fb2ebac507c094400569a860a63e09d1",
+    "skills/omg-team/SKILL.md": "deacd141a57c28994699a16c37b4dd50f37bdab196753a044d71edc4d10bdc51",
+    "skills/omg-ultragoal/SKILL.md": "a67b9452fa72536f795b53b6fb5433bc2e4f49e73a54f4f20ca495f17a33e8f3",
+    "skills/omg-ultraqa/SKILL.md": "42d34b488784434c0d5df24c4657046983de40df061cdeb35be22462e8dc0c75",
+    "skills/omg-ultrawork/SKILL.md": "ca8dff4fbcb983f925ec5aa1b7697742d0792696a6916342ebc7fd2fc586c4bd",
+    "skills/omg-using/SKILL.md": "816297c0fa91917f77bc9d5dd62e09bdb785a71884c86212b190589d878fe7a2",
+    "skills/omg-wiki/SKILL.md": "7ba0a97f1b0fef4b1a5874960900f1478515000b0c993490934f5e1a93189fa5"
   },
-  "aggregate": "1c171eebd143ec154196f055f11793ce9eb36b9b9428bc39642038e1ed47471e",
+  "aggregate": "cd7019b4374c5319b602f9ccd5452b2eb7d6543a88e3d40f9df21555221af323",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
       {
         "name": "omg-ask",
         "path": "skills/omg-ask/SKILL.md",
-        "sha256": "b1e8be52a75ff5f026441211562e70d5b19af41d749c55314f88fd68de32b277",
+        "sha256": "c79cdd7e5e6545245db1fbf157977cce4c4261718906c89d5a855425d955372a",
         "metadata_status": "valid"
       },
       {
         "name": "omg-autopilot",
         "path": "skills/omg-autopilot/SKILL.md",
-        "sha256": "ab19f8a00cfad781cadc06af8fc7129b4299d130af2ae9475924fae5869726c5",
+        "sha256": "68522e3e249c1df30a39bea1ddd4e7b9ae2d8fc9cb5ad66752d052aadfec48b8",
         "metadata_status": "valid"
       },
       {
         "name": "omg-cancel",
         "path": "skills/omg-cancel/SKILL.md",
-        "sha256": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
+        "sha256": "471b7e39aff76b567b86e41b42dd33671194a9635610d6ecbef54b6092d66767",
         "metadata_status": "valid"
       },
       {
         "name": "omg-deep-interview",
         "path": "skills/omg-deep-interview/SKILL.md",
-        "sha256": "4a9c414bed13559a264c5bbc20c6bdc04456cb767300c02578c870117c158daf",
+        "sha256": "c59b52326b330b1650135c52129698b2689ace9fb7c0148d7daaecb5799a647a",
         "metadata_status": "valid"
       },
       {
         "name": "omg-dual-review",
         "path": "skills/omg-dual-review/SKILL.md",
-        "sha256": "f19c495df050a6b38660a20754312541c963081c08d875ee558a29b183bc6fbe",
+        "sha256": "9b865825b5c0de041e62baeb692e03ab23c30dd5736645921d2572993c509a3a",
         "metadata_status": "valid"
       },
       {
         "name": "omg-hud",
         "path": "skills/omg-hud/SKILL.md",
-        "sha256": "8dd721f9cef62c126e3b4f0d40d4d2d4f1d8508cfd581a3ba9ea09cb6825bfb2",
+        "sha256": "dea29ca01731edcc148599b63d94ff88f82865f796a59369fda79783c7976e91",
         "metadata_status": "valid"
       },
       {
         "name": "omg-lsp",
         "path": "skills/omg-lsp/SKILL.md",
-        "sha256": "e75297231980816ba74edf1204bcd4d8249b09b911572d2a5d3b9829996e1a26",
+        "sha256": "a9c32b7281035f374ab4af5a2ba2c1a724f24e3c032dc2e147418c788dad1902",
         "metadata_status": "valid"
       },
       {
         "name": "omg-pipeline",
         "path": "skills/omg-pipeline/SKILL.md",
-        "sha256": "cebeac3f1c8af94286af5c0ecde336ab02feca476f9ce5a8af915614796bc223",
+        "sha256": "bb3c15eae78b5c8210f56270e30225af082dd4e4c04d01d503c28e90b6e6ebb2",
         "metadata_status": "valid"
       },
       {
         "name": "omg-ralph",
         "path": "skills/omg-ralph/SKILL.md",
-        "sha256": "6beb5510a2fa35c31d4d974e46b96bf4eae2bb984662f3686c17046ccc7a57ea",
+        "sha256": "f8f14d83d19418c46edf8f2210304dd13977d46f5de380d4c53d4af665f40a8d",
         "metadata_status": "valid"
       },
       {
         "name": "omg-ralplan",
         "path": "skills/omg-ralplan/SKILL.md",
-        "sha256": "c11c5de0b4705565976a0da85c90d957578bdab83aa33cf1b3ad634bb035f727",
+        "sha256": "af39de5ed5117550b5bf4653da002d62fb2ebac507c094400569a860a63e09d1",
         "metadata_status": "valid"
       },
       {
         "name": "omg-team",
         "path": "skills/omg-team/SKILL.md",
-        "sha256": "2b89dde70e3ff5eaef6a40cb8fa56a5b1a6692b43cc2f2d389b07f2265502a67",
+        "sha256": "deacd141a57c28994699a16c37b4dd50f37bdab196753a044d71edc4d10bdc51",
         "metadata_status": "valid"
       },
       {
         "name": "omg-ultragoal",
         "path": "skills/omg-ultragoal/SKILL.md",
-        "sha256": "0f5849da19d50bc85556d5ed5eb785268b5a9b3a7ab001f146b551a11f1927e1",
+        "sha256": "a67b9452fa72536f795b53b6fb5433bc2e4f49e73a54f4f20ca495f17a33e8f3",
         "metadata_status": "valid"
       },
       {
         "name": "omg-ultraqa",
         "path": "skills/omg-ultraqa/SKILL.md",
-        "sha256": "8e2c3cd4c9f8f40685e9ca278a9837cfe8aff12e46dca00c60ea598e5f957748",
+        "sha256": "42d34b488784434c0d5df24c4657046983de40df061cdeb35be22462e8dc0c75",
         "metadata_status": "valid"
       },
       {
         "name": "omg-ultrawork",
         "path": "skills/omg-ultrawork/SKILL.md",
-        "sha256": "31ad59fd89d01fcdddadcb2eb8c6d62cc1ddc836cf64f1eeded2f10fd66fc123",
+        "sha256": "ca8dff4fbcb983f925ec5aa1b7697742d0792696a6916342ebc7fd2fc586c4bd",
         "metadata_status": "valid"
       },
       {
         "name": "omg-using",
         "path": "skills/omg-using/SKILL.md",
-        "sha256": "304eb43595340e4897c72b2529d02b36a28ce17c860bfaa2ac03af76f7465e0e",
+        "sha256": "816297c0fa91917f77bc9d5dd62e09bdb785a71884c86212b190589d878fe7a2",
         "metadata_status": "valid"
       },
       {
         "name": "omg-wiki",
         "path": "skills/omg-wiki/SKILL.md",
-        "sha256": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9",
+        "sha256": "7ba0a97f1b0fef4b1a5874960900f1478515000b0c993490934f5e1a93189fa5",
         "metadata_status": "valid"
       }
     ],
@@ -136,7 +136,7 @@
       {
         "name": "omg-analyst",
         "path": "agents/omg-analyst.md",
-        "sha256": "b9962b590a679a5d644812c052276ef633c0937ee29abd873d865a0d55ddfb55",
+        "sha256": "146edf89d93a6de347827cfadd2295f4329ddca1afa97f1b4d13d8d85c87e3ea",
         "metadata_status": "valid",
         "role": "analyst",
         "capability_mode": "read-only",
@@ -146,7 +146,7 @@
       {
         "name": "omg-architect",
         "path": "agents/omg-architect.md",
-        "sha256": "9c2841aa1b46d51871e7b4f19701d220f6fc3d8a522914e3f3de1cc5cc679576",
+        "sha256": "a0321134e458f7203a115c75823b0b3bfa182952c586ccd148e2dfedda7f9aa9",
         "metadata_status": "valid",
         "role": "architect",
         "capability_mode": "read-only",
@@ -156,7 +156,7 @@
       {
         "name": "omg-code-reviewer",
         "path": "agents/omg-code-reviewer.md",
-        "sha256": "a80e5ec8600e4af53af3155f51327fcb50c21ba90852865bc6e6c101221a811e",
+        "sha256": "8d4bc5ea43f51b2545570f9e0ba0d2eaff3f08d683a953626ce443ac8274a0a4",
         "metadata_status": "valid",
         "role": "code-reviewer",
         "capability_mode": "read-only",
@@ -166,7 +166,7 @@
       {
         "name": "omg-critic",
         "path": "agents/omg-critic.md",
-        "sha256": "1bab25fc023e56ff74d73c305d7407b2d56cea4361212218b10844658e6f5d05",
+        "sha256": "2b2d747b592c0220f01d3d6ce9dfc35ca060c96f23089a596a08a0185302a341",
         "metadata_status": "valid",
         "role": "critic",
         "capability_mode": "read-only",
@@ -176,7 +176,7 @@
       {
         "name": "omg-debugger",
         "path": "agents/omg-debugger.md",
-        "sha256": "f44275b6825fe24619485a5e99ebe518ac3ede088df42e3103a2ca72c6e54a28",
+        "sha256": "6eda328d15bed17ef35bb4cdeb8277233b24b5cd970f6168659a11ec427cd79d",
         "metadata_status": "valid",
         "role": "debugger",
         "capability_mode": "read-write",
@@ -186,7 +186,7 @@
       {
         "name": "omg-designer",
         "path": "agents/omg-designer.md",
-        "sha256": "7d70b6434cb4515e966843df0dddb6d7b979c48deb1c955461086327bb5a5d53",
+        "sha256": "9ddc22c9c57754f238ed50266a3b59d8609d447ac0b4f74e9694e41f3f6c4c06",
         "metadata_status": "valid",
         "role": "designer",
         "capability_mode": "read-write",
@@ -196,7 +196,7 @@
       {
         "name": "omg-executor",
         "path": "agents/omg-executor.md",
-        "sha256": "c9fc6b6b3ffbeac549d99209a846919389d510ad10199953517983eb4a0cb538",
+        "sha256": "1c39713c72fba70a409308db10b1163cf49805d74f52caad4537db218574e591",
         "metadata_status": "valid",
         "role": "executor",
         "capability_mode": "read-write",
@@ -206,7 +206,7 @@
       {
         "name": "omg-orchestrator",
         "path": "agents/omg-orchestrator.md",
-        "sha256": "b7749cb2acea06fe0b6784dd677f38d18de871f60e73cf928df9e3f22df9ffd8",
+        "sha256": "1f321c0191700fd1c4acc607a2426142f6c37407ba3677c4eac61c7825bd4921",
         "metadata_status": "valid",
         "role": "orchestrator",
         "capability_mode": "read-write",
@@ -216,7 +216,7 @@
       {
         "name": "omg-qa-tester",
         "path": "agents/omg-qa-tester.md",
-        "sha256": "0dd086bf74a0c9632d45c7472a3e9e862f92905f6a15aef2ee8a905b8b0e2045",
+        "sha256": "d628ecf00d42e1e2f516cc3524f01f2e52b34c00951ea263491b5dfc101c7dbd",
         "metadata_status": "valid",
         "role": "qa-tester",
         "capability_mode": "read-write",
@@ -226,7 +226,7 @@
       {
         "name": "omg-security-reviewer",
         "path": "agents/omg-security-reviewer.md",
-        "sha256": "be43140948b22abfcaa92aa98303237b6fe7b920d0a3312254b262d974c973bb",
+        "sha256": "0842ff02481365b43892011a6ddf09c66e7aa9a67f7235a5cc267963a4dfd6e9",
         "metadata_status": "valid",
         "role": "security-reviewer",
         "capability_mode": "read-only",
@@ -236,7 +236,7 @@
       {
         "name": "omg-test-engineer",
         "path": "agents/omg-test-engineer.md",
-        "sha256": "945c46a304df1ec9b6f518c30f7f38d1e010a997fe0a723730aeeda227495e2a",
+        "sha256": "69a8bafaf3a91f153c50b49343e2cd0ccb9182e158e7fb58cffb1d7435694082",
         "metadata_status": "valid",
         "role": "test-engineer",
         "capability_mode": "read-write",
@@ -246,7 +246,7 @@
       {
         "name": "omg-verifier",
         "path": "agents/omg-verifier.md",
-        "sha256": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
+        "sha256": "3b26b8fc7efa60d6539209187ccb9cf15e3b084ee99f6344d6be83869ad7bdfc",
         "metadata_status": "valid",
         "role": "verifier",
         "capability_mode": "read-only",
@@ -256,7 +256,7 @@
       {
         "name": "omg-writer",
         "path": "agents/omg-writer.md",
-        "sha256": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
+        "sha256": "245eb235760ef7aa4883a62f6bdea56af49b3a4d995b0554121a847ad597846d",
         "metadata_status": "valid",
         "role": "writer",
         "capability_mode": "read-write",
@@ -276,61 +276,61 @@
       {
         "surface": "advisor_catalog",
         "path": "omg_cli/ask/registry.py",
-        "sha256": "0f99a27d70d764d24d7e3aebf0cf799fadf18a6a6794a4b8ac42a9cb7ef49159",
+        "sha256": "f06b9af4929e05fa97699c300f2d83527d6d4f18c862564226623d4c6d193b4e",
         "status": "valid"
       },
       {
         "surface": "advisor_catalog",
         "path": "omg_cli/contracts/advisor_contract.py",
-        "sha256": "275070e52040c78ba0b0c0051f077691edb6929f58293e75683bd81a33c4e9b3",
+        "sha256": "09100ba154020c22cf50023cc2778ac698ef4170a19d2dbc3783121e8a39fde8",
         "status": "valid"
       },
       {
         "surface": "legacy_ask_execution",
         "path": "omg_cli/ask/providers.py",
-        "sha256": "5bb0d0615a648b0a9f21e3b742890615d4e1ef1b332e1217a8b3cc3a561a61bf",
+        "sha256": "c156d2c53f82991064cd1b1efbb248e60f304b208ddc5333550eca68bac1f1df",
         "status": "valid"
       },
       {
         "surface": "lsp",
         "path": ".lsp.json",
-        "sha256": "e2f6d0b4244c67c877d879c0842d76139e53861d234b073ebfcf36a855076f40",
+        "sha256": "931042eed49e0a647c5f15b0dfc463e23dca36ea2c2ea0e6be1cc001bfdb9a37",
         "status": "valid"
       },
       {
         "surface": "lsp",
         "path": "omg_cli/lsp_tools.py",
-        "sha256": "569ae362177f9fe3f4166874a69b313feb96f66891f41f73a904e3b72599d8df",
+        "sha256": "58c57977ef319cd906a76ed9e246d263ddd8c81fe964f2d7544773bd3869a990",
         "status": "valid"
       },
       {
         "surface": "mcp",
         "path": ".mcp.json",
-        "sha256": "483aa19c63bc466356d19e785e14ebf84f87a63c41231fb91d8e97c2577d6f94",
+        "sha256": "6c49640d08ced9debd245581f94c674b42c39c310e287c2657842208ee781601",
         "status": "valid"
       },
       {
         "surface": "mcp",
         "path": "omg_cli/mcp/tools.py",
-        "sha256": "d89747c0c81be3e39b2ef894e704d4830040d5cb181a6cc469ed4f438ab363e8",
+        "sha256": "28580af8cd47e2f4a0c1aa0eed975729b0edaa908a29ec4464db7699fdd201c2",
         "status": "valid"
       },
       {
         "surface": "roles",
         "path": "omg_cli/team/roles.py",
-        "sha256": "6d82471bcf795ace0991a08b1683ffb18d5a09013d313e50f201b90e59a0dc84",
+        "sha256": "29ae5a1a07260cea9cdd4888f3b26ab657f73ea119a0f195db67ad8f43872c40",
         "status": "valid"
       },
       {
         "surface": "workflow",
         "path": "omg_cli/contracts/workflow_contract.py",
-        "sha256": "cbf85409a0de98832e7ab9c7ed22e7d4efbe40a5b9ed9bf9b6a17d0d827e86b9",
+        "sha256": "0a4a1a967477f63ec3e28963e3480334fec83df78206a96388b88232c3b69840",
         "status": "valid"
       },
       {
         "surface": "workflow",
         "path": "omg_cli/workflows/grok_adapter.py",
-        "sha256": "77ec53da141c8b8f03873353127ca6c1b565abee7d1c92bb90cf66c3fda03dce",
+        "sha256": "01da38f9a96b77a2cd6c52875235804f0d610acf680d363a6b4c87f192945ab5",
         "status": "valid"
       }
     ],
@@ -475,5 +475,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "dacf474106f2cc1070da8f73a8a15bf7f35e65b8bf3eed761dbbde8be15011dd"
+  "session_surface_aggregate": "426395ea1606dcfc58144dc877d9ffead58b7bee0c2574270b0fe029017630bb"
 }

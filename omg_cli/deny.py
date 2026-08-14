@@ -130,6 +130,7 @@ _TEAM_LEADER_COMPOSITION_OPS = frozenset({
     "produce-report",
     "admit-tasks",
     "collect-tasks",
+    "execute",
 })
 # Same supported leading globals as ``omg_cli.team.cli.split_supported_leading_globals``.
 # Duplicated here: deny.py is stdlib-only for standalone embed. Drift is locked

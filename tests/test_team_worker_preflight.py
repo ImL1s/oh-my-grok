@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -98,9 +99,10 @@ def _patch_refused_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("omg_cli.team.tmux.subprocess.run", _boom_git_or_tmux_run)
     monkeypatch.setattr("omg_cli.team.plane._tmux_run", _boom)
     monkeypatch.setattr("omg_cli.team.tmux._tmux_run", _boom)
-    monkeypatch.setattr("omg_cli.team.plane.os.killpg", _boom)
+    if hasattr(os, "killpg"):
+        monkeypatch.setattr("omg_cli.team.plane.os.killpg", _boom)
+        monkeypatch.setattr("omg_cli.team.tmux.os.killpg", _boom)
     monkeypatch.setattr("omg_cli.team.plane.os.kill", _boom)
-    monkeypatch.setattr("omg_cli.team.tmux.os.killpg", _boom)
     monkeypatch.setattr("omg_cli.team.tmux.os.kill", _boom)
     monkeypatch.setattr("omg_cli.team.plane.mutate_team_meta", _boom)
     monkeypatch.setattr("omg_cli.state.write_pid_metadata", _boom)
@@ -217,6 +219,7 @@ _LEADER_COMPOSITION_ACTIONS = (
     "produce-report",
     "admit-tasks",
     "collect-tasks",
+    "execute",
 )
 
 
@@ -739,6 +742,17 @@ def test_main_worker_api_mailbox_list_reaches_execute_api_not_preflight_refuse(
         ["team", "hyperplan", "collect-tasks", "--run", "r1", "--team-id", "t"],
         [
             "team",
+            "hyperplan",
+            "execute",
+            "--run",
+            "r1",
+            "--team-id",
+            "t",
+            "--input",
+            "b.json",
+        ],
+        [
+            "team",
             "security-research",
             "materialize",
             "--spec",
@@ -781,6 +795,17 @@ def test_main_worker_api_mailbox_list_reaches_execute_api_not_preflight_refuse(
             "r1",
             "--team-id",
             "t",
+        ],
+        [
+            "team",
+            "security-research",
+            "execute",
+            "--run",
+            "r1",
+            "--team-id",
+            "t",
+            "--input",
+            "b.json",
         ],
     ],
 )

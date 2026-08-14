@@ -1,14 +1,18 @@
-# Team Security Research Composition Contract V1 (#69 PR13)
+# Team Security Research Composition Contract V1 (#69 PR14)
 
 Hermetic Security Research contract: deterministic DAG compiler, fail-closed
 manifest persistence, offline result production, **shared composition
-task-driver admission/collection**, and **worker-scoped lane claim/submit**
-under the canonical Team run root. Composition worker/pane/Jobs/PoC
-**automatic** execution remains unsupported (`execution_supported=false`).
+task-driver admission/collection**, **worker-scoped lane claim/submit**,
+and **fixture-backed auto-worker execution** under the canonical Team run
+root. Compile / produce / admit / collect / claim contracts keep
+`execution_supported=false`. Immutable safe-PoC policy is unchanged: this
+slice never runs a PoC. Live grok / agy / antigravity / cursor
+auto-execution remains unsupported.
 
 Authoritative modules: `omg_cli.team.compositions.security_research`,
-`omg_cli.team.compositions.task_driver`, and
-`omg_cli.team.compositions.lane_protocol`.
+`omg_cli.team.compositions.task_driver`,
+`omg_cli.team.compositions.lane_protocol`, and
+`omg_cli.team.compositions.execution`.
 
 ```bash
 omg team security-research plan --spec SPEC.json [--json]
@@ -19,13 +23,14 @@ omg team security-research admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team security-research collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team security-research claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--json]
 omg team security-research submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
+omg team security-research execute --run RUN_ID --team-id TEAM_ID --executor fixture --input RESULT_BUNDLE.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize`,
-`validate-report`, `produce-report`, `admit-tasks`, and `collect-tasks` are
-**leader-only** and fail closed for a worker process or nested first-party
-launch **before persist**; `claim-lane` / `submit-lane-result` remain
-**worker-only**. `materialize` atomically writes
+`validate-report`, `produce-report`, `admit-tasks`, `collect-tasks`, and
+`execute` are **leader-only** and fail closed for a worker process or nested
+first-party launch **before persist**; `claim-lane` / `submit-lane-result`
+remain **worker-only**. `materialize` atomically writes
 only:
 
 `.omg/state/runs/<run>/team/compositions/security-research-v1.json`
@@ -40,6 +45,14 @@ unchanged. Leader-only.
 PR13 lane protocol (`CompositionLaneClaimV1` + `LaneTaskResultV1` via existing
 `claim-task` / `transition-task-status`). No PoC execution, network access, or
 provider launch. `execution_supported=false` retained.
+
+`execute` is **leader-only** and **fixture-only** (shared Hyperplan driver).
+It runs claim-lane / submit-lane-result with fixture workers, then
+collect-tasks, and writes `security-research-v1-execution.json`
+(`omg.team.composition_execution_v1`) **last**. Safe-PoC policy is unchanged:
+no PoC, network, or weaponized research. grok / agy / antigravity / cursor
+and job topology fail closed. Compile/produce/collect stay
+`execution_supported=false`.
 
 `produce-report` derives a report from a bounded
 `SecurityResearchResultBundleV1` (exactly one receipt per manifest lane;
@@ -122,9 +135,14 @@ Security Research V1 **result production landed** under #69 PR9. Catalog v4
 atomic task-batch DAG admission landed under #69 PR11. Shared composition
 task driver (admit-tasks / collect-tasks) landed under #69 PR12. Composition
 lane worker protocol (claim-lane / submit-lane-result) landed under #69
-PR13. Does **not** close #69: composition execution, PoC running, model
-synthesis, Hyperplan execution, live Antigravity evidence, and full OMX
-remain open. Hyperplan hermetic result production landed under #69 PR10.
-Manifests retain `execution_supported=false`. No `live_*` maturity claims.
+PR13. Fixture-backed composition execution landed under #69 PR14
+(`omg.team.composition_execution_v1`; compile/produce stay
+`execution_supported=false`; safe-PoC policy unchanged). Does **not** close
+#69: live grok / agy / antigravity / cursor auto-workers, PoC running, job-backed
+live workers, host prompt-queue / fan-out consume, model synthesis, live
+Antigravity evidence, and full OMX remain open. Hyperplan hermetic result
+production landed under #69 PR10. Manifests retain
+`execution_supported=false`. No `live_*` maturity claims. Catalog stays v4
+(execute is a CLI/Python path, not a catalog op).
 
 Refs #69.

@@ -289,6 +289,7 @@ LEADER_ONLY_COMPOSITION_ACTIONS: frozenset[str] = frozenset(
         "produce-report",
         "admit-tasks",
         "collect-tasks",
+        "execute",
     }
 )
 

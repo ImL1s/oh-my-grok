@@ -1090,6 +1090,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 claim_hyperplan_lane_v1,
                 collect_hyperplan_tasks_v1,
                 compile_hyperplan_v1,
+                execute_hyperplan_tasks_v1,
                 materialize_hyperplan_v1,
                 produce_hyperplan_decision_v1,
                 submit_hyperplan_lane_result_v1,
@@ -1321,6 +1322,38 @@ def cmd_team(args: argparse.Namespace) -> int:
                             file=sys.stderr,
                         )
                     return 0
+                if hp_action == "execute":
+                    team_id = getattr(args, "team_id", None)
+                    executor = getattr(args, "composition_executor", None) or "fixture"
+                    if not run_id or not team_id or not bundle_path:
+                        print(
+                            "omg team hyperplan execute: "
+                            "--run, --team-id, and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = execute_hyperplan_tasks_v1(
+                        root,
+                        str(run_id),
+                        str(team_id),
+                        executor=str(executor),
+                        bundle=_load_json_file(str(bundle_path), label="--input"),
+                    )
+                    emit_data(args, "team.hyperplan", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "executed"
+                        execution = result.get("execution") or {}
+                        print(
+                            f"hyperplan execute {tag} "
+                            f"executor=fixture "
+                            f"lanes={len(execution.get('worker_evidence') or [])} "
+                            f"execution_supported={result.get('execution_supported')} "
+                            f"manifest_execution_supported="
+                            f"{result.get('manifest_execution_supported')} "
+                            f"path={result.get('path')}",
+                            file=sys.stderr,
+                        )
+                    return 0
                 print(
                     f"omg team hyperplan: unknown action {hp_action!r}",
                     file=sys.stderr,
@@ -1346,6 +1379,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                 claim_security_research_lane_v1,
                 collect_security_research_tasks_v1,
                 compile_security_research_v1,
+                execute_security_research_tasks_v1,
                 materialize_security_research_v1,
                 produce_security_research_report_v1,
                 submit_security_research_lane_result_v1,
@@ -1578,6 +1612,38 @@ def cmd_team(args: argparse.Namespace) -> int:
                             f"task={result.get('task_id')} "
                             f"lane_status={result.get('lane_result_status')} "
                             f"execution_supported={result.get('execution_supported')}",
+                            file=sys.stderr,
+                        )
+                    return 0
+                if sr_action == "execute":
+                    team_id = getattr(args, "team_id", None)
+                    executor = getattr(args, "composition_executor", None) or "fixture"
+                    if not run_id or not team_id or not bundle_path:
+                        print(
+                            "omg team security-research execute: "
+                            "--run, --team-id, and --input required",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    result = execute_security_research_tasks_v1(
+                        root,
+                        str(run_id),
+                        str(team_id),
+                        executor=str(executor),
+                        bundle=_load_sr_json_file(str(bundle_path), label="--input"),
+                    )
+                    emit_data(args, "team.security_research", result)
+                    if not wants_json(args):
+                        tag = "idempotent" if result.get("idempotent") else "executed"
+                        execution = result.get("execution") or {}
+                        print(
+                            f"security-research execute {tag} "
+                            f"executor=fixture "
+                            f"lanes={len(execution.get('worker_evidence') or [])} "
+                            f"execution_supported={result.get('execution_supported')} "
+                            f"manifest_execution_supported="
+                            f"{result.get('manifest_execution_supported')} "
+                            f"path={result.get('path')}",
                             file=sys.stderr,
                         )
                     return 0
@@ -2862,9 +2928,9 @@ def register_team_parsers(
         parents=[common],
         help=(
             "Hyperplan Composition Contract V1 (hermetic produce + task driver + "
-            "lane worker protocol; non-executing): plan|materialize|"
+            "lane worker protocol + fixture execute): plan|materialize|"
             "validate-decision|produce-decision|admit-tasks|collect-tasks|"
-            "claim-lane|submit-lane-result (#69 PR13)"
+            "claim-lane|submit-lane-result|execute (#69 PR14)"
         ),
     )
     hp_sub = p_t_hp.add_subparsers(dest="hyperplan_action")
@@ -3079,14 +3145,53 @@ def register_team_parsers(
         hyperplan_action="submit-lane-result",
     )
 
+    p_hp_exec = hp_sub.add_parser(
+        "execute",
+        parents=[common],
+        help=(
+            "fixture-only auto-workers: claim-lane/submit-lane-result then "
+            "collect-tasks; stamps omg.team.composition_execution_v1 "
+            "(compile execution_supported stays false)"
+        ),
+    )
+    p_hp_exec.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Hyperplan task batch",
+    )
+    p_hp_exec.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for fixture worker execution",
+    )
+    p_hp_exec.add_argument(
+        "--input",
+        dest="hyperplan_bundle",
+        required=True,
+        help="path to HyperplanResultBundleV1 JSON (fixture lane payloads)",
+    )
+    p_hp_exec.add_argument(
+        "--executor",
+        dest="composition_executor",
+        default="fixture",
+        help="auto-worker executor (fixture only; grok/agy/cursor refused)",
+    )
+    p_hp_exec.set_defaults(
+        func=cmd_team,
+        team_action="hyperplan",
+        hyperplan_action="execute",
+    )
+
     p_t_sr = team_sub.add_parser(
         "security-research",
         parents=[common],
         help=(
             "Security Research Composition Contract V1 (hermetic produce + task "
-            "driver + lane worker protocol; non-executing): plan|materialize|"
+            "driver + lane worker protocol + fixture execute): plan|materialize|"
             "validate-report|produce-report|admit-tasks|collect-tasks|"
-            "claim-lane|submit-lane-result (#69 PR13)"
+            "claim-lane|submit-lane-result|execute (#69 PR14)"
         ),
     )
     sr_sub = p_t_sr.add_subparsers(dest="security_research_action")
@@ -3309,6 +3414,45 @@ def register_team_parsers(
         func=cmd_team,
         team_action="security-research",
         security_research_action="submit-lane-result",
+    )
+
+    p_sr_exec = sr_sub.add_parser(
+        "execute",
+        parents=[common],
+        help=(
+            "fixture-only auto-workers: claim-lane/submit-lane-result then "
+            "collect-tasks; stamps omg.team.composition_execution_v1 "
+            "(compile execution_supported stays false; no PoC)"
+        ),
+    )
+    p_sr_exec.add_argument(
+        "--run",
+        dest="run_id",
+        required=True,
+        help="run_id with admitted Security Research task batch",
+    )
+    p_sr_exec.add_argument(
+        "--team-id",
+        dest="team_id",
+        required=True,
+        help="Team API team_id for fixture worker execution",
+    )
+    p_sr_exec.add_argument(
+        "--input",
+        dest="security_research_bundle",
+        required=True,
+        help="path to SecurityResearchResultBundleV1 JSON (fixture lane payloads)",
+    )
+    p_sr_exec.add_argument(
+        "--executor",
+        dest="composition_executor",
+        default="fixture",
+        help="auto-worker executor (fixture only; grok/agy/cursor refused)",
+    )
+    p_sr_exec.set_defaults(
+        func=cmd_team,
+        team_action="security-research",
+        security_research_action="execute",
     )
 
     p_team.set_defaults(func=cmd_team)
