@@ -114,6 +114,8 @@ def test_docs_all_subcommands_are_real() -> None:
         "parity",
         "edit",
         "visual",
+        "skill",
+
     ):
         assert expected in cmds, f"missing expected sub-actioned command: {expected}"
 

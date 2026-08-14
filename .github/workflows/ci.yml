@@ -49,6 +49,7 @@ jobs:
           python scripts/generate_standalone_hook.py --check
           python scripts/generate_capabilities_lock.py --check
           python scripts/check_version_consistency.py --check
+          python scripts/generate_antigravity_skill_projections.py --check
       - name: Hermetic unit/integration
         run: python -m pytest -q -m "not live and not tmux_real" --tb=short
       - name: Static Python checks

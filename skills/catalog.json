@@ -1,0 +1,1919 @@
+{
+  "schema": "omg-skills-catalog/v1",
+  "kind": "read_only_machine_catalog",
+  "note": "Single skill registry for oh-my-grok (#70 Wave A). 16 Grok plugin skills remain the in-session surface. Aliases/catalog-only rows are classified; none are live-verified. Antigravity SKILL.md files are static projections only. Do not add a second skill list. Never execute/all capability_mode.",
+  "plugin_skill_count": 16,
+  "host_native_protected": [
+    "plan",
+    "goal",
+    "loop",
+    "compact",
+    "help",
+    "agents",
+    "mcp",
+    "skills",
+    "plugin"
+  ],
+  "skills": [
+    {
+      "id": "omg-ask",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ask/SKILL.md",
+      "aliases": [
+        "ask"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ask"
+        }
+      ],
+      "cli_twin": "ask",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ask codex",
+        "second opinion"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ask/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ask/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-autopilot",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-autopilot/SKILL.md",
+      "aliases": [
+        "autopilot",
+        "full-auto"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "autopilot"
+        }
+      ],
+      "cli_twin": "autopilot",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "autopilot",
+        "full auto",
+        "build me",
+        "handle it all"
+      ],
+      "pipeline_next": [
+        "omg-dual-review",
+        "omg-ultraqa"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-autopilot/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-autopilot/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-cancel",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-cancel/SKILL.md",
+      "aliases": [
+        "cancel"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "cancel"
+        }
+      ],
+      "cli_twin": "cancel",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "cancel",
+        "abort run",
+        "kill workers"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-cancel/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-cancel/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-deep-interview",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-deep-interview/SKILL.md",
+      "aliases": [
+        "deep-interview"
+      ],
+      "sources": [
+        {
+          "project": "OMX",
+          "name": "deep-interview"
+        }
+      ],
+      "cli_twin": "interview",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "deep interview",
+        "clarify requirements"
+      ],
+      "pipeline_next": [
+        "omg-ralplan"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-deep-interview/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-deep-interview/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-dual-review",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-dual-review/SKILL.md",
+      "aliases": [
+        "dual-review"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ralph-review"
+        }
+      ],
+      "cli_twin": "dual-review",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "dual-review",
+        "don't self-approve"
+      ],
+      "pipeline_next": [
+        "omg-ultraqa"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-dual-review/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-dual-review/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-hud",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-hud/SKILL.md",
+      "aliases": [
+        "hud"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "hud"
+        }
+      ],
+      "cli_twin": "hud",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "hud",
+        "statusline"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-hud/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-hud/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-lsp",
+      "kind": "canonical",
+      "classification": "host_owned",
+      "runtime_owner": "host",
+      "file": "skills/omg-lsp/SKILL.md",
+      "aliases": [
+        "lsp"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "lsp"
+        }
+      ],
+      "cli_twin": "lsp",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "lsp",
+        "symbols"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-lsp/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-lsp/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-pipeline",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-pipeline/SKILL.md",
+      "aliases": [
+        "pipeline"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ulw-pipeline"
+        }
+      ],
+      "cli_twin": "pipeline",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "pipeline"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-pipeline/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-pipeline/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-ralph",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ralph/SKILL.md",
+      "aliases": [
+        "ralph"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ralph"
+        }
+      ],
+      "cli_twin": "ralph",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ralph",
+        "don't stop",
+        "keep going"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ralph/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ralph/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-ralplan",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ralplan/SKILL.md",
+      "aliases": [
+        "ralplan"
+      ],
+      "sources": [
+        {
+          "project": "OMX",
+          "name": "ralplan"
+        }
+      ],
+      "cli_twin": "ralplan",
+      "capability_mode": "read-only",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ralplan",
+        "plan consensus"
+      ],
+      "pipeline_next": [
+        "omg-autopilot"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ralplan/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ralplan/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-team",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "team",
+      "file": "skills/omg-team/SKILL.md",
+      "aliases": [
+        "team"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "team"
+        }
+      ],
+      "cli_twin": "team",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "team",
+        "tmux team"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-team/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-team/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-ultragoal",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ultragoal/SKILL.md",
+      "aliases": [
+        "ultragoal"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ultrawork-loop"
+        }
+      ],
+      "cli_twin": "goal",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ultragoal",
+        "goal ledger",
+        "multi-story"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ultragoal/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ultragoal/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-ultraqa",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ultraqa/SKILL.md",
+      "aliases": [
+        "ultraqa"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ultraqa"
+        }
+      ],
+      "cli_twin": "qa",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ultraqa",
+        "fix tests",
+        "retest"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ultraqa/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ultraqa/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-ultrawork",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-ultrawork/SKILL.md",
+      "aliases": [
+        "ultrawork",
+        "ulw"
+      ],
+      "sources": [
+        {
+          "project": "OmO",
+          "name": "ulw"
+        }
+      ],
+      "cli_twin": "ulw",
+      "capability_mode": "read-write",
+      "continuation": "owner",
+      "conflict_policy": "refuse",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "ulw",
+        "ultrawork",
+        "parallel",
+        "fan-out"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-ultrawork/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ultrawork/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-using",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-using/SKILL.md",
+      "aliases": [
+        "using"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "using-oh-my-claudecode"
+        }
+      ],
+      "cli_twin": "doctor",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "how to use omg",
+        "which skill"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-using/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-using/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-wiki",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-wiki/SKILL.md",
+      "aliases": [
+        "wiki"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "wiki"
+        }
+      ],
+      "cli_twin": "wiki",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "plugin",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "wiki",
+        "project memory"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "plugin_skill",
+          "path": "skills/omg-wiki/SKILL.md"
+        },
+        "antigravity": {
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-wiki/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "omg-best-practice-research",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "best-practice-research"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "best-practice-research"
+        }
+      ],
+      "cli_twin": "ask",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-ralplan"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-autoresearch",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "autoresearch"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "autoresearch"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 70
+    },
+    {
+      "id": "omg-autoresearch-goal",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "autoresearch-goal"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "autoresearch-goal"
+        }
+      ],
+      "cli_twin": "goal",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 70
+    },
+    {
+      "id": "omg-external-context",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "external-context"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "external-context"
+        }
+      ],
+      "cli_twin": "memory",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-trace",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "trace"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "trace"
+        }
+      ],
+      "cli_twin": "tracker",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-deep-interview"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-deep-dive",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "deep-dive"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "deep-dive"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-deep-interview"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-parallel-research",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "sciomc"
+        }
+      ],
+      "cli_twin": "ask",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-prometheus-strict",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "prometheus-strict"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "prometheus-strict"
+        }
+      ],
+      "cli_twin": "ralplan",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "refuse",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 70
+    },
+    {
+      "id": "omg-hyperplan",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "team",
+      "file": null,
+      "aliases": [
+        "hyperplan"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "hyperplan"
+        }
+      ],
+      "cli_twin": "team",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "refuse",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 69
+    },
+    {
+      "id": "omg-design",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "design"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "design"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-tdd",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "tdd"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "tdd"
+        }
+      ],
+      "cli_twin": "qa",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-ultraqa"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-build-fix",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "build-fix"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "build-fix"
+        }
+      ],
+      "cli_twin": "qa",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-ultraqa"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-security-review",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "security-review"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "security-review"
+        }
+      ],
+      "cli_twin": "review",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-dual-review"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-visual-verdict",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "visual-verdict"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "visual-verdict"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 75
+    },
+    {
+      "id": "omg-visual-ralph",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "visual-ralph"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "visual-ralph"
+        }
+      ],
+      "cli_twin": "ralph",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "refuse",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 75
+    },
+    {
+      "id": "omg-ai-slop-cleaner",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "ai-slop-cleaner"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ai-slop-cleaner"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 76
+    },
+    {
+      "id": "omg-comment-checker",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "comment-checker"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "comment-checker"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 76
+    },
+    {
+      "id": "omg-security-research",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "team",
+      "file": null,
+      "aliases": [
+        "security-research"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "security-research"
+        }
+      ],
+      "cli_twin": "team",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "refuse",
+      "implementation_status": "deferred",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "deferred_issue": 69
+    },
+    {
+      "id": "omg-deepinit",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "deepinit"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "deepinit"
+        }
+      ],
+      "cli_twin": "setup",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-project-session-manager",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "project-session-manager"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "project-session-manager"
+        }
+      ],
+      "cli_twin": "session",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-mcp-setup",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "mcp-setup"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "mcp-setup"
+        }
+      ],
+      "cli_twin": "mcp-install",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-configure-notifications",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "configure-notifications"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "configure-notifications"
+        }
+      ],
+      "cli_twin": "notify",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-release",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "release"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "release"
+        }
+      ],
+      "cli_twin": "parity",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-self-improve",
+      "kind": "canonical",
+      "classification": "excluded",
+      "runtime_owner": "none",
+      "file": null,
+      "aliases": [
+        "self-improve"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "self-improve"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "none",
+      "continuation": "none",
+      "conflict_policy": "none",
+      "implementation_status": "excluded",
+      "live_verification": "none",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      },
+      "exclude_reason": "No OMG learning loop; would overclaim runtime self-modification. Use docs/PRs, not an in-session skill."
+    },
+    {
+      "id": "omg-skill",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "skill"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "skill"
+        }
+      ],
+      "cli_twin": "skill",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [
+        "skill manager",
+        "list skills"
+      ],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-writer-memory",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "writer-memory"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "writer-memory"
+        }
+      ],
+      "cli_twin": "memory",
+      "capability_mode": "read-only",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-git-master",
+      "kind": "canonical",
+      "classification": "host_owned",
+      "runtime_owner": "host",
+      "file": null,
+      "aliases": [
+        "git-master"
+      ],
+      "sources": [
+        {
+          "project": "OMX",
+          "name": "git-master"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "catalogued",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-ralph-init",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "ralph-init"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ralph-init"
+        }
+      ],
+      "cli_twin": "ralph",
+      "capability_mode": "read-write",
+      "continuation": "none",
+      "conflict_policy": "adopt_existing",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [
+        "omg-ralph"
+      ],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "omg-ecomode",
+      "kind": "canonical",
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": null,
+      "aliases": [
+        "ecomode"
+      ],
+      "sources": [
+        {
+          "project": "OMC",
+          "name": "ecomode"
+        }
+      ],
+      "cli_twin": null,
+      "capability_mode": "none",
+      "continuation": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
+      "verified": false,
+      "triggers": [],
+      "pipeline_next": [],
+      "required_capabilities": [],
+      "resources": [],
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "plan",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-ralplan",
+      "host_native_protected": true,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "code-review",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-dual-review",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "ulw-loop",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-ultragoal",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "init-deep",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-deepinit",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "psm",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-project-session-manager",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "skillify",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-skill",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "sciomc",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-parallel-research",
+      "host_native_protected": false,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    },
+    {
+      "id": "goal",
+      "kind": "alias",
+      "classification": "alias",
+      "canonical": "omg-ultragoal",
+      "host_native_protected": true,
+      "runtime_owner": "none",
+      "projections": {
+        "grok": {
+          "kind": "catalog_only",
+          "path": ""
+        },
+        "antigravity": {
+          "kind": "none",
+          "path": ""
+        }
+      }
+    }
+  ]
+}

@@ -44,6 +44,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (JSON + human). `omg doctor` reports the registry as a soft OK when
   Medley caps are unsupported. Medley #287/#290   remain Refs — no receipts,
   ordered-candidate runtime, or TUI parity claimed. Refs #131 (does not close).
+- **#70 skill catalog (Wave A):** read-only machine catalog
+  `skills/catalog.json` (16 Grok plugin playbooks plus classified
+  aliases/catalog-only workflows from the #70 minimum set). Fail-closed
+  loader `omg_cli/skills_catalog.py` (missing SKILL.md, duplicate id,
+  host-native shadowing, `execute`/`all` capability_mode, `verified:true`
+  without live evidence, path-traversal resources). Continuation policy
+  `refuse` / `adopt_existing` / `artifact_only`. `omg skill
+  list|show|resolve|resources` inspects the catalog and never sets
+  `verified`. `omg capabilities` embeds `skills_catalog`. Static
+  Antigravity projections under
+  `docs/parity/projections/antigravity/skills/` are **not** an installed
+  AG plugin and **not** live AG evidence.   New in-session playbooks,
+  Wave B/C runtimes, and live promotion remain open. `omg skill list`
+  exits 1 on a fail-closed catalog; `omg skill show` preserves alias
+  rows; trigger resolve uses token/phrase boundaries. Refs #70 (does not
+  close).
+
 - **#71 agent catalog (PR slice):** read-only machine catalog
   `agents/catalog.json` (13 `omg-*` agents: id, file, capability_mode,
   permission_mode, tier, spawn policy, Grok plugin + Antigravity
@@ -58,6 +75,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#70 Codex review:** `omg skill list` exits 1 on a fail-closed catalog
+  load; `omg skill show` looks up exact ids (alias rows keep `kind: alias`);
+  short trigger matching requires token boundaries so `task`/`steam` no
+  longer resolve to `omg-ask`/`omg-team`. Resource resolve inspects original
+  path components for symlinks, empty resource allowlists deny undeclared
+  files, and embedded NUL / non-UTF-8 catalog bytes raise
+  `SkillsCatalogError`. Refs #70.
 - **#69 Codex review:** idempotent execute also binds stored worker
   evidence to the admitted `topo_order` / lane→task mapping, so a
   truncated or wrong-`task_id` artifact cannot false-green as
