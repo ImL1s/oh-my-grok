@@ -71,6 +71,21 @@ HOST_CAPABILITIES = frozenset(
 )
 FAIL_POLICIES = frozenset({"fail-open", "fail-closed"})
 RUNTIME_PROJECTIONS = frozenset({"grok", "omg-cli", "antigravity", "none"})
+KNOWN_HANDLERS = frozenset(
+    {
+        "unsupported",
+        "observe",
+        "compact_handoff",
+        "continuation_guard",
+        "deny.decide_pre_tool_use",
+        "stop_gate.decide_stop",
+    }
+)
+SECURITY_HANDLER_BINDINGS = {
+    "omg.pretool.deny": "deny.decide_pre_tool_use",
+    "omg.stop.gate": "stop_gate.decide_stop",
+    "omg.continuation.guard": "continuation_guard",
+}
 PRIVACY_CLASSES = frozenset(
     {"security", "workflow", "observability", "routing", "handoff"}
 )
@@ -230,6 +245,14 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
     required = obj.get("required_capabilities") or []
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
         raise HooksRegistryError(f"{hook_id}: required_capabilities must be strings")
+    handler = _require_str(obj["handler"], label=f"{label}.handler")
+    if handler not in KNOWN_HANDLERS:
+        raise HooksRegistryError(f"{hook_id}: unknown handler {handler!r}")
+    expected_handler = SECURITY_HANDLER_BINDINGS.get(hook_id)
+    if expected_handler is not None and handler != expected_handler:
+        raise HooksRegistryError(
+            f"{hook_id}: handler must be {expected_handler!r}, got {handler!r}"
+        )
     return HookRecord(
         id=hook_id,
         event=event,
@@ -242,7 +265,7 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
         enabled=bool(obj["enabled"]),
         required_capabilities=tuple(required),
         privacy_class=privacy,
-        handler=_require_str(obj["handler"], label=f"{label}.handler"),
+        handler=handler,
         note=str(obj.get("note") or ""),
     )
 
@@ -369,11 +392,10 @@ def resolve_continuation(active_owner: str | None, requested: str) -> str:
         resolve_continuation as resolve_skill_continuation,
     )
 
-    catalog = None
     try:
         catalog = load_skills_catalog(skill_root(), require_projections=False)
-    except SkillsCatalogError:
-        catalog = None
+    except SkillsCatalogError as exc:
+        raise HooksRegistryError(f"continuation catalog unavailable: {exc}") from exc
     return resolve_skill_continuation(active_owner, requested, catalog=catalog)
 
 

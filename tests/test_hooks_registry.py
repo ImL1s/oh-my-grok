@@ -332,6 +332,37 @@ def test_continuation_policies() -> None:
     assert resolve_continuation("pipeline", "dual-review") == "adopt_existing"
 
 
+def test_continuation_catalog_load_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.skills_catalog import SkillsCatalogError
+
+    def boom(*_args, **_kwargs):
+        raise SkillsCatalogError("missing catalog")
+
+    monkeypatch.setattr("omg_cli.skills_catalog.load_skills_catalog", boom)
+    with pytest.raises(HooksRegistryError, match="continuation catalog"):
+        resolve_continuation("ralph", "autopilot")
+    result = dispatch(
+        "workflow.transition",
+        {"active_owner": "ralph", "requested": "autopilot"},
+        root=ROOT,
+        env={},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "E_HOOK_FAIL_CLOSED"
+
+
+def test_security_handler_binding_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.pretool.deny":
+            hook["handler"] = "observe"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="handler must be"):
+        load_hooks_registry(tmp_path)
+
+
 def test_compact_handoff_refuses_transcript(tmp_path: Path) -> None:
     with pytest.raises(HooksRegistryError, match="transcript"):
         write_compact_handoff(
