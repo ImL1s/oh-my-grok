@@ -58,6 +58,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **Capabilities lock LF-canonical hashes:** `generate_capabilities_lock.py`
+  hashes skill/agent/source bytes after CRLF/CR → LF so a Windows
+  `core.autocrlf` checkout matches Linux CI `--check`. Lock JSON is written
+  with Unix newlines. Refs #69 (does not close).
 - **Parity OMC/OmO coverage_digest after #69 PR14 GAPS sync:** refresh proof
   `coverage_digest` values only after gap.team.v3 +
   `omo.team.hyperplan_security` text update for fixture-backed composition

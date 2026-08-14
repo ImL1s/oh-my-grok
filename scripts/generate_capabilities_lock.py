@@ -2,10 +2,11 @@
 """Generate / check omg_capabilities.lock.json for the LOCAL CHECKOUT.
 
 Hashes skills/omg-*/SKILL.md and agents/omg-*.md under the repo (or --root)
-and writes/checks omg_capabilities.lock.json. This is a commit-hygiene / CI
-guard: it catches uncommitted or unregenerated local skill/agent edits against
-the committed lock. Installed frozen-snapshot drift (under
-~/.grok/installed-plugins) is checked separately by doctor
+and writes/checks omg_capabilities.lock.json. File digests are LF-canonical
+(CRLF/CR → LF) so a Windows ``core.autocrlf`` checkout matches Linux CI.
+This is a commit-hygiene / CI guard: it catches uncommitted or unregenerated
+local skill/agent edits against the committed lock. Installed frozen-snapshot
+drift (under ~/.grok/installed-plugins) is checked separately by doctor
 ``check_installed_capabilities_lock`` via ``compute_lock_for``.
 
 Usage:
@@ -64,12 +65,22 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _lf_bytes(body: bytes) -> bytes:
+    """Canonicalize newlines to LF for cross-platform lock hashes.
+
+    Windows checkouts with ``core.autocrlf=true`` materialize CRLF; Linux CI
+    hashes LF. The committed lock must compare LF-normalized content so
+    ``--check`` is host-independent.
+    """
+    return body.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def _sha256_bytes(body: bytes) -> str:
+    return hashlib.sha256(_lf_bytes(body)).hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return _sha256_bytes(path.read_bytes())
 
 
 def _frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -167,7 +178,7 @@ def _python_source(
         binding["status"] = "malformed"
         _surface_issue(issues, relative, f"W_{surface.upper()}_SOURCE_MALFORMED", "oversized")
         return None, binding
-    binding["sha256"] = hashlib.sha256(body).hexdigest()
+    binding["sha256"] = _sha256_bytes(body)
     try:
         tree = ast.parse(body.decode("utf-8"), filename=relative)
     except (UnicodeError, SyntaxError):
@@ -219,7 +230,7 @@ def _json_registration(
         if path.stat().st_size > MAX_SURFACE_SOURCE_BYTES:
             raise ValueError("oversized")
         body = path.read_bytes()
-        binding["sha256"] = hashlib.sha256(body).hexdigest()
+        binding["sha256"] = _sha256_bytes(body)
 
         def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             value: dict[str, Any] = {}
@@ -1021,10 +1032,9 @@ def write_lock(root: Path) -> Path:
     root = Path(root)
     lock = compute_lock(root)
     path = root / LOCK_NAME
-    path.write_text(
-        json.dumps(lock, indent=2, sort_keys=False, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    text = json.dumps(lock, indent=2, sort_keys=False, ensure_ascii=False) + "\n"
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
     return path
 
 
