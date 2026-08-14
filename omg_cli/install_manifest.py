@@ -429,7 +429,8 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         elif kind == "file":
             bak = Path(meta.get("backup") or "")
             if (
-                bak.is_symlink()
+                target.is_symlink()
+                or bak.is_symlink()
                 or not bak.is_file()
                 or not _lexical_under(bak, backups)
             ):
@@ -454,6 +455,8 @@ def rollback_interrupted(scope: str, project_root: Path | None) -> dict[str, Any
         except InstallManifestError:
             continue
         if any(row == str(target) for row in restored):
+            continue
+        if target.is_symlink():
             continue
         target.write_bytes(backup.read_bytes())
         restored.append(str(target))
@@ -653,11 +656,22 @@ def inspect_install_manifest(
             "verified": False,
             "error": "malformed manifest: required schema/kind/scope/artifacts missing",
         }
+    rows = [
+        row
+        for row in raw.get("artifacts") or []
+        if isinstance(row, dict) and row.get("id") and row.get("target")
+    ]
+    if not rows:
+        return {
+            "ok": False,
+            "configured": True,
+            "installed": False,
+            "verified": False,
+            "error": "malformed manifest: no artifact rows",
+        }
     drift = []
     plugin = plugin_root()
-    for row in raw.get("artifacts") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         if row.get("enabled") is False:
             continue
         target = Path(row.get("target") or "")

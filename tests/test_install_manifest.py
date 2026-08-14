@@ -531,6 +531,63 @@ def test_rollback_skips_symlinked_parent_target(tmp_path: Path) -> None:
     assert victim.read_text(encoding="utf-8") == "keep\n"
 
 
+def test_rollback_does_not_follow_symlink_file_target(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+    dest = project / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.parent.mkdir(parents=True)
+    try:
+        dest.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    tx_root = project / ".omg" / "install" / "tx"
+    backup = tx_root / ("g" * 32)
+    backup.mkdir(parents=True)
+    bak = backup / "art.bak"
+    bak.write_text("attacker\n", encoding="utf-8")
+    (backup / "art.prev.json").write_text(
+        json.dumps(
+            {"target": str(dest), "kind": "file", "backup": str(bak)}
+        ),
+        encoding="utf-8",
+    )
+    (tx_root / "current.json").write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "transaction_id": "g" * 32,
+                "backup_dir": str(backup),
+            }
+        ),
+        encoding="utf-8",
+    )
+    rollback_interrupted("project", project)
+    assert dest.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_inspect_rejects_empty_artifact_list(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "install" / "manifest.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(
+        json.dumps(
+            {
+                "schema": "omg-install-manifest/v1",
+                "kind": "omg_install_manifest",
+                "scope": "project",
+                "artifacts": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = inspect_install_manifest(project_root=tmp_path, scope="project")
+    assert payload["ok"] is False
+    assert payload.get("installed") is False
+
+
 def test_inspect_reports_symlinked_omg_parent(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
