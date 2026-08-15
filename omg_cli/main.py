@@ -387,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             "mcp-install",
             "version",  # not a command today; harmless
             "provider",  # global binary/version probe (#67-A); no project root
-            "visual",  # pure compare() wrapper (#75); no project root / state
+            "visual",  # compare stays rootless; capture/verdict/ralph re-enable below
         }
     )
     command = str(getattr(args, "command", "") or "")
@@ -400,6 +400,12 @@ def main(argv: list[str] | None = None) -> int:
     skip_root = command in _INSTALL_SCOPED or team_api_catalog
     if command == "setup" and str(getattr(args, "setup_scope", "") or "") == "user":
         skip_root = True
+    if command == "visual" and getattr(args, "visual_action", None) in {
+        "capture",
+        "verdict",
+        "ralph",
+    }:
+        skip_root = False
     clear_resolved_project_root()
     root_path: Path | None = None
     if not skip_root:

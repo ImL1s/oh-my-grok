@@ -1422,6 +1422,31 @@ def check_agent_model_routing() -> SoftResult:
         return (name, "warn", f"routing registry failed ({type(exc).__name__})")
 
 
+def check_visual_capture() -> SoftResult:
+    """Soft: report capture adapter precedence. Playwright is never required."""
+    name = "visual capture adapter"
+    try:
+        from omg_cli.project_root import project_root as resolve_root
+        from omg_cli.visual_runtime import (
+            diagnose_capture_source,
+            discover_visual_config_path,
+        )
+
+        root = None
+        try:
+            root = resolve_root()
+        except Exception:
+            root = None
+        config_path = discover_visual_config_path(root)
+        diagnosis = diagnose_capture_source(config_path=config_path)
+        detail = str(diagnosis.get("detail") or diagnosis.get("source") or "none")
+        if diagnosis.get("source") == "none":
+            return (name, "ok", f"optional; {detail}")
+        return (name, "ok", detail)
+    except Exception as exc:  # pragma: no cover - fail-open soft check
+        return (name, "warn", f"visual capture probe failed ({type(exc).__name__})")
+
+
 def run_soft_checks(
     *,
     host_report: Any | None = None,
@@ -1443,6 +1468,7 @@ def run_soft_checks(
         check_install_manifest(),
         check_team_plane(),
         check_agent_model_routing(),
+        check_visual_capture(),
     ]
 
 

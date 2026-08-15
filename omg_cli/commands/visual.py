@@ -1,10 +1,12 @@
 """omg visual — Visual Contract V1 CLI (#75).
 
-Commands: ``omg visual compare``. Parser construction: ``register_visual_parsers``.
+Commands: ``compare``, ``capture``, ``verdict``, ``ralph``.
+Parser construction: ``register_visual_parsers``.
 
-Wraps :func:`omg_cli.contracts.visual_contract.compare` only. Does not decode
-images, talk to agents or providers, write ``passes`` / ``verified``, or
-decide pass/fail from ``aggregate`` vs ``threshold``.
+``compare`` wraps :func:`omg_cli.contracts.visual_contract.compare` only.
+``capture`` / ``verdict`` / ``ralph`` add a provider-neutral runtime that
+records descriptors, never decodes pixels, and never writes ``passes`` /
+``verified``. Overlay artifacts are descriptor-only.
 """
 
 from __future__ import annotations
@@ -17,13 +19,27 @@ from typing import Any, Final
 
 from omg_cli.cli_envelope import emit_json, failure, success
 from omg_cli.contracts.visual_contract import VisualContractError, compare
-
+from omg_cli.visual_runtime import (
+    VisualConfigError,
+    VisualMetadataError,
+    VisualPathError,
+    VisualReviewerError,
+    VisualRuntimeError,
+    load_visual_config,
+    run_capture,
+    run_ralph,
+    run_verdict,
+)
 
 CMD_COMPARE = "visual.compare"
+CMD_CAPTURE = "visual.capture"
+CMD_VERDICT = "visual.verdict"
+CMD_RALPH = "visual.ralph"
 MAX_COMPARE_DOCUMENT_BYTES: Final[int] = 1 * 1024 * 1024
 CONTRACT_VALIDATION_MESSAGE = (
     "comparison document failed Visual Contract V1 validation"
 )
+USAGE = "usage: omg visual {compare,capture,verdict,ralph}"
 
 
 def cmd_visual(args: argparse.Namespace) -> int:
@@ -31,7 +47,13 @@ def cmd_visual(args: argparse.Namespace) -> int:
     action = getattr(args, "visual_action", None)
     if action == "compare":
         return _cmd_visual_compare(args)
-    print("usage: omg visual {compare}", file=sys.stderr)
+    if action == "capture":
+        return _cmd_visual_capture(args)
+    if action == "verdict":
+        return _cmd_visual_verdict(args)
+    if action == "ralph":
+        return _cmd_visual_ralph(args)
+    print(USAGE, file=sys.stderr)
     return 2
 
 
@@ -93,6 +115,133 @@ def _cmd_visual_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _root(args: argparse.Namespace) -> Path:
+    ctx = getattr(args, "omg_ctx", None)
+    if ctx is not None and getattr(ctx, "root", None) is not None:
+        return Path(ctx.root)
+    raise VisualConfigError("project root is required for visual capture/verdict/ralph")
+
+
+def _load_optional_config(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    return load_visual_config(Path(path))
+
+
+def _emit_runtime_failure(command: str, exc: BaseException) -> int:
+    code = getattr(exc, "code", "E_VISUAL_RUNTIME")
+    message = str(exc)
+    next_action = "Inspect the visual config, paths, and reviewer roles"
+    if isinstance(exc, VisualReviewerError):
+        next_action = (
+            "Use a read-only reviewer (omg-vision) distinct from the editor role"
+        )
+    elif isinstance(exc, VisualPathError):
+        next_action = "Use a workspace-relative image path (no traversal)"
+    elif isinstance(exc, VisualMetadataError):
+        next_action = "Declare width/height in config or flags; images are not decoded"
+    emit_json(failure(command, code, message, next_action=next_action))
+    return 2
+
+
+def _cmd_visual_capture(args: argparse.Namespace) -> int:
+    config_path = getattr(args, "config", None)
+    if not config_path:
+        emit_json(
+            failure(
+                CMD_CAPTURE,
+                "E_USAGE",
+                "require --config PATH",
+                next_action="Pass --config visual.yaml (JSON or restricted YAML)",
+            )
+        )
+        return 2
+    try:
+        root = _root(args)
+        config = load_visual_config(Path(config_path))
+        result = run_capture(
+            root=root,
+            config=config,
+            run_id=getattr(args, "run_id", None),
+        )
+    except VisualRuntimeError as exc:
+        return _emit_runtime_failure(CMD_CAPTURE, exc)
+    emit_json(success(CMD_CAPTURE, result=result))
+    return 0
+
+
+def _cmd_visual_verdict(args: argparse.Namespace) -> int:
+    try:
+        root = _root(args)
+        config = _load_optional_config(getattr(args, "config", None))
+        reference = getattr(args, "reference", None)
+        actual = getattr(args, "actual", None)
+        if not reference and not config.get("reference"):
+            emit_json(
+                failure(
+                    CMD_VERDICT,
+                    "E_USAGE",
+                    "require --reference PATH",
+                    next_action="Pass --reference and --actual image paths",
+                )
+            )
+            return 2
+        if not actual and not (config.get("actual") or config.get("candidate")):
+            emit_json(
+                failure(
+                    CMD_VERDICT,
+                    "E_USAGE",
+                    "require --actual PATH",
+                    next_action="Pass --reference and --actual image paths",
+                )
+            )
+            return 2
+        result = run_verdict(
+            root=root,
+            config=config,
+            reference_path=reference,
+            actual_path=actual,
+            threshold_percent=getattr(args, "threshold", None),
+            width=getattr(args, "width", None),
+            height=getattr(args, "height", None),
+            run_id=getattr(args, "run_id", None),
+            editor_role=getattr(args, "editor_role", None),
+            reviewer_role=getattr(args, "reviewer_role", None),
+        )
+    except VisualRuntimeError as exc:
+        return _emit_runtime_failure(CMD_VERDICT, exc)
+    emit_json(success(CMD_VERDICT, result=result))
+    return 0
+
+
+def _cmd_visual_ralph(args: argparse.Namespace) -> int:
+    config_path = getattr(args, "config", None)
+    if not config_path:
+        emit_json(
+            failure(
+                CMD_RALPH,
+                "E_USAGE",
+                "require --config PATH",
+                next_action="Pass --config visual.yaml (JSON or restricted YAML)",
+            )
+        )
+        return 2
+    try:
+        root = _root(args)
+        config = load_visual_config(Path(config_path))
+        result = run_ralph(
+            root=root,
+            config=config,
+            max_iter=getattr(args, "max_iter", None),
+            threshold_percent=getattr(args, "threshold", None),
+            run_id=getattr(args, "run_id", None),
+        )
+    except VisualRuntimeError as exc:
+        return _emit_runtime_failure(CMD_RALPH, exc)
+    emit_json(success(CMD_RALPH, result=result))
+    return 0
+
+
 def register_visual_parsers(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -101,7 +250,7 @@ def register_visual_parsers(
     p_visual = sub.add_parser(
         "visual",
         parents=[common],
-        help="visual contract compare (scored/blocked; #75)",
+        help="visual compare/capture/verdict/ralph (scored/blocked; #75)",
     )
     vis_sub = p_visual.add_subparsers(dest="visual_action")
     p_compare = vis_sub.add_parser(
@@ -118,11 +267,84 @@ def register_visual_parsers(
         help="path to omg.visual.comparison JSON document",
     )
     p_compare.set_defaults(func=cmd_visual, visual_action="compare")
+
+    p_capture = vis_sub.add_parser(
+        "capture",
+        parents=[common],
+        help=(
+            "run a provider-neutral capture command (config/env); "
+            "blocked if none; never fakes a pass"
+        ),
+    )
+    p_capture.add_argument(
+        "--config",
+        default=None,
+        help="visual.yaml / JSON config with optional capture.command argv",
+    )
+    p_capture.add_argument("--run-id", default=None, dest="run_id")
+    p_capture.set_defaults(func=cmd_visual, visual_action="capture")
+
+    p_verdict = vis_sub.add_parser(
+        "verdict",
+        parents=[common],
+        help=(
+            "compare reference/actual via compare(); descriptor overlay; "
+            "reviewer_status only — never verified"
+        ),
+    )
+    p_verdict.add_argument("--config", default=None)
+    p_verdict.add_argument("--reference", default=None)
+    p_verdict.add_argument("--actual", default=None)
+    p_verdict.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        help="percent 0..100 (90 → contract score 9000)",
+    )
+    p_verdict.add_argument("--width", type=int, default=None)
+    p_verdict.add_argument("--height", type=int, default=None)
+    p_verdict.add_argument("--run-id", default=None, dest="run_id")
+    p_verdict.add_argument("--editor-role", default=None, dest="editor_role")
+    p_verdict.add_argument("--reviewer-role", default=None, dest="reviewer_role")
+    p_verdict.set_defaults(func=cmd_visual, visual_action="verdict")
+
+    p_ralph = vis_sub.add_parser(
+        "ralph",
+        parents=[common],
+        help=(
+            "bounded capture/verdict/repair-prompt loop; evidence only; "
+            "does not spawn agents or set verified"
+        ),
+    )
+    p_ralph.add_argument(
+        "--config",
+        default=None,
+        help="visual.yaml / JSON config",
+    )
+    p_ralph.add_argument(
+        "--max-iter",
+        type=int,
+        default=None,
+        dest="max_iter",
+        help="iteration budget (default 5, max 20)",
+    )
+    p_ralph.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        help="percent 0..100",
+    )
+    p_ralph.add_argument("--run-id", default=None, dest="run_id")
+    p_ralph.set_defaults(func=cmd_visual, visual_action="ralph")
+
     p_visual.set_defaults(func=cmd_visual)
 
 
 __all__ = [
+    "CMD_CAPTURE",
     "CMD_COMPARE",
+    "CMD_RALPH",
+    "CMD_VERDICT",
     "CONTRACT_VALIDATION_MESSAGE",
     "MAX_COMPARE_DOCUMENT_BYTES",
     "cmd_visual",

@@ -94,6 +94,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `unsupported` / `unknown_version`; never mutates AG files). ACP
   session/resume transport is still absent and this is not a live smoke.
   **Refs #74 (does not close).**
+- **#75 visual capture/verdict/ralph:** `omg visual capture|verdict|ralph`
+  plus the existing `compare` wrapper. Capture auto-detects
+  `capture.command` then `OMG_VISUAL_CAPTURE`, else **blocked** (not a fake
+  pass); Playwright is not required. Verdict wraps `compare()`, writes
+  descriptors/findings/score history under `.omg/artifacts/visual/<run_id>/`,
+  and records `reviewer_status` from an independent read-only reviewer
+  (`E_VISUAL_REVIEWER` if editor==reviewer or reviewer is read-write).
+  Overlay sidecars are **descriptor-only** (masks + byte-identity); this
+  slice does **not** decode pixels and does **not** call an AG vision model.
+  Capture argv redacts the value after sensitive flags (`--token secret`),
+  redacts credentials in persisted `capture.target` (query tokens),
+  and redacts bounded stderr before it is persisted. Visual Ralph is a bounded evidence loop (repair prompt artifact, no agent
+  spawn, no `verified` stamp). Hermetic: `tests/test_visual_cli.py`. Refs #75
+  (does not close — no live screenshot smoke / no AG vision model).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

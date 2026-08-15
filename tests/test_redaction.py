@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from omg_cli.redaction import REDACTED, is_sensitive_key, redact_text, redact_value
+from omg_cli.redaction import REDACTED, is_sensitive_key, redact_argv, redact_text, redact_value
 
 
 def test_recursive_redaction_covers_frozen_secret_classes() -> None:
@@ -919,4 +919,15 @@ def test_redact_text_closes_pr94ab_hash_special_param_query_p2() -> None:
     # Bare ``$bar`` must NOT clear_eol (contrast: ``$#`` above).
     bare = "?api_key=foo$bar&ok=visible-tail"
     assert redact_text(bare) == f"?api_key={REDACTED}&ok=visible-tail"
+
+
+def test_redact_argv_masks_value_after_sensitive_flag() -> None:
+    secret = "supersecret-split-token"
+    out = redact_argv(["tool", "--token", secret, "--ok", "keep"])
+    assert secret not in out
+    assert out[2] == REDACTED
+    assert out[4] == "keep"
+    dumped = json.dumps(redact_argv(["tool", f"--token={secret}"]))
+    assert secret not in dumped
+    assert REDACTED in dumped
 
