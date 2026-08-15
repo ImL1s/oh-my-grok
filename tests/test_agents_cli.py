@@ -25,6 +25,14 @@ def test_parser_registers_agents_list_explain() -> None:
     ns = parser.parse_args(["agents", "explain", "omg-verifier"])
     assert ns.agents_action == "explain"
     assert ns.agent_or_profile == "omg-verifier"
+    ns = parser.parse_args(
+        ["agents", "list", "--host-inspect", "inspect.json"]
+    )
+    assert ns.host_inspect == "inspect.json"
+    ns = parser.parse_args(
+        ["agents", "explain", "omg-verifier", "--host-inspect", "inspect.json"]
+    )
+    assert ns.host_inspect == "inspect.json"
 
 
 @_SKIP_CATALOG_PIN

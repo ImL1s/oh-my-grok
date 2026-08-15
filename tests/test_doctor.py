@@ -781,7 +781,8 @@ def test_run_soft_checks_includes_stop_gate_timeout(monkeypatch):
     assert names.index("agent model routing") > names.index("team plane")
 
 
-def test_check_agent_model_routing_stock_ok() -> None:
+def test_check_agent_model_routing_stock_ok(monkeypatch) -> None:
+    monkeypatch.delenv("OMG_MEDLEY_INSPECT", raising=False)
     name, level, detail = doctor.check_agent_model_routing()
     assert name == "agent model routing"
     assert level == "ok"

@@ -523,7 +523,7 @@ find_references/symbols/diagnostics）、
 | `omg workflow install\|list\|show\|plan\|run` | 不可變 registry、確定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，並產生／驗 exact bundle 與 completion evidence。 |
 | `omg capabilities` / `omg native-status` | 分開的 capability tiers，外加唯讀 `agents_catalog`、`skills_catalog`、`hooks_registry` 與 `tools_sidecar`；不探測私有 sidecar。 |
-| `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）與 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗）。不做付費探測。Medley TUI 仍為 #290。 |
+| `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）與 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗），除非 `--host-inspect` / `OMG_MEDLEY_INSPECT` 提供 Medley inspect。不做付費探測。Medley TUI 仍為 #290。 |
 | `omg skill list\|show\|resolve\|resources` | 唯讀 skill 目錄檢視（#70）。永不寫 `verified`。宿主名 `plan`/`goal` 只作為別名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
 | `omg visual compare\|capture\|verdict\|ralph` | Visual Contract V1（#75）。`compare` 包裝 `compare()`（`--input` JSON；scored/blocked）。`capture` 使用 `capture.command`，否則 `OMG_VISUAL_CAPTURE`，否則 **blocked**（不是假通過；不要求 Playwright）。`verdict` 包裝 `compare()`，在 `.omg/artifacts/visual/<run_id>/` 寫入描述符／findings／分數歷史；overlay 僅為描述符（不解像素）；`reviewer_status` 要求獨立唯讀 reviewer（否則 `E_VISUAL_REVIEWER`）。`ralph` 為有界 capture/verdict/repair-prompt 迴圈（不 spawn agent）。永不寫入 `passes`/`verified`。本切片無 live 截圖 smoke、無 AG vision 模型。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
@@ -568,7 +568,7 @@ agent frontmatter 若省略、使用 snake_case 別名（`capability_mode` / `pe
 下的 Antigravity `agent.md` **只是投影** — 不是已安裝的 AG 插件，也不是 live AG 證據。
 團隊路由地板仍在 `omg_cli/team/roles.py`。Dual-host model policy（#131）透過
 `agents/model_policies.json` 與 `omg agents list|explain` 消費此目錄
-（Grok baseline 已出貨；Medley exact/receipts 仍為 Refs）。
+（Grok baseline 已出貨；可選 Medley inspect 經 `--host-inspect` / `OMG_MEDLEY_INSPECT`；live spawn/TUI 仍為 Refs）。
 Grok 內建（`explore`、`plan`、`general-purpose`）是政策 profiles，不是第二份 registry。
 
 ---
