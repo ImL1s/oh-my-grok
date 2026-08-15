@@ -42,12 +42,12 @@ _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _VALUE_SECRET_NEEDLES: tuple[str, ...] = (
     "acct_",
     "-----begin ",
-    "x-api-key",
 )
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
 _BEARER_RE = re.compile(
     r"(?i)(?:^|[^a-z0-9])bearer\s+(?:sk-|eyj|[a-z0-9._\-+/=]{20,})"
 )
+_X_API_KEY_RE = re.compile(r"(?i)x-api-key\s*[:=]\s*\S+")
 _SECRET_KEYS = frozenset(
     {
         "authorization",
@@ -60,6 +60,10 @@ _SECRET_KEYS = frozenset(
         "secret",
         "password",
         "token",
+        "access_token",
+        "accesstoken",
+        "private_key",
+        "privatekey",
     }
 )
 
@@ -399,7 +403,7 @@ def _nonempty_string(value: Any) -> str | None:
 
 def _reject_secrets(text: str, *, label: str) -> None:
     lower = text.lower()
-    if _SK_TOKEN_RE.search(lower) or _BEARER_RE.search(lower):
+    if _SK_TOKEN_RE.search(lower) or _BEARER_RE.search(lower) or _X_API_KEY_RE.search(lower):
         raise MedleyInspectError(
             f"{label} contains forbidden material",
             code="E_MEDLEY_INSPECT_SECRET",

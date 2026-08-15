@@ -474,6 +474,70 @@ def test_non_string_selected_catalog_id_is_rejected(tmp_path: Path) -> None:
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
 
 
+def test_x_api_key_prose_is_not_a_secret(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "x-api-key-prose.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+                "version": "v1",
+                "reason": "x-api-key authentication unavailable",
+            }
+        ],
+        receipts=[],
+    )
+    snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert doc is not None
+    assert snap.is_supported("medley.native-route-receipt.v1")
+
+
+def test_x_api_key_header_value_is_still_secret(tmp_path: Path) -> None:
+    path = tmp_path / "x-api-key-header.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [],
+                "receipts": [{"note": "x-api-key: planted-secret-value"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=path)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"
+
+
+def test_access_token_receipt_field_is_secret(tmp_path: Path) -> None:
+    path = tmp_path / "access-token.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [],
+                "receipts": [
+                    {
+                        "schema": "medley.native-route-receipt.v1",
+                        "selected_catalog_id": "review-primary-example",
+                        "route_digest": "a" * 64,
+                        "attempt": 1,
+                        "access_token": "plain-secret-value",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=path)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"
+
+
 def test_explicit_unsupported_baseline_is_not_restored(tmp_path: Path) -> None:
     inspect = _write_inspect(
         tmp_path / "baseline.json",
