@@ -85,10 +85,19 @@ KNOWN_HANDLERS = frozenset(
         "stop_gate.decide_stop",
     }
 )
+# Required security ids must stay enabled on their canonical event/projection.
+# id -> (handler, event, runtime_projection)
+SECURITY_ACTIVE_BINDINGS: dict[str, tuple[str, str, str]] = {
+    "omg.pretool.deny": ("deny.decide_pre_tool_use", "tool.pre", "grok"),
+    "omg.stop.gate": ("stop_gate.decide_stop", "stop.request", "grok"),
+    "omg.continuation.guard": (
+        "continuation_guard",
+        "workflow.transition",
+        "omg-cli",
+    ),
+}
 SECURITY_HANDLER_BINDINGS = {
-    "omg.pretool.deny": "deny.decide_pre_tool_use",
-    "omg.stop.gate": "stop_gate.decide_stop",
-    "omg.continuation.guard": "continuation_guard",
+    hook_id: spec[0] for hook_id, spec in SECURITY_ACTIVE_BINDINGS.items()
 }
 PRIVACY_CLASSES = frozenset(
     {"security", "workflow", "observability", "routing", "handoff"}
@@ -363,13 +372,33 @@ def load_hooks_registry(
     if not allow_incomplete:
         missing = [
             hook_id
-            for hook_id in SECURITY_HANDLER_BINDINGS
+            for hook_id in SECURITY_ACTIVE_BINDINGS
             if hook_id not in seen
         ]
         if missing:
             raise HooksRegistryError(
                 "missing required security hook ids: " + ", ".join(missing)
             )
+        by_id = {record.id: record for record in records}
+        for hook_id, (handler, event, projection) in SECURITY_ACTIVE_BINDINGS.items():
+            record = by_id[hook_id]
+            if not record.enabled:
+                raise HooksRegistryError(
+                    f"{hook_id}: required security hook must be enabled"
+                )
+            if record.event != event:
+                raise HooksRegistryError(
+                    f"{hook_id}: required security hook event must be {event!r}"
+                )
+            if record.runtime_projection != projection:
+                raise HooksRegistryError(
+                    f"{hook_id}: required security hook runtime_projection "
+                    f"must be {projection!r}"
+                )
+            if record.handler != handler:
+                raise HooksRegistryError(
+                    f"{hook_id}: handler must be {handler!r}, got {record.handler!r}"
+                )
     records.sort(key=lambda item: (item.event, item.priority, item.id))
     return HooksRegistry(schema=schema, hooks=tuple(records))
 
@@ -954,6 +983,7 @@ __all__ = [
     "MAX_HANDOFF_BYTES",
     "REGISTRY_RELATIVE",
     "SCHEMA",
+    "SECURITY_ACTIVE_BINDINGS",
     "SECURITY_HANDLER_BINDINGS",
     "TIMEOUT_KIND",
     "HookRecord",

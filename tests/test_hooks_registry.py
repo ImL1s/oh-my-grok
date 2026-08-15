@@ -377,6 +377,29 @@ def test_security_handler_binding_fails_closed(tmp_path: Path) -> None:
         load_hooks_registry(tmp_path)
 
 
+def test_disabled_security_hook_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.pretool.deny":
+            hook["enabled"] = False
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="must be enabled"):
+        load_hooks_registry(tmp_path)
+    stub = load_hooks_registry(tmp_path, allow_incomplete=True)
+    assert stub.by_id()["omg.pretool.deny"].enabled is False
+
+
+def test_rebound_security_hook_event_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.stop.gate":
+            hook["event"] = "idle"
+            hook["host_hook"] = "Stop"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="event must be"):
+        load_hooks_registry(tmp_path)
+
+
 def test_compact_handoff_refuses_transcript(tmp_path: Path) -> None:
     with pytest.raises(HooksRegistryError, match="transcript"):
         write_compact_handoff(
