@@ -59,6 +59,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   stay false. **Not live AG** — Antigravity is not installed; live AG smoke
   remains open. Dual-host overlay stays `agents/model_policies.json` on this
   catalog (inherit/default for new ids). Refs #71 (does not close).
+- **#74 session search / friction / replay / observatory:** `omg session
+  search|friction|replay|observatory|retain|ag-history` plus `omg trace
+  timeline` and `omg memory layers`. Journals under `resolve_state_root()`
+  are the source of truth; reports redact credentials and home paths and
+  never print raw prompts/responses/tool output. Replay never re-executes
+  commands; restore-code refuses unsafe cwd/worktree. Retention skips
+  `*.jsonl.lock` and `event-cursors`; event scans keep the newest records
+  when the per-store cap is hit. `--project all` is
+  required to search sibling stores. AG history is a read-only stub (pin
+  `unsupported` / `unknown_version`; never mutates AG files). ACP
+  session/resume transport is still absent and this is not a live smoke.
+  **Refs #74 (does not close).**
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

@@ -81,6 +81,10 @@ def cmd_memory(args: argparse.Namespace) -> int:
                 timezone.utc
             ).isoformat().replace("+00:00", "Z")
             result = rescan_memory(root, facts, observed_at=observed_at)
+        elif action == "layers":
+            from omg_cli.memory_layers import list_memory_layers
+
+            result = list_memory_layers()
         else:
             print("omg memory: action required", file=sys.stderr)
             return 2
@@ -263,6 +267,12 @@ def register_memory_parsers(
     p_memory_rescan.add_argument("file")
     p_memory_rescan.add_argument("--observed-at", default=None)
     p_memory_rescan.set_defaults(func=cmd_memory, memory_action="rescan")
+    p_memory_layers = memory_sub.add_parser(
+        "layers",
+        parents=[common],
+        help="inspect memory-layer responsibilities and retention (#74)",
+    )
+    p_memory_layers.set_defaults(func=cmd_memory, memory_action="layers")
     p_memory.set_defaults(func=cmd_memory)
 
     p_tracker = sub.add_parser(

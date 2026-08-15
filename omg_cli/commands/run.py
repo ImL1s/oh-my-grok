@@ -1,6 +1,6 @@
 """Run-family CLI handlers + parsers (#29 Phase 2 / 4').
 
-Commands: state, cancel, resume, session, recover.
+Commands: state, cancel, resume, session, trace, recover.
 Parser construction: ``register_run_parsers`` (#29 Phase 4').
 """
 
@@ -206,15 +206,41 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return int(code)
 
 
+def _emit_session_payload(args: argparse.Namespace, command: str, payload: object) -> None:
+    emit_data(args, command, payload)
+
+
+def _session_failure(args: argparse.Namespace, command: str, code: str, message: str) -> int:
+    from omg_cli.cli_envelope import emit_json, failure, wants_json
+
+    payload = failure(command, code, message)
+    if wants_json(args):
+        emit_json(payload)
+    else:
+        print(f"omg {command}: {message}", file=sys.stderr)
+        emit_data(args, command, payload)
+    return 1
+
+
 def cmd_session(args: argparse.Namespace) -> int:
-    """Expose Grok's exact create/resume/continue/fork argv contract."""
+    """Host-session argv plus search/friction/replay/observatory/retain (#74)."""
+    from omg_cli.ag_history import inspect_ag_history
     from omg_cli.host_session import (
         HostSessionError,
         allocate_host_session,
         session_route_argv,
     )
+    from omg_cli.session_index import (
+        SessionIndexError,
+        friction_report,
+        observatory,
+        replay_session,
+        retain_events,
+        search_sessions,
+    )
 
     action = getattr(args, "session_action", None)
+    root = project_root()
     try:
         if action == "allocate":
             binding = allocate_host_session()
@@ -223,7 +249,9 @@ def cmd_session(args: argparse.Namespace) -> int:
                 "argv": binding.launch_argv(),
                 "route": "create",
             }
-        elif action == "route":
+            emit_data(args, "session", result)
+            return 0
+        if action == "route":
             route = session_route_argv(
                 create_session_id=getattr(args, "session_id", None),
                 resume_session_id=getattr(args, "resume_session_id", None),
@@ -237,13 +265,109 @@ def cmd_session(args: argparse.Namespace) -> int:
                 "best_effort": route[:1] == ["--continue"],
                 "named_fork": "--fork-session" in route,
             }
-        else:
-            print("omg session: action required", file=sys.stderr)
-            return 2
+            emit_data(args, "session", result)
+            return 0
+        if action == "search":
+            payload = search_sessions(
+                getattr(args, "query", "") or "",
+                cwd=root,
+                project=getattr(args, "project_scope", "current") or "current",
+                since=getattr(args, "since", None),
+                limit=int(getattr(args, "limit", 50) or 50),
+                context=int(getattr(args, "context", 0) or 0),
+                case_sensitive=bool(getattr(args, "case_sensitive", False)),
+                session_id=getattr(args, "filter_session", None),
+                run_id=getattr(args, "filter_run", None),
+                provider=getattr(args, "filter_provider", None),
+                team_id=getattr(args, "filter_team", None),
+            )
+            _emit_session_payload(args, "session.search", payload)
+            return 0
+        if action == "friction":
+            if getattr(args, "friction_action", None) != "report":
+                print("omg session friction: report required", file=sys.stderr)
+                return 2
+            payload = friction_report(
+                cwd=root,
+                since=getattr(args, "since", None) or "24h",
+            )
+            _emit_session_payload(args, "session.friction", payload)
+            return 0
+        if action == "replay":
+            payload = replay_session(
+                getattr(args, "replay_session_id", "") or "",
+                cwd=root,
+                summary=bool(getattr(args, "summary", False)),
+                restore_code=bool(getattr(args, "restore_code", False)),
+                operator_cwd=Path.cwd(),
+            )
+            _emit_session_payload(args, "session.replay", payload)
+            return 0
+        if action == "observatory":
+            payload = observatory(
+                cwd=root,
+                run_id=getattr(args, "run_id", None),
+            )
+            _emit_session_payload(args, "session.observatory", payload)
+            return 0
+        if action == "retain":
+            apply = bool(getattr(args, "apply", False))
+            dry_run = bool(getattr(args, "dry_run", False))
+            if apply == dry_run:
+                return _session_failure(
+                    args,
+                    "session.retain",
+                    "E_SESSION_RETAIN_MODE",
+                    "pass exactly one of --dry-run or --apply",
+                )
+            payload = retain_events(
+                cwd=root,
+                since=getattr(args, "since", None) or "7d",
+                apply=apply,
+            )
+            _emit_session_payload(args, "session.retain", payload)
+            return 0
+        if action == "ag-history":
+            payload = inspect_ag_history(root)
+            _emit_session_payload(args, "session.ag-history", payload)
+            return 0
+        print("omg session: action required", file=sys.stderr)
+        return 2
     except HostSessionError as exc:
         print(f"omg session: {exc}", file=sys.stderr)
         return 1
-    emit_data(args, "session", result)
+    except SessionIndexError as exc:
+        return _session_failure(
+            args,
+            f"session.{action or 'index'}",
+            getattr(exc, "code", "E_SESSION_INDEX"),
+            str(exc),
+        )
+
+
+def cmd_trace(args: argparse.Namespace) -> int:
+    """Read-only lifecycle timeline (`omg trace timeline`)."""
+    from omg_cli.session_index import SessionIndexError, session_timeline
+
+    action = getattr(args, "trace_action", None)
+    if action != "timeline":
+        print("omg trace: timeline required", file=sys.stderr)
+        return 2
+    try:
+        payload = session_timeline(
+            cwd=project_root(),
+            run_id=getattr(args, "run_id", None),
+            session_id=getattr(args, "session_id", None),
+            limit=int(getattr(args, "limit", 100) or 100),
+        )
+    except SessionIndexError as exc:
+        return _session_failure(
+            args,
+            "trace.timeline",
+            getattr(exc, "code", "E_SESSION_INDEX"),
+            str(exc),
+        )
+    _emit_session_payload(args, "trace.timeline", payload)
     return 0
 
 
@@ -286,7 +410,7 @@ def register_run_parsers(
 ) -> None:
     """Register run-family argparse parsers (#29 Phase 4').
 
-    Commands: state, cancel, resume, session, recover.
+    Commands: state, cancel, resume, session, trace, recover.
     """
     p_state = sub.add_parser(
         "state",
@@ -338,7 +462,7 @@ def register_run_parsers(
     p_session = sub.add_parser(
         "session",
         parents=[common],
-        help="build exact Grok create/resume/continue/fork session argv",
+        help="host-session argv plus search/friction/replay/observatory (#74)",
     )
     session_sub = p_session.add_subparsers(dest="session_action")
     p_session_allocate = session_sub.add_parser(
@@ -378,7 +502,121 @@ def register_run_parsers(
         help="known UUID that the child must not reuse (repeatable)",
     )
     p_session_route.set_defaults(func=cmd_session, session_action="route")
+
+    p_session_search = session_sub.add_parser(
+        "search",
+        parents=[common],
+        help="search redacted session/run journals (current project default)",
+    )
+    p_session_search.add_argument("query", help="search string (never matches raw prompts)")
+    p_session_search.add_argument(
+        "--since",
+        default=None,
+        help="relative duration (7d, 24h) or RFC3339 cutoff",
+    )
+    p_session_search.add_argument(
+        "--project",
+        dest="project_scope",
+        choices=("current", "all"),
+        default="current",
+        help="current worktree/state_root (default); all requires explicit sibling discovery",
+    )
+    p_session_search.add_argument(
+        "--context",
+        type=int,
+        default=0,
+        help="bounded neighboring events to include (0-5)",
+    )
+    p_session_search.add_argument("--limit", type=int, default=50)
+    p_session_search.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        help="match query case-sensitively",
+    )
+    p_session_search.add_argument("--session", dest="filter_session", default=None)
+    p_session_search.add_argument("--run", dest="filter_run", default=None)
+    p_session_search.add_argument("--provider", dest="filter_provider", default=None)
+    p_session_search.add_argument("--team", dest="filter_team", default=None)
+    p_session_search.set_defaults(func=cmd_session, session_action="search")
+
+    p_friction = session_sub.add_parser(
+        "friction",
+        parents=[common],
+        help="metadata-only friction signals (no private content)",
+    )
+    friction_sub = p_friction.add_subparsers(dest="friction_action")
+    p_friction_report = friction_sub.add_parser(
+        "report",
+        parents=[common],
+        help="emit a friction report for this project",
+    )
+    p_friction_report.add_argument("--since", default="24h")
+    p_friction_report.set_defaults(
+        func=cmd_session, session_action="friction", friction_action="report"
+    )
+    p_friction.set_defaults(func=cmd_session, session_action="friction")
+
+    p_replay = session_sub.add_parser(
+        "replay",
+        parents=[common],
+        help="deterministic timeline replay (never re-executes commands)",
+    )
+    p_replay.add_argument("replay_session_id", help="host/session UUID")
+    p_replay.add_argument(
+        "--summary",
+        action="store_true",
+        help="metadata timeline only (no raw payloads)",
+    )
+    p_replay.add_argument(
+        "--restore-code",
+        action="store_true",
+        help="request restore-code (refused for unsafe cwd/worktree; never mutates)",
+    )
+    p_replay.set_defaults(func=cmd_session, session_action="replay")
+
+    p_observatory = session_sub.add_parser(
+        "observatory",
+        parents=[common],
+        help="operator snapshot (reuses HUD reads)",
+    )
+    p_observatory.add_argument("--run", dest="run_id", default=None)
+    p_observatory.set_defaults(func=cmd_session, session_action="observatory")
+
+    p_retain = session_sub.add_parser(
+        "retain",
+        parents=[common],
+        help="retention dry-run/apply for this project's state_root events",
+    )
+    retain_mode = p_retain.add_mutually_exclusive_group(required=True)
+    retain_mode.add_argument("--dry-run", dest="dry_run", action="store_true")
+    retain_mode.add_argument("--apply", dest="apply", action="store_true")
+    p_retain.add_argument("--since", required=True, help="keep events newer than this cutoff")
+    p_retain.set_defaults(func=cmd_session, session_action="retain")
+
+    p_ag_history = session_sub.add_parser(
+        "ag-history",
+        parents=[common],
+        help="read-only Antigravity history probe (never mutates AG files)",
+    )
+    p_ag_history.set_defaults(func=cmd_session, session_action="ag-history")
     p_session.set_defaults(func=cmd_session)
+
+    p_trace = sub.add_parser(
+        "trace",
+        parents=[common],
+        help="read-only lifecycle event timeline (#74)",
+    )
+    trace_sub = p_trace.add_subparsers(dest="trace_action")
+    p_timeline = trace_sub.add_parser(
+        "timeline",
+        parents=[common],
+        help="bounded redacted event timeline for a run/session",
+    )
+    p_timeline.add_argument("--run", dest="run_id", default=None)
+    p_timeline.add_argument("--session", dest="session_id", default=None)
+    p_timeline.add_argument("--limit", type=int, default=100)
+    p_timeline.set_defaults(func=cmd_trace, trace_action="timeline")
+    p_trace.set_defaults(func=cmd_trace)
 
     p_recover = sub.add_parser(
         "recover",
@@ -402,5 +640,6 @@ __all__ = [
     "cmd_resume",
     "cmd_session",
     "cmd_state",
+    "cmd_trace",
     "print_state_human",
 ]

@@ -80,6 +80,7 @@ from omg_cli.commands.run import (  # #29 Phase 2+4' — run family
     cmd_resume,  # noqa: F401
     cmd_session,  # noqa: F401
     cmd_state,  # noqa: F401
+    cmd_trace,  # noqa: F401
     register_run_parsers,
 )
 from omg_cli.commands.team import (  # #29 Phase 2+4' — team family

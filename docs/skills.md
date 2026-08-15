@@ -627,9 +627,10 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 
 | Command | Contract |
 |---|---|
-| `omg session allocate\|route` | Exact create/resume/continue/fork argv; named child UUIDs cannot be reused. |
+| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history` | Host-session argv plus redacted search/friction/replay/observatory/retention; AG history is a read-only unsupported stub. Replay never re-executes commands. Refs #74. |
+| `omg trace timeline` | Read-only bounded lifecycle timeline (`--run` / `--session`). Never prints raw prompts. Refs #74. |
 | `omg recover` | Immutable bounded JSONL suffix; partial recovery preserves broken-chain/unknown-record warnings. |
-| `omg memory put\|search\|show\|export\|import\|rescan` | Redacted deterministic project facts. |
+| `omg memory put\|search\|show\|export\|import\|rescan\|layers` | Redacted deterministic project facts plus inspect-only memory-layer catalog (not one unbounded memory.json). |
 | `omg tracker status\|project\|reconcile` | Passive generation-fenced lifecycle projection. |
 | `omg compact create\|show\|render` | Lossless guidance checkpoint and restore. |
 | `omg notify status\|send\|process` | Outbound-only, non-authoritative delivery queue. |
