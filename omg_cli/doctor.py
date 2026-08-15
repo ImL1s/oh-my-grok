@@ -280,16 +280,43 @@ def check_skills_omg_prefix() -> tuple[str, bool, str]:
     )
 
 
-def check_agents_present() -> tuple[str, bool, str]:
-    """Require the #71 machine catalog to match ``agents/omg-*.md`` on disk."""
-    from omg_cli.agents_catalog import AgentsCatalogError, load_agents_catalog
+def check_agents_catalog(root: Path | None = None) -> tuple[str, bool, str]:
+    """Require the #71 YAML/JSON catalog plus static AG projections.
 
+    Missing/stale/invalid projections fail this check. ``observed`` /
+    ``healthy`` / ``verified`` stay false without live AG (inspect payload).
+    """
+    from omg_cli.agents_catalog import (
+        AgentsCatalogError,
+        check_antigravity_projections,
+        check_catalog_yaml,
+        inspect_agents_catalog,
+        load_agents_catalog,
+        plugin_root as catalog_plugin_root,
+    )
+
+    base = root if root is not None else catalog_plugin_root()
     try:
-        catalog = load_agents_catalog(plugin_root())
+        catalog = load_agents_catalog(base)
     except AgentsCatalogError as exc:
         return _check("agents", False, str(exc)[:240])
+    problems = check_catalog_yaml(base) + check_antigravity_projections(base)
+    if problems:
+        return _check("agents", False, "; ".join(problems)[:240])
+    inspect = inspect_agents_catalog(base)
+    if inspect.get("observed") or inspect.get("healthy") or inspect.get("verified"):
+        return _check("agents", False, "inspect payload claimed live AG")
     n = len(catalog.agents)
-    return _check("agents", True, f"{n} catalogued present ({n} total)")
+    return _check(
+        "agents",
+        True,
+        f"{n} catalogued present ({n} total); AG projections static (not live)",
+    )
+
+
+def check_agents_present() -> tuple[str, bool, str]:
+    """Require the #71 machine catalog to match ``agents/omg-*.md`` on disk."""
+    return check_agents_catalog()
 
 
 def check_deny_importable() -> tuple[str, bool, str]:

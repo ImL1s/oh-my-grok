@@ -443,6 +443,46 @@ def test_spawn_explore_requires_read_only():
     assert d2["decision"] == "allow"
 
 
+def test_spawn_code_reviewer_cannot_receive_read_write():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "omg-code-reviewer",
+                "capability_mode": "read-write",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+    assert "RETRY IMMEDIATELY" in d.get("reason", "")
+    d2 = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "omg-code-reviewer",
+                "capability_mode": "read-only",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d2["decision"] == "allow"
+
+
+def test_spawn_planner_cannot_receive_read_write():
+    d = decide_pre_tool_use(
+        {
+            "toolName": "spawn_subagent",
+            "toolInput": {
+                "subagent_type": "omg-planner",
+                "capability_mode": "read-write",
+                "prompt": "x",
+            },
+        }
+    )
+    assert d["decision"] == "deny"
+
+
 def test_spawn_task_alias_and_camel_case_keys():
     d = decide_pre_tool_use(
         {

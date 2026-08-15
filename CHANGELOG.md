@@ -41,6 +41,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   obsolete AG files. **Not** a live smoke; Antigravity files remain
   projections; `live_verification` stays `unproven`. Does not set `verified`.
   Refs #70 (does not close — no live smoke).
+- **#71 agents catalog (YAML + extra roles):** `agents/catalog.yaml` is the
+  schema-versioned source of truth; `scripts/generate_agents_catalog.py`
+  writes committed `agents/catalog.json` and static Antigravity `agent.md`
+  projections (`--check` fails on drift). Adds plugin agents
+  `omg-explore` (explore-high profile), `omg-planner`, `omg-tracer`,
+  `omg-document-specialist`, `omg-build-fixer`, `omg-git-master`,
+  `omg-code-simplifier`, `omg-scientist`, `omg-vision`,
+  `omg-product-manager` (23 total) plus catalog aliases (sisyphus,
+  hephaestus, librarian, style/quality/api-reviewer, …). Deterministic
+  `resolve_category` for quick/deep/ultrabrain/visual-engineering/research/review
+  never silently upgrades required read-only to write. Runtime
+  `assert_agent_capability` blocks reviewer/verifier/planner `read-write`
+  (PreToolUse still fail-open on hook/catalog crash). Bounded
+  `render_handoff` (no full leader history; no self-approval). `omg doctor`
+  reports missing/stale AG projections; inspect `observed`/`healthy`/`verified`
+  stay false. **Not live AG** — Antigravity is not installed; live AG smoke
+  remains open. Dual-host overlay stays `agents/model_policies.json` on this
+  catalog (inherit/default for new ids). Refs #71 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

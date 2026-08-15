@@ -3,16 +3,26 @@
   "files": {
     "agents/omg-analyst.md": "b9962b590a679a5d644812c052276ef633c0937ee29abd873d865a0d55ddfb55",
     "agents/omg-architect.md": "9c2841aa1b46d51871e7b4f19701d220f6fc3d8a522914e3f3de1cc5cc679576",
+    "agents/omg-build-fixer.md": "4c2940057b3c10a0234351ded865301fd4b059f302d27f2f68ad85dd2f99598e",
     "agents/omg-code-reviewer.md": "a80e5ec8600e4af53af3155f51327fcb50c21ba90852865bc6e6c101221a811e",
+    "agents/omg-code-simplifier.md": "352074dccef98370b6efabfcf9e6ddc619fdce2574ea079314f67b87ca9b7770",
     "agents/omg-critic.md": "1bab25fc023e56ff74d73c305d7407b2d56cea4361212218b10844658e6f5d05",
     "agents/omg-debugger.md": "f44275b6825fe24619485a5e99ebe518ac3ede088df42e3103a2ca72c6e54a28",
     "agents/omg-designer.md": "7d70b6434cb4515e966843df0dddb6d7b979c48deb1c955461086327bb5a5d53",
+    "agents/omg-document-specialist.md": "eb0ff84947c076bf2117d920693053988cdcfcbca9fc67059b66930cf11752c3",
     "agents/omg-executor.md": "c9fc6b6b3ffbeac549d99209a846919389d510ad10199953517983eb4a0cb538",
+    "agents/omg-explore.md": "9edcb67caabfaea17c9b6fb2c681cc0938e3863d68623dd91eba4fc0c001d61f",
+    "agents/omg-git-master.md": "1e876e0b1b6b7f39ae12fe8c73af1a655ed5063a6142ddeff066a98e4661d3a0",
     "agents/omg-orchestrator.md": "d8d79f2cb137f1e04111b51955038eb4736c2152171ef8a002723fdb2137ddc3",
+    "agents/omg-planner.md": "910c027ad1f00df9c97f6fa291758ec3f0c593fa749d17ba921e1136d348e133",
+    "agents/omg-product-manager.md": "8be64b38dc3f950c80d6574d2d7a3325339340e10c917cd0dc9d9dd334d168eb",
     "agents/omg-qa-tester.md": "0dd086bf74a0c9632d45c7472a3e9e862f92905f6a15aef2ee8a905b8b0e2045",
+    "agents/omg-scientist.md": "7ba3a17c4ced338f7aef32770c2664436da18c833f6c093cf2ea39a8526f9b14",
     "agents/omg-security-reviewer.md": "be43140948b22abfcaa92aa98303237b6fe7b920d0a3312254b262d974c973bb",
     "agents/omg-test-engineer.md": "945c46a304df1ec9b6f518c30f7f38d1e010a997fe0a723730aeeda227495e2a",
+    "agents/omg-tracer.md": "4b3984ccde758e7a09a187598e49659aba939a9af9b72781a36e070739a86f31",
     "agents/omg-verifier.md": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
+    "agents/omg-vision.md": "bb54ff574b90831644a35599daa646a634dfe69de53c4fd8414d754a28e03ae0",
     "agents/omg-writer.md": "4609b70f3e027f71d6cd93ddd1036dbdd10ca7e82216e5607361479fdba751f9",
     "skills/omg-ai-slop-cleaner/SKILL.md": "f11e98a2d177bc8f253b9c02e5c8da5c03448e00c964da7964f8b38aad36c87d",
     "skills/omg-ask/SKILL.md": "b1e8be52a75ff5f026441211562e70d5b19af41d749c55314f88fd68de32b277",
@@ -60,7 +70,7 @@
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9",
     "skills/omg-writer-memory/SKILL.md": "f387a2607e5a643f450ff5c5c65743f8cf8e6fa85670b61693f62732e71def35"
   },
-  "aggregate": "57bb90647bed2effc42642d3f1112348b241cac6cc5fcc646c2aa691d883aab6",
+  "aggregate": "d97ebea95c04727daff4788c6d0667404bfc5e5e1a7ac17accbb95350b744357",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -357,6 +367,16 @@
         "declared_capability_mode": "read-only"
       },
       {
+        "name": "omg-build-fixer",
+        "path": "agents/omg-build-fixer.md",
+        "sha256": "4c2940057b3c10a0234351ded865301fd4b059f302d27f2f68ad85dd2f99598e",
+        "metadata_status": "valid",
+        "role": "build-fixer",
+        "capability_mode": "read-write",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-write"
+      },
+      {
         "name": "omg-code-reviewer",
         "path": "agents/omg-code-reviewer.md",
         "sha256": "a80e5ec8600e4af53af3155f51327fcb50c21ba90852865bc6e6c101221a811e",
@@ -365,6 +385,16 @@
         "capability_mode": "read-only",
         "capability_source": "role_taxonomy",
         "declared_capability_mode": "read-only"
+      },
+      {
+        "name": "omg-code-simplifier",
+        "path": "agents/omg-code-simplifier.md",
+        "sha256": "352074dccef98370b6efabfcf9e6ddc619fdce2574ea079314f67b87ca9b7770",
+        "metadata_status": "valid",
+        "role": "code-simplifier",
+        "capability_mode": "read-write",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-write"
       },
       {
         "name": "omg-critic",
@@ -397,11 +427,41 @@
         "declared_capability_mode": "read-write"
       },
       {
+        "name": "omg-document-specialist",
+        "path": "agents/omg-document-specialist.md",
+        "sha256": "eb0ff84947c076bf2117d920693053988cdcfcbca9fc67059b66930cf11752c3",
+        "metadata_status": "valid",
+        "role": "document-specialist",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
         "name": "omg-executor",
         "path": "agents/omg-executor.md",
         "sha256": "c9fc6b6b3ffbeac549d99209a846919389d510ad10199953517983eb4a0cb538",
         "metadata_status": "valid",
         "role": "executor",
+        "capability_mode": "read-write",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-write"
+      },
+      {
+        "name": "omg-explore",
+        "path": "agents/omg-explore.md",
+        "sha256": "9edcb67caabfaea17c9b6fb2c681cc0938e3863d68623dd91eba4fc0c001d61f",
+        "metadata_status": "valid",
+        "role": "explore",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
+        "name": "omg-git-master",
+        "path": "agents/omg-git-master.md",
+        "sha256": "1e876e0b1b6b7f39ae12fe8c73af1a655ed5063a6142ddeff066a98e4661d3a0",
+        "metadata_status": "valid",
+        "role": "git-master",
         "capability_mode": "read-write",
         "capability_source": "role_taxonomy",
         "declared_capability_mode": "read-write"
@@ -417,6 +477,26 @@
         "declared_capability_mode": "read-write"
       },
       {
+        "name": "omg-planner",
+        "path": "agents/omg-planner.md",
+        "sha256": "910c027ad1f00df9c97f6fa291758ec3f0c593fa749d17ba921e1136d348e133",
+        "metadata_status": "valid",
+        "role": "planner",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
+        "name": "omg-product-manager",
+        "path": "agents/omg-product-manager.md",
+        "sha256": "8be64b38dc3f950c80d6574d2d7a3325339340e10c917cd0dc9d9dd334d168eb",
+        "metadata_status": "valid",
+        "role": "product-manager",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
         "name": "omg-qa-tester",
         "path": "agents/omg-qa-tester.md",
         "sha256": "0dd086bf74a0c9632d45c7472a3e9e862f92905f6a15aef2ee8a905b8b0e2045",
@@ -425,6 +505,16 @@
         "capability_mode": "read-write",
         "capability_source": "role_taxonomy",
         "declared_capability_mode": "read-write"
+      },
+      {
+        "name": "omg-scientist",
+        "path": "agents/omg-scientist.md",
+        "sha256": "7ba3a17c4ced338f7aef32770c2664436da18c833f6c093cf2ea39a8526f9b14",
+        "metadata_status": "valid",
+        "role": "scientist",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
       },
       {
         "name": "omg-security-reviewer",
@@ -447,11 +537,31 @@
         "declared_capability_mode": "read-write"
       },
       {
+        "name": "omg-tracer",
+        "path": "agents/omg-tracer.md",
+        "sha256": "4b3984ccde758e7a09a187598e49659aba939a9af9b72781a36e070739a86f31",
+        "metadata_status": "valid",
+        "role": "tracer",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
         "name": "omg-verifier",
         "path": "agents/omg-verifier.md",
         "sha256": "8f410b7d8b43b0bef32f27b05d9cce2d7409f638babc396d4e1f4926be10816c",
         "metadata_status": "valid",
         "role": "verifier",
+        "capability_mode": "read-only",
+        "capability_source": "role_taxonomy",
+        "declared_capability_mode": "read-only"
+      },
+      {
+        "name": "omg-vision",
+        "path": "agents/omg-vision.md",
+        "sha256": "bb54ff574b90831644a35599daa646a634dfe69de53c4fd8414d754a28e03ae0",
+        "metadata_status": "valid",
+        "role": "vision",
         "capability_mode": "read-only",
         "capability_source": "role_taxonomy",
         "declared_capability_mode": "read-only"
@@ -521,7 +631,7 @@
       {
         "surface": "roles",
         "path": "omg_cli/team/roles.py",
-        "sha256": "6d82471bcf795ace0991a08b1683ffb18d5a09013d313e50f201b90e59a0dc84",
+        "sha256": "b1deb1a543b5aa688e66f0afb8065ca01cc1726ff4fc82c29364443281235f5f",
         "status": "valid"
       },
       {
@@ -678,5 +788,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "f2121e410262469e794305a9e478c63fcc549dfe42d7a38828a4909cce658ac7"
+  "session_surface_aggregate": "f70e135205e68e89938791dd4325f37559ad79ca910e38db55afb2222ad55b60"
 }

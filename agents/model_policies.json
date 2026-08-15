@@ -152,6 +152,56 @@
       "policy_id": "writer.default",
       "baseline": { "mode": "inherit" },
       "prompt_profile": "generic"
+    },
+    "omg-explore": {
+      "policy_id": "explore-plugin.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-planner": {
+      "policy_id": "planner.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-tracer": {
+      "policy_id": "tracer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-document-specialist": {
+      "policy_id": "document-specialist.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-build-fixer": {
+      "policy_id": "build-fixer.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-git-master": {
+      "policy_id": "git-master.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-code-simplifier": {
+      "policy_id": "code-simplifier.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-scientist": {
+      "policy_id": "scientist.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-vision": {
+      "policy_id": "vision.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
+    },
+    "omg-product-manager": {
+      "policy_id": "product-manager.default",
+      "baseline": { "mode": "inherit" },
+      "prompt_profile": "generic"
     }
   }
 }

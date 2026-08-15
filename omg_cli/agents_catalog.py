@@ -1,7 +1,9 @@
 """Read-only plugin agent catalog (#71).
 
-Single registry of ``agents/omg-*.md``. Dual-host routing (#131) must consume
-this catalog — do not add a second plugin-agent registry.
+Single registry of ``agents/omg-*.md``. YAML ``agents/catalog.yaml`` is the
+editable source of truth; committed ``agents/catalog.json`` is generated for
+the fail-closed loader. Dual-host routing (#131) must consume this catalog —
+do not add a second plugin-agent registry.
 
 Fail-closed: missing catalog, missing agent file, extra uncatalogued
 ``omg-*.md``, duplicate id, ``capability_mode`` outside
@@ -11,10 +13,11 @@ files must use those camelCase keys; snake_case aliases are rejected so a
 read-only/plan agent cannot silently fall back to host defaults. Agent
 markdown is opened with ``O_NOFOLLOW|O_NONBLOCK`` and read through that
 pinned descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
-``all``.
+``all``. Reviewer / verifier / planner tiers cannot receive ``read-write``.
 
-Not a routing runtime. Antigravity ``agent.md`` files are static projections
-only — not an installed AG plugin and not live AG evidence.
+Category routing (``resolve_category``) is deterministic and inspectable.
+Antigravity ``agent.md`` files are static projections only — not an installed
+AG plugin and not live AG evidence.
 """
 
 from __future__ import annotations
@@ -23,13 +26,18 @@ import errno
 import json
 import os
 import stat
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Sequence
+
+from omg_cli.catalog_yaml import CatalogYamlError, parse_yaml
 
 SCHEMA = "omg-agents-catalog/v1"
 KIND = "read_only_machine_catalog"
 CATALOG_RELATIVE = "agents/catalog.json"
+YAML_RELATIVE = "agents/catalog.yaml"
 ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/agents"
 
 ALLOWED_CAPABILITY_MODES = frozenset({"read-only", "read-write"})
@@ -41,9 +49,52 @@ ALLOWED_TIERS = frozenset(
 ALLOWED_SPAWN_POLICIES = frozenset({"parent", "leaf"})
 READ_ONLY_TIERS = frozenset({"reviewer", "verifier", "planner"})
 READ_WRITE_TIERS = frozenset({"orchestrator", "implementer"})
+ALLOWED_CATEGORIES = frozenset(
+    {
+        "quick",
+        "deep",
+        "ultrabrain",
+        "visual-engineering",
+        "research",
+        "review",
+    }
+)
+# OmO-style discipline routing. All six categories default to read-only.
+# Write agents appear only when required_mode='read-write'.
+CATEGORY_CANDIDATES: Mapping[str, tuple[str, ...]] = {
+    "quick": ("omg-explore", "omg-analyst", "omg-planner", "omg-architect"),
+    "deep": ("omg-planner", "omg-architect", "omg-analyst", "omg-explore"),
+    "ultrabrain": ("omg-scientist", "omg-planner", "omg-architect", "omg-analyst"),
+    "visual-engineering": (
+        "omg-vision",
+        "omg-code-reviewer",
+        "omg-critic",
+        "omg-designer",
+    ),
+    "research": (
+        "omg-document-specialist",
+        "omg-scientist",
+        "omg-analyst",
+        "omg-tracer",
+        "omg-planner",
+    ),
+    "review": (
+        "omg-code-reviewer",
+        "omg-critic",
+        "omg-security-reviewer",
+        "omg-verifier",
+    ),
+}
+CATEGORY_DEFAULT_MODE = "read-only"
+HOST_NATIVE_PROFILES = frozenset(
+    {"explore", "plan", "general-purpose", "general_purpose"}
+)
 GROK_PROJECTION_KIND = "plugin_agent"
 ANTIGRAVITY_PROJECTION_KIND = "agent_md_projection"
 MAX_AGENT_FILE_BYTES = 1 * 1024 * 1024
+MAX_HANDOFF_TASK_CHARS = 500
+MAX_HANDOFF_ITEMS = 12
+MAX_HANDOFF_ITEM_CHARS = 200
 _NOFOLLOW_ERRNOS = {errno.ELOOP, getattr(errno, "EMLINK", -1), errno.EINVAL}
 PROJECTION_BANNER_TITLE = "PROJECTION — not an installed Antigravity plugin"
 PROJECTION_BANNER_NEEDLES = (
@@ -61,6 +112,8 @@ _AGENT_REQUIRED = (
     "spawn_policy",
     "projections",
 )
+_AGENT_OPTIONAL = ("aliases", "categories", "profile")
+_ALIAS_RE_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-")
 
 
 class AgentsCatalogError(ValueError):
@@ -86,6 +139,9 @@ class AgentRecord:
     tier: str
     spawn_policy: str
     projections: Mapping[str, HostProjection]
+    aliases: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    profile: str = ""
 
     def to_inspect_row(self) -> dict[str, Any]:
         return {
@@ -95,6 +151,9 @@ class AgentRecord:
             "permission_mode": self.permission_mode,
             "tier": self.tier,
             "spawn_policy": self.spawn_policy,
+            "aliases": list(self.aliases),
+            "categories": list(self.categories),
+            "profile": self.profile,
             "projections": {
                 name: {"kind": proj.kind, "path": proj.path}
                 for name, proj in self.projections.items()
@@ -120,6 +179,10 @@ def plugin_root() -> Path:
 
 def catalog_path(root: Path | None = None) -> Path:
     return (root if root is not None else plugin_root()) / CATALOG_RELATIVE
+
+
+def yaml_catalog_path(root: Path | None = None) -> Path:
+    return (root if root is not None else plugin_root()) / YAML_RELATIVE
 
 
 def antigravity_projection_relative(agent_id: str) -> str:
@@ -264,6 +327,34 @@ def _parse_agent(value: Any, *, index: int) -> AgentRecord:
         raise AgentsCatalogError(
             f"{agent_id}: unknown projection hosts: {', '.join(extra_hosts)}"
         )
+    unknown = sorted(set(obj) - set(_AGENT_REQUIRED) - set(_AGENT_OPTIONAL))
+    if unknown:
+        raise AgentsCatalogError(
+            f"{agent_id}: unknown catalog keys: {', '.join(unknown)}"
+        )
+    aliases = _parse_string_tuple(
+        obj.get("aliases"), label=f"{label}.aliases", agent_id=agent_id
+    )
+    categories = _parse_string_tuple(
+        obj.get("categories"), label=f"{label}.categories", agent_id=agent_id
+    )
+    for category in categories:
+        if category not in ALLOWED_CATEGORIES:
+            raise AgentsCatalogError(
+                f"{agent_id}: category must be one of "
+                f"{sorted(ALLOWED_CATEGORIES)}, got {category!r}"
+            )
+    profile = ""
+    if "profile" in obj and obj["profile"] is not None and obj["profile"] != "":
+        profile = _require_str(obj["profile"], label=f"{label}.profile").strip()
+        if profile != profile.lower() or any(ch not in _ALIAS_RE_CHARS for ch in profile):
+            raise AgentsCatalogError(
+                f"{agent_id}: profile must be lowercase [a-z0-9-], got {profile!r}"
+            )
+    for alias in aliases:
+        _require_alias_token(alias, agent_id=agent_id, label=f"{label}.aliases")
+        if alias == agent_id:
+            raise AgentsCatalogError(f"{agent_id}: alias must not equal id")
     return AgentRecord(
         id=agent_id,
         file=file_rel,
@@ -272,7 +363,37 @@ def _parse_agent(value: Any, *, index: int) -> AgentRecord:
         tier=tier,
         spawn_policy=spawn_policy,
         projections={"grok": grok, "antigravity": ag},
+        aliases=aliases,
+        categories=categories,
+        profile=profile,
     )
+
+
+def _parse_string_tuple(value: Any, *, label: str, agent_id: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise AgentsCatalogError(f"{label} must be an array")
+    out: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        token = _require_str(item, label=f"{label}[{index}]")
+        if token in seen:
+            raise AgentsCatalogError(f"{agent_id}: duplicate {label} value {token!r}")
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
+def _require_alias_token(alias: str, *, agent_id: str, label: str) -> None:
+    if alias != alias.lower() or not alias or alias[0] == "-" or alias[-1] == "-":
+        raise AgentsCatalogError(
+            f"{agent_id}: {label} must be lowercase [a-z0-9-], got {alias!r}"
+        )
+    if any(ch not in _ALIAS_RE_CHARS for ch in alias):
+        raise AgentsCatalogError(
+            f"{agent_id}: {label} must be lowercase [a-z0-9-], got {alias!r}"
+        )
 
 
 def _load_json(path: Path) -> Any:
@@ -376,10 +497,29 @@ def _read_plugin_regular_text(root: Path, relative: str) -> str:
         os.close(root_fd)
 
 
+def _read_agent_text_generation(root: Path, relative: str) -> str:
+    """Generator/Windows read: reject symlinks, do not follow them."""
+    rel = _posix_relative(relative, label="agent file")
+    path = root / rel
+    if path.is_symlink() or not path.is_file():
+        raise AgentsCatalogError(f"missing agent: {relative}")
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+    if len(data) > MAX_AGENT_FILE_BYTES:
+        raise AgentsCatalogError(f"agent file exceeds size bound: {relative}")
+    try:
+        return data.decode("utf-8")
+    except UnicodeError as exc:
+        raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+
+
 def load_agents_catalog(
     root: Path | None = None,
     *,
     require_projections: bool = True,
+    pin_files: bool = True,
 ) -> AgentsCatalog:
     """Load and fail-closed validate the plugin agent catalog."""
     base = Path(root) if root is not None else plugin_root()
@@ -408,6 +548,21 @@ def load_agents_catalog(
         seen[record.id] = index
         records.append(record)
 
+    alias_owners: dict[str, str] = {}
+    for record in records:
+        owner = alias_owners.get(record.id)
+        if owner is not None and owner != record.id:
+            raise AgentsCatalogError(
+                f"canonical id {record.id!r} collides with alias of {owner}"
+            )
+        alias_owners[record.id] = record.id
+        for alias in record.aliases:
+            if alias in alias_owners:
+                raise AgentsCatalogError(
+                    f"duplicate alias {alias!r} for {record.id} and {alias_owners[alias]}"
+                )
+            alias_owners[alias] = record.id
+
     disk_files = list_plugin_agent_files(base)
     disk_ids = {path.stem for path in disk_files}
     catalog_ids = {record.id for record in records}
@@ -422,7 +577,10 @@ def load_agents_catalog(
             "uncatalogued agents/omg-*.md on disk: " + ", ".join(extra)
         )
     for record in records:
-        text = _read_plugin_regular_text(base, record.file)
+        if pin_files:
+            text = _read_plugin_regular_text(base, record.file)
+        else:
+            text = _read_agent_text_generation(base, record.file)
         _require_frontmatter_matches_catalog(text, record)
         if require_projections:
             rel = record.projections["antigravity"].path
@@ -452,10 +610,42 @@ def inspect_agents_catalog(root: Path | None = None) -> dict[str, Any]:
             "classification": "native_substitute",
             "error": str(exc),
             "note": (
-                "read-only plugin catalog; not routing runtime; "
-                "AG files are projections only"
+                "read-only plugin catalog; YAML source plus generated JSON; "
+                "AG files are projections only (not live AG evidence)"
             ),
         }
+    category_routing = []
+    for category in sorted(ALLOWED_CATEGORIES):
+        try:
+            category_routing.append(
+                resolve_category(category, catalog=catalog)
+            )
+        except AgentsCatalogError as exc:
+            category_routing.append(
+                {
+                    "category": category,
+                    "error": str(exc),
+                    "role_id": None,
+                    "capability_mode": None,
+                }
+            )
+    enforcement = []
+    for record in catalog.agents:
+        assert_agent_capability(record.id, record.capability_mode, catalog)
+        blocked = False
+        if record.tier in READ_ONLY_TIERS:
+            try:
+                assert_agent_capability(record.id, "read-write", catalog)
+            except AgentsCatalogError:
+                blocked = True
+        enforcement.append(
+            {
+                "id": record.id,
+                "tier": record.tier,
+                "capability_mode": record.capability_mode,
+                "read_write_blocked": blocked if record.tier in READ_ONLY_TIERS else None,
+            }
+        )
     return {
         "schema": SCHEMA,
         "ok": True,
@@ -469,12 +659,432 @@ def inspect_agents_catalog(root: Path | None = None) -> dict[str, Any]:
         "classification": "native_substitute",
         "agent_count": len(catalog.agents),
         "agents": [record.to_inspect_row() for record in catalog.agents],
+        "aliases": {
+            alias: record.id
+            for record in catalog.agents
+            for alias in record.aliases
+        },
+        "category_routing": category_routing,
+        "capability_enforcement": enforcement,
+        "yaml_source": YAML_RELATIVE,
         "note": (
-            "read-only plugin catalog; not routing runtime; "
+            "read-only plugin catalog; YAML source generates JSON; "
+            "category routing is inspectable; "
             "Antigravity agent.md files are static projections only "
             "(not an installed AG plugin, not live AG evidence)"
         ),
     }
+
+
+def lookup_agent(
+    agent_id: str, catalog: AgentsCatalog
+) -> AgentRecord | None:
+    """Resolve a catalog id or alias. Unknown names return None."""
+    token = (agent_id or "").strip().lower()
+    if not token:
+        return None
+    by_id = catalog.by_id()
+    if token in by_id:
+        return by_id[token]
+    for record in catalog.agents:
+        if token in {alias.lower() for alias in record.aliases}:
+            return record
+    return None
+
+
+def resolve_agent(agent_id: str, catalog: AgentsCatalog) -> AgentRecord:
+    """Fail-closed lookup of a catalog id or alias."""
+    record = lookup_agent(agent_id, catalog)
+    if record is None:
+        raise AgentsCatalogError(f"unknown agent {agent_id!r}")
+    return record
+
+
+def assert_agent_capability(
+    agent_id: str,
+    requested_mode: str,
+    catalog: AgentsCatalog,
+) -> AgentRecord:
+    """Fail-closed capability floor for a catalog agent (or alias).
+
+    Reviewer / verifier / planner cannot receive ``read-write``. Never
+    ``execute`` / ``all``. Unknown names raise; callers that must fail-open
+    (PreToolUse) should use :func:`lookup_agent` first.
+    """
+    record = resolve_agent(agent_id, catalog)
+    mode = (requested_mode or "").strip().replace("_", "-").lower()
+    if mode in FORBIDDEN_CAPABILITY_MODES:
+        raise AgentsCatalogError(
+            f"{record.id}: capability_mode {requested_mode!r} is forbidden "
+            "(never execute/all)"
+        )
+    if mode not in ALLOWED_CAPABILITY_MODES:
+        raise AgentsCatalogError(
+            f"{record.id}: capability_mode must be one of "
+            f"{sorted(ALLOWED_CAPABILITY_MODES)}, got {requested_mode!r}"
+        )
+    if record.tier in READ_ONLY_TIERS and mode != "read-only":
+        raise AgentsCatalogError(
+            f"{record.id}: tier {record.tier} cannot receive {mode}"
+        )
+    if record.capability_mode == "read-only" and mode == "read-write":
+        raise AgentsCatalogError(
+            f"{record.id}: catalog capability_mode=read-only cannot receive "
+            "read-write"
+        )
+    return record
+
+
+def resolve_category(
+    category: str,
+    *,
+    required_mode: str | None = None,
+    available: Iterable[str] | None = None,
+    catalog: AgentsCatalog | None = None,
+) -> dict[str, Any]:
+    """Deterministic OmO-style category routing with inspectable evidence.
+
+    Never silently selects a write agent when *required_mode* is ``read-only``
+    or omitted (all six categories default to read-only).
+    """
+    name = (category or "").strip().lower()
+    if name not in ALLOWED_CATEGORIES:
+        raise AgentsCatalogError(
+            f"unknown category {category!r}; expected one of "
+            f"{sorted(ALLOWED_CATEGORIES)}"
+        )
+    mode = None if required_mode is None else str(required_mode).strip().replace(
+        "_", "-"
+    ).lower()
+    if mode is not None:
+        if mode in FORBIDDEN_CAPABILITY_MODES:
+            raise AgentsCatalogError(
+                f"category {name}: capability_mode {required_mode!r} is forbidden"
+            )
+        if mode not in ALLOWED_CAPABILITY_MODES:
+            raise AgentsCatalogError(
+                f"category {name}: required_mode must be read-only or read-write"
+            )
+    wanted = CATEGORY_DEFAULT_MODE if mode is None else mode
+    loaded = catalog
+    if loaded is None:
+        loaded = load_agents_catalog(require_projections=False)
+    by_id = loaded.by_id()
+    if available is None:
+        present = set(by_id)
+    else:
+        present = {str(item).strip() for item in available if str(item).strip()}
+    fallbacks: list[str] = []
+    for candidate in CATEGORY_CANDIDATES[name]:
+        record = by_id.get(candidate)
+        if record is None or candidate not in present:
+            fallbacks.append(candidate)
+            continue
+        if wanted == "read-only" and record.capability_mode != "read-only":
+            fallbacks.append(candidate)
+            continue
+        if wanted == "read-write" and record.capability_mode != "read-write":
+            fallbacks.append(candidate)
+            continue
+        if record.tier in READ_ONLY_TIERS and wanted == "read-write":
+            fallbacks.append(candidate)
+            continue
+        reason = (
+            f"category {name} selected {record.id} "
+            f"(capability_mode={record.capability_mode}"
+        )
+        if fallbacks:
+            reason += f"; skipped unavailable/incompatible: {', '.join(fallbacks)}"
+        reason += ")"
+        return {
+            "category": name,
+            "role_id": record.id,
+            "profile": record.profile or name,
+            "capability_mode": record.capability_mode,
+            "reason": reason,
+            "fallbacks": list(fallbacks),
+        }
+    raise AgentsCatalogError(
+        f"category {name}: no compatible agent for required_mode={wanted!r} "
+        f"(skipped: {', '.join(fallbacks) or 'none'})"
+    )
+
+
+def _clip_handoff_text(value: str, *, limit: int) -> str:
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _clip_handoff_items(items: Sequence[Any]) -> list[str]:
+    out: list[str] = []
+    for item in items[:MAX_HANDOFF_ITEMS]:
+        clipped = _clip_handoff_text(str(item), limit=MAX_HANDOFF_ITEM_CHARS)
+        if clipped:
+            out.append(clipped)
+    return out
+
+
+def _result_schema_for(record: AgentRecord) -> str:
+    if record.tier == "reviewer":
+        return (
+            '{"verdict":"APPROVE|REQUEST_CHANGES","findings":['
+            '{"severity":"blocker|major|minor","file":"...","line":1,'
+            '"evidence":"..."}]}'
+        )
+    if record.tier == "verifier":
+        return (
+            '{"verdict":"APPROVE|REQUEST_CHANGES|FAILED","evidence":['
+            '{"criterion":"...","result":"pass|fail|untested"}]}'
+        )
+    if record.tier == "planner":
+        return (
+            '{"facts":[],"risks":[],"recommendation":"...",'
+            '"open_questions":[]}'
+        )
+    if record.tier == "orchestrator":
+        return (
+            '{"slices":[],"spawns":[],"evidence":[],"blockers":[]}'
+        )
+    return (
+        '{"summary":"...","files":[],"verification":[],"blockers":[]}'
+    )
+
+
+def render_handoff(
+    agent_id: str,
+    *,
+    task: str,
+    artifacts: Sequence[str] = (),
+    decisions: Sequence[str] = (),
+    catalog: AgentsCatalog | None = None,
+    record: AgentRecord | None = None,
+) -> str:
+    """Compact spawn prompt: mission + floors, never full leader history."""
+    loaded = record
+    if loaded is None:
+        cat = catalog or load_agents_catalog(require_projections=False)
+        loaded = resolve_agent(agent_id, cat)
+    mission = _clip_handoff_text(task, limit=MAX_HANDOFF_TASK_CHARS)
+    artifact_lines = _clip_handoff_items(artifacts)
+    decision_lines = _clip_handoff_items(decisions)
+    independence = (
+        "You cannot self-approve, self-stamp verified, or mutate "
+        "`.omg/state/` passes/verified. Parent / `omg` CLI owns gates."
+        if loaded.tier in READ_ONLY_TIERS or loaded.id == "omg-code-simplifier"
+        else "Do not stamp `.omg/state/` passes/verified; parent / `omg` CLI owns gates."
+    )
+    art = "\n".join(f"- {item}" for item in artifact_lines) or "- (none)"
+    dec = "\n".join(f"- {item}" for item in decision_lines) or "- (none)"
+    return "\n".join(
+        [
+            "## Bounded context handoff",
+            "",
+            "Do **not** paste the full leader conversation or transcript.",
+            "Ids, paths, and decisions only.",
+            "",
+            f"- Agent: `{loaded.id}`",
+            f"- capability_mode: `{loaded.capability_mode}` (never `execute`/`all`)",
+            f"- permission_mode: `{loaded.permission_mode}`",
+            f"- tier: `{loaded.tier}`",
+            f"- spawn_policy: `{loaded.spawn_policy}` (depth=1 unless parent)",
+            f"- Mission: {mission or '(parent supplies a bounded task)'}",
+            "",
+            "### Artifacts (paths only)",
+            art,
+            "",
+            "### Decisions already taken",
+            dec,
+            "",
+            "### Result schema",
+            "```json",
+            _result_schema_for(loaded),
+            "```",
+            "",
+            "### Independence",
+            independence,
+            "",
+        ]
+    )
+
+
+def catalog_document_from_records(catalog: AgentsCatalog) -> dict[str, Any]:
+    """Canonical YAML/JSON document (insertion-ordered)."""
+    agents: list[dict[str, Any]] = []
+    for record in catalog.agents:
+        row: dict[str, Any] = {
+            "id": record.id,
+            "file": record.file,
+            "capability_mode": record.capability_mode,
+            "permission_mode": record.permission_mode,
+            "tier": record.tier,
+            "spawn_policy": record.spawn_policy,
+        }
+        if record.aliases:
+            row["aliases"] = list(record.aliases)
+        if record.categories:
+            row["categories"] = list(record.categories)
+        if record.profile:
+            row["profile"] = record.profile
+        row["projections"] = {
+            "grok": {
+                "kind": record.projections["grok"].kind,
+                "path": record.projections["grok"].path,
+            },
+            "antigravity": {
+                "kind": record.projections["antigravity"].kind,
+                "path": record.projections["antigravity"].path,
+            },
+        }
+        agents.append(row)
+    return {
+        "schema": SCHEMA,
+        "kind": KIND,
+        "source": YAML_RELATIVE,
+        "note": (
+            "Single plugin-agent registry for oh-my-grok. Dual-host routing "
+            "(#131) must consume this catalog — do not add a second registry. "
+            "Not live AG evidence. Antigravity agent.md files are static "
+            "projections only."
+        ),
+        "allowed_capability_modes": ["read-only", "read-write"],
+        "forbidden_capability_modes": ["execute", "all"],
+        "agents": agents,
+    }
+
+
+def canonical_catalog_json(document: Mapping[str, Any]) -> str:
+    return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+
+
+def load_yaml_catalog_document(root: Path) -> dict[str, Any]:
+    path = yaml_catalog_path(root)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AgentsCatalogError(f"cannot read YAML catalog: {path}: {exc}") from exc
+    try:
+        raw = parse_yaml(text)
+    except CatalogYamlError as exc:
+        raise AgentsCatalogError(f"invalid YAML catalog: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise AgentsCatalogError("YAML catalog must be a mapping")
+    return raw
+
+
+def json_document_from_yaml(root: Path) -> dict[str, Any]:
+    """Parse YAML and return the canonical JSON document shape."""
+    raw = load_yaml_catalog_document(root)
+    schema = _require_str(raw.get("schema"), label="schema")
+    if schema != SCHEMA:
+        raise AgentsCatalogError(f"unsupported catalog schema {schema!r}")
+    kind = _require_str(raw.get("kind"), label="kind")
+    if kind != KIND:
+        raise AgentsCatalogError(f"catalog kind must be {KIND!r}, got {kind!r}")
+    agents_raw = raw.get("agents")
+    if not isinstance(agents_raw, list) or not agents_raw:
+        raise AgentsCatalogError("catalog.agents must be a non-empty array")
+    parsed = [_parse_agent(item, index=index) for index, item in enumerate(agents_raw)]
+    parsed.sort(key=lambda item: item.id)
+    catalog = AgentsCatalog(schema=schema, agents=tuple(parsed))
+    document = catalog_document_from_records(catalog)
+    if "note" in raw and isinstance(raw["note"], str) and raw["note"].strip():
+        document["note"] = raw["note"].strip()
+    return document
+
+
+def check_catalog_yaml(root: Path) -> list[str]:
+    """Return drift messages when YAML and generated JSON disagree."""
+    errors: list[str] = []
+    yaml_path = yaml_catalog_path(root)
+    json_path = catalog_path(root)
+    if not yaml_path.is_file():
+        errors.append(f"missing {YAML_RELATIVE}")
+        return errors
+    try:
+        expected = canonical_catalog_json(json_document_from_yaml(root))
+    except AgentsCatalogError as exc:
+        errors.append(str(exc))
+        return errors
+    if not json_path.is_file():
+        errors.append(f"missing {CATALOG_RELATIVE}")
+        return errors
+    actual = json_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if actual != expected.replace("\r\n", "\n"):
+        errors.append(f"stale {CATALOG_RELATIVE} (regenerate from {YAML_RELATIVE})")
+    return errors
+
+
+def write_catalog_json_from_yaml(root: Path) -> str:
+    """Generate ``agents/catalog.json`` from YAML. Returns the relative path."""
+    document = json_document_from_yaml(root)
+    text = canonical_catalog_json(document)
+    _atomic_write_text(root / CATALOG_RELATIVE, text)
+    return CATALOG_RELATIVE
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomic replace; POSIX uses O_NOFOLLOW and does not follow symlinks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.parent.is_symlink():
+        raise AgentsCatalogError(f"refusing symlink projection path: {path}")
+    data = text.encode("utf-8")
+    if _posix_nofollow_ready():
+        _atomic_nofollow_write(path, data)
+        return
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _atomic_nofollow_write(path: Path, data: bytes) -> None:
+    parent = path.parent
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        parent_fd = os.open(parent, flags)
+    except OSError as exc:
+        raise AgentsCatalogError(f"cannot open projection parent: {parent}") from exc
+    tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    tmp_fd = None
+    try:
+        tmp_fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=parent_fd,
+        )
+        written = 0
+        while written < len(data):
+            written += os.write(tmp_fd, data[written:])
+        os.fsync(tmp_fd)
+        os.close(tmp_fd)
+        tmp_fd = None
+        os.replace(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    except OSError as exc:
+        raise AgentsCatalogError(f"cannot write {path}: {exc}") from exc
+    finally:
+        if tmp_fd is not None:
+            os.close(tmp_fd)
+            try:
+                os.unlink(tmp_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        os.close(parent_fd)
 
 
 _FRONTMATTER_VALUE_MAX = 64
@@ -615,10 +1225,17 @@ def render_antigravity_agent_md(record: AgentRecord, source_text: str) -> str:
             "not live AG evidence, and does not mean `agy` install or",
             "`/agents` discovery works. Dual-host routing (#131) is not this file.",
             "",
-            f"- Catalog: `{CATALOG_RELATIVE}`",
+            f"- Catalog: `{CATALOG_RELATIVE}` (generated from `{YAML_RELATIVE}`)",
             f"- capability_mode: `{record.capability_mode}` (never `execute`/`all`)",
             f"- spawn_policy: `{record.spawn_policy}` (depth=1 leaf vs parent)",
             "",
+            render_handoff(
+                record.id,
+                task="(parent supplies a bounded mission; do not paste full leader history)",
+                artifacts=(),
+                decisions=(),
+                record=record,
+            ),
             body,
             "",
         ]
@@ -632,7 +1249,9 @@ def render_antigravity_projections(
     catalog: AgentsCatalog | None = None,
 ) -> dict[str, str]:
     """Map relative projection paths to rendered markdown."""
-    loaded = catalog or load_agents_catalog(root, require_projections=False)
+    loaded = catalog or load_agents_catalog(
+        root, require_projections=False, pin_files=False
+    )
     out: dict[str, str] = {}
     for record in loaded.agents:
         source = root / record.file
@@ -648,17 +1267,45 @@ def render_antigravity_projections(
 def write_antigravity_projections(root: Path) -> list[str]:
     """Write committed AG projections. Returns relative paths written."""
     rendered = render_antigravity_projections(root)
+    readme_rel = f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md"
+    rendered[readme_rel] = _projection_readme()
     written: list[str] = []
     for rel, text in rendered.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="\n")
+        _atomic_write_text(path, text.replace("\r\n", "\n"))
         written.append(rel)
-    readme = root / ANTIGRAVITY_PROJECTION_ROOT / "README.md"
-    readme.write_text(_projection_readme(), encoding="utf-8", newline="\n")
-    written.append(f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md")
+    _prune_obsolete_projections(root, set(rendered))
     written.sort()
     return written
+
+
+def _prune_obsolete_projections(root: Path, expected: set[str]) -> None:
+    agents_root = root / ANTIGRAVITY_PROJECTION_ROOT
+    if not agents_root.is_dir():
+        return
+    for path in list(agents_root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel not in expected:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+    dirs = sorted(
+        (p for p in agents_root.rglob("*") if p.is_dir()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    )
+    for directory in dirs:
+        try:
+            next(directory.iterdir())
+        except StopIteration:
+            try:
+                directory.rmdir()
+            except OSError:
+                continue
 
 
 def check_antigravity_projections(root: Path) -> list[str]:
@@ -702,41 +1349,58 @@ These files are **not**:
 - proof that `agy` install or `/agents` discovery works
 - dual-host routing runtime ([#131](https://github.com/ImL1s/oh-my-grok/issues/131))
 
-They are generated from `agents/catalog.json` plus `agents/omg-*.md` by
-`scripts/generate_antigravity_agent_projections.py`. Frontmatter maps OMG
-spawn/capability floors onto documented AG keys (`mainAgent`, `subagent`,
+They are generated from `agents/catalog.yaml` → `agents/catalog.json` plus
+`agents/omg-*.md` by `scripts/generate_agents_catalog.py` (which also writes
+these projections). `scripts/generate_antigravity_agent_projections.py`
+remains as a projection-only helper. Frontmatter maps OMG spawn/capability
+floors onto documented AG keys (`mainAgent`, `subagent`,
 `commandExecutionPolicy`). OMG does **not** claim Antigravity honors those
-fields at runtime.
+fields at runtime. Live AG smoke is **not** claimed.
 
 Regenerate:
 
 ```bash
-python scripts/generate_antigravity_agent_projections.py
-python scripts/generate_antigravity_agent_projections.py --check
+python scripts/generate_agents_catalog.py
+python scripts/generate_agents_catalog.py --check
 ```
 """
 
 
 __all__ = [
     "ALLOWED_CAPABILITY_MODES",
+    "ALLOWED_CATEGORIES",
     "ANTIGRAVITY_PROJECTION_ROOT",
     "AgentRecord",
     "AgentsCatalog",
     "AgentsCatalogError",
     "CATALOG_RELATIVE",
+    "CATEGORY_CANDIDATES",
     "FORBIDDEN_CAPABILITY_MODES",
+    "HOST_NATIVE_PROFILES",
     "HostProjection",
     "KIND",
+    "READ_ONLY_TIERS",
     "SCHEMA",
+    "YAML_RELATIVE",
     "antigravity_projection_relative",
+    "assert_agent_capability",
+    "canonical_catalog_json",
     "catalog_path",
     "check_antigravity_projections",
+    "check_catalog_yaml",
     "inspect_agents_catalog",
+    "json_document_from_yaml",
     "list_plugin_agent_files",
     "load_agents_catalog",
+    "lookup_agent",
     "plugin_root",
     "render_antigravity_agent_md",
     "render_antigravity_projections",
+    "render_handoff",
+    "resolve_agent",
+    "resolve_category",
     "strip_markdown_frontmatter",
     "write_antigravity_projections",
+    "write_catalog_json_from_yaml",
+    "yaml_catalog_path",
 ]

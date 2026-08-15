@@ -29,7 +29,7 @@ from functools import lru_cache
 from typing import Any
 
 _OMG_STANDALONE_GENERATED = True
-_OMG_GENERATED_FROM_SHA = "a6539c6a47803cb78855a71246f854d90ab5abaa4fe57a34a333158b1570dea6"
+_OMG_GENERATED_FROM_SHA = "c3a2adc8fd1bf52acecb650104fba50df2a88d45d29d26c5e2c3b9af8a9e312f"
 _OMG_PLUGIN_VERSION = "0.8.0"
 
 
@@ -2779,8 +2779,24 @@ _READ_ONLY_TYPES = frozenset(
     {
         "explore",
         "plan",
+        "omg-analyst",
+        "omg-architect",
+        "omg-code-reviewer",
         "omg-critic",
+        "omg-document-specialist",
+        "omg-explore",
+        "omg-planner",
+        "omg-product-manager",
+        "omg-scientist",
+        "omg-security-reviewer",
+        "omg-tracer",
         "omg-verifier",
+        "omg-vision",
+        "librarian",
+        "style-reviewer",
+        "quality-reviewer",
+        "api-reviewer",
+        "security-reviewer-high",
         "oh-my-claudecode:explore",
         "oh-my-claudecode:code-reviewer",
         "oh-my-claudecode:security-reviewer",
@@ -2792,6 +2808,17 @@ _READ_ONLY_TYPES = frozenset(
 _READ_WRITE_TYPES = frozenset(
     {
         "omg-executor",
+        "omg-orchestrator",
+        "omg-debugger",
+        "omg-designer",
+        "omg-writer",
+        "omg-test-engineer",
+        "omg-qa-tester",
+        "omg-build-fixer",
+        "omg-git-master",
+        "omg-code-simplifier",
+        "hephaestus",
+        "sisyphus",
         "general-purpose",  # default implementer path in oh-my-grok skills
         "oh-my-claudecode:executor",
     }

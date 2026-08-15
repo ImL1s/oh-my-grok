@@ -34,12 +34,18 @@ _ROLES: Final[dict[str, RoleMeta]] = {
     "code-reviewer": RoleMeta(posture="read-only", role_class="reviewer"),
     "critic": RoleMeta(posture="read-only", role_class="reviewer"),
     "security-reviewer": RoleMeta(posture="read-only", role_class="reviewer"),
+    "vision": RoleMeta(posture="read-only", role_class="reviewer"),
     # read-only + verifier
     "verifier": RoleMeta(posture="read-only", role_class="verifier"),
-    # read-only + planner / analyst / architect
+    # read-only + planner / analyst / architect / explore family
     "analyst": RoleMeta(posture="read-only", role_class="planner"),
     "architect": RoleMeta(posture="read-only", role_class="planner"),
     "planner": RoleMeta(posture="read-only", role_class="planner"),
+    "explore": RoleMeta(posture="read-only", role_class="planner"),
+    "tracer": RoleMeta(posture="read-only", role_class="planner"),
+    "document-specialist": RoleMeta(posture="read-only", role_class="planner"),
+    "scientist": RoleMeta(posture="read-only", role_class="planner"),
+    "product-manager": RoleMeta(posture="read-only", role_class="planner"),
     # read-write + executor
     "executor": RoleMeta(posture="read-write", role_class="executor"),
     "debugger": RoleMeta(posture="read-write", role_class="executor"),
@@ -47,6 +53,9 @@ _ROLES: Final[dict[str, RoleMeta]] = {
     "writer": RoleMeta(posture="read-write", role_class="executor"),
     "test-engineer": RoleMeta(posture="read-write", role_class="executor"),
     "qa-tester": RoleMeta(posture="read-write", role_class="executor"),
+    "build-fixer": RoleMeta(posture="read-write", role_class="executor"),
+    "git-master": RoleMeta(posture="read-write", role_class="executor"),
+    "code-simplifier": RoleMeta(posture="read-write", role_class="executor"),
     # orchestrator (pinned)
     "orchestrator": RoleMeta(posture="read-write", role_class="orchestrator"),
 }
