@@ -286,19 +286,20 @@ def receipt_for_policy(
     want_digest = str(policy_digest or "").strip()
     matches: list[dict[str, Any]] = []
     for row in doc.receipts:
-        consumer = (
-            _nonempty_string(row.get("consumerPolicyId") or row.get("consumer_policy_id"))
-            or ""
+        consumer = _consistent_string_alias(row, "consumerPolicyId", "consumer_policy_id")
+        if consumer is False:
+            continue
+        consumer = consumer or ""
+        row_digest = _consistent_string_alias(
+            row, "consumerPolicyDigest", "consumer_policy_digest"
         )
-        row_digest = (
-            _nonempty_string(
-                row.get("consumerPolicyDigest") or row.get("consumer_policy_digest")
-            )
-            or ""
-        )
-        row_agent = (
-            _nonempty_string(row.get("agent_id") or row.get("agentId")) or ""
-        )
+        if row_digest is False:
+            continue
+        row_digest = row_digest or ""
+        row_agent = _consistent_string_alias(row, "agent_id", "agentId")
+        if row_agent is False:
+            continue
+        row_agent = row_agent or ""
         if consumer and consumer != policy_id:
             continue
         if agent_id and row_agent and row_agent != agent_id:
@@ -397,6 +398,24 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
 
 def _normalized_secret_key(key: str) -> str:
     return key.strip().lower().replace("-", "_")
+
+
+def _consistent_string_alias(row: Mapping[str, Any], *keys: str) -> str | None | bool:
+    """Return the agreed nonempty string, ``None`` if absent, or ``False`` if aliases disagree."""
+    values: list[str] = []
+    for key in keys:
+        if key not in row:
+            continue
+        text = _nonempty_string(row.get(key))
+        if text is None:
+            return False
+        values.append(text)
+    unique = set(values)
+    if not unique:
+        return None
+    if len(unique) != 1:
+        return False
+    return values[0]
 
 
 def _nonempty_string(value: Any) -> str | None:

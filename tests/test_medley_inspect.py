@@ -603,6 +603,32 @@ def test_contradictory_receipt_identity_is_not_overlaid(tmp_path: Path) -> None:
     )
 
 
+def test_conflicting_policy_digest_aliases_are_not_overlaid(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "digest-alias.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "consumer_policy_id": "verifier.default",
+                "consumerPolicyDigest": "c" * 64,
+                "consumer_policy_digest": "d" * 64,
+                "selected_catalog_id": "review-fallback-example",
+                "route_digest": "b" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+    _snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert (
+        receipt_for_policy(
+            doc,
+            policy_id="verifier.default",
+            policy_digest="c" * 64,
+        )
+        is None
+    )
+
+
 def test_acct_prose_is_not_a_secret(tmp_path: Path) -> None:
     inspect = _write_inspect(
         tmp_path / "acct-prose.json",
