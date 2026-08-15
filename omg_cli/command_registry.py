@@ -73,7 +73,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     ),
     CommandSpec(
         "visual",
-        "visual contract compare (scored/blocked; #75)",
+        "visual compare/capture/verdict/ralph (scored/blocked; #75)",
         "inspect",
     ),
     CommandSpec(

@@ -525,7 +525,7 @@ find_references/symbols/diagnostics）、
 | `omg agents list\|explain` | Dual-host agent/model 政策檢視（#131）與 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用顯式 inherit；Medley caps 為 unsupported（不是安裝失敗）。不做付費探測。Medley TUI 仍為 #290。 |
 | `omg skill list\|show\|resolve\|resources` | 唯讀 skill 目錄檢視（#70）。永不寫 `verified`。宿主名 `plan`/`goal` 只作為別名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探測 + 無頭執行（#67-A/B）：能力信封、doctor、與 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切換（#67-C）；Team 窗格經 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣稱 `live_call_ready`。 |
-| `omg visual compare` | Visual Contract V1 `compare()` 包裝（#75）：讀取 `--input` JSON，發出 scored/blocked 信封。呼叫端自行比較 `aggregate` 與 `threshold`。不寫入 `passes`/`verified`，不解圖像，不呼叫 agent。Capture、overlay/diff、獨立 reviewer、visual-Ralph 仍屬後續 #75。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
+| `omg visual compare\|capture\|verdict\|ralph` | Visual Contract V1（#75）。`compare` 包裝 `compare()`（`--input` JSON；scored/blocked）。`capture` 使用 `capture.command`，否則 `OMG_VISUAL_CAPTURE`，否則 **blocked**（不是假通過；不要求 Playwright）。`verdict` 包裝 `compare()`，在 `.omg/artifacts/visual/<run_id>/` 寫入描述符／findings／分數歷史；overlay 僅為描述符（不解像素）；`reviewer_status` 要求獨立唯讀 reviewer（否則 `E_VISUAL_REVIEWER`）。`ralph` 為有界 capture/verdict/repair-prompt 迴圈（不 spawn agent）。永不寫入 `passes`/`verified`。本切片無 live 截圖 smoke、無 AG vision 模型。見 [visual-contract-v1.md](./visual-contract-v1.md)。 |
 | `omg tools doctor\|serve\|lsp\|ast\|codegraph\|research` | OMG 自有 sidecar（#73）：語意 LSP / AST-grep / CodeGraph（`omg tools codegraph index` 玩具級 import/symbol 索引，**不是** SCIP）/ 可選網路研究。**不是** Grok 原生 LSP（`omg lsp` 仍為 host-owned）。**不是** live Antigravity 證據。`omg mcp-server` 仍禁止 `lsp.*`。見 [tools-sidecar.md](./tools-sidecar.md)。 |
 | `omg edit plan\|apply` | Hash-anchored 編輯 CLI（#76）：`plan` 唯讀；`apply` 走 `apply_hash_edit`（再讀、再規劃、原子替換）。不寫 `passes`/`verified`。不宣稱 `omo.edit.hash_anchored` 宿主對等。見 `docs/hash-edit.md`。 |
 
@@ -591,7 +591,7 @@ Grok 內建（`explore`、`plan`、`general-purpose`）是政策 profiles，不�
 | omg-cancel | `cancel` | 否 |
 | omg-wiki / hud / lsp | wiki / hud / lsp | 否 |
 | omg-skill | `skill list\|show\|resolve\|resources` | **永不** |
-| omg-visual-verdict / visual-ralph | `visual compare` | **永不** |
+| omg-visual-verdict / visual-ralph | `visual compare\|capture\|verdict\|ralph` | **永不** |
 | omg-hyperplan / security-research | `team hyperplan` / `team security-research` | **永不** |
 | omg-mcp-setup | `mcp-install` | **永不** |
 | omg-configure-notifications | `notify *` | **永不** |

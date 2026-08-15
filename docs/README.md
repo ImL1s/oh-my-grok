@@ -16,7 +16,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | Isolation honesty (capability_mode, allowlist, fail-open hooks) |
 | [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) · [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) | EN **canonical**; zh / zh-TW are projections — do not fork the matrix |
 | [hash-edit.md](./hash-edit.md) | Hash-anchored edit V1 + `omg edit plan\|apply` (supplements host edits; does not hash-anchor unobserved host edits; no `omo.edit.hash_anchored` claim) |
-| [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1 (pure comparison + `omg visual compare`; no approved/passes/verified; no image I/O) |
+| [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1 (pure `compare()` + `omg visual compare\|capture\|verdict\|ralph`; no approved/passes/verified; no pixel decode) |
 | [hooks-lifecycle.md](./hooks-lifecycle.md) | Lifecycle registry (#72): Grok PreToolUse/Stop vs passive hooks; no UserPromptSubmit inject |
 | [tools-sidecar.md](./tools-sidecar.md) | Tools sidecar (#73): `omg tools` LSP/AST-grep/CodeGraph/research; not Grok-native LSP |
 | [install-manifest.md](./install-manifest.md) | Install manifest (#77): `omg setup --runtime/--scope`; file copy is not live verification |

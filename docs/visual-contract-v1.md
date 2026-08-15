@@ -3,10 +3,16 @@
 Pure, copy-safe comparison contract for Issue #75.
 
 Authoritative implementation: `omg_cli/contracts/visual_contract.py`.
-Public CLI: `omg visual compare --input <json>` (wraps `compare()` only).
+Public CLI: `omg visual compare|capture|verdict|ralph`.
+
+`compare` wraps `compare()` only. `capture` / `verdict` / `ralph` live in
+`omg_cli/visual_runtime.py` and write descriptors under
+`.omg/artifacts/visual/<run_id>/`.
 
 This module does **not** decode images, talk to agents or providers, write
 `.omg/state`, or set OMG `verified`. A visual score is evidence only.
+Overlay artifacts are descriptor-only (masks + byte-identity); pixel diffs
+are not computed.
 
 ## Honesty
 
@@ -147,7 +153,7 @@ or network, and adds no third-party dependency.
   `canonical_json_bytes` / `sha256_hex`
 - `VisualContractError`
 
-## CLI (`omg visual compare`)
+## CLI (`omg visual compare|capture|verdict|ralph`)
 
 `omg visual compare --input <json>` reads a comparison document and wraps
 `compare()`. The CLI document is size-bounded (1 MiB) before JSON load.
@@ -166,8 +172,19 @@ The nested `result` object is the contract output. The CLI does not decode
 images, talk to agents or providers, or write `passes` / `verified`.
 `aggregate < threshold` is still `status: scored` and exit `0`.
 
-## Out of scope (later #75 PRs)
+### Capture / verdict / Ralph
 
-Capture adapters, overlay/diff artifacts, independent reviewer agents,
-screenshot Ralph loops, later visual subcommands beyond `compare`,
-skills, and any write to `passes` / `verified`.
+| Command | Contract |
+| --- | --- |
+| `omg visual capture --config visual.yaml --json` | Run `capture.command` argv, else `OMG_VISUAL_CAPTURE`, else **blocked** (not a fake pass). Playwright is not required. Records command/tool, target, viewport/DPR/platform/theme/locale, readiness, timestamp, content hash, exit/error. Width/height are declared metadata — files are hashed, not decoded. |
+| `omg visual verdict --reference ref.png --actual current.png --threshold 90 --json` | Wrap `compare()` plus artifacts under `.omg/artifacts/visual/<run_id>/`. `--threshold` is percent `0..100` (90 → score 9000). Independent read-only reviewer required (`reviewer_status`, never `verified`). `E_VISUAL_REVIEWER` if editor==reviewer or reviewer is read-write. |
+| `omg visual ralph --config visual.yaml --max-iter 5 --json` | Bounded freeze → capture/actual → verdict → repair-prompt artifact → recapture loop. Stops on threshold, blocked, or budget. Does not spawn agents or edit UI. |
+
+Config is JSON or a restricted YAML subset (PyYAML is not a dependency; JSON is valid YAML 1.2). Capture precedence is always printed by `omg doctor` (`visual capture adapter`).
+
+## Remaining gaps (#75 does not close)
+
+Plugin `visual-verdict` / `visual-ralph` SKILL.md playbooks, live screenshot
+smoke, and an Antigravity vision-model reviewer remain unproven. Pixel
+overlay/diff images are not produced (descriptor-only). Any write to
+`passes` / `verified` stays out of scope.

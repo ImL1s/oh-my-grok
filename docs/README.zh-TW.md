@@ -22,7 +22,7 @@ Grok Build plugin + `omg` CLI 的使用者文件。
 | [security-model.md](./security-model.md) · [security-model.zh.md](./security-model.zh.md) · [security-model.zh-TW.md](./security-model.zh-TW.md) | 隔離誠實說明 |
 | [architecture/agent-model-routing.zh-TW.md](./architecture/agent-model-routing.zh-TW.md) · [architecture/agent-model-routing.md](./architecture/agent-model-routing.md) · [architecture/agent-model-routing.zh.md](./architecture/agent-model-routing.zh.md) | 繁中**投影**；英文為 **canonical**；請勿另維一份 matrix |
 | [hash-edit.md](./hash-edit.md) | Hash-anchored 編輯 V1 + `omg edit plan\|apply`（補充宿主編輯；不把未觀測宿主編輯當成 hash-anchored；不宣稱 `omo.edit.hash_anchored`；英文） |
-| [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1（純比較 + `omg visual compare`；無 approved/passes/verified；無圖像 I/O；英文） |
+| [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1（純 `compare()` + `omg visual compare\|capture\|verdict\|ralph`；無 approved/passes/verified；不解像素；英文） |
 | [hooks-lifecycle.md](./hooks-lifecycle.md) | 生命週期登錄表（#72；英文）：Grok PreToolUse/Stop 可攔截；SessionStart 被動；不注入 UserPromptSubmit |
 | [tools-sidecar.md](./tools-sidecar.md) | Tools sidecar（#73；英文）：`omg tools`；不是 Grok 原生 LSP |
 | [install-manifest.md](./install-manifest.md) | 安裝清單（#77；英文）：`--runtime/--scope`；檔案複製不是 live 驗證 |

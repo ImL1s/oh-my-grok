@@ -31,6 +31,9 @@ Each command family must document whether empty/missing state is exit `0` or `1`
 | `omg team start --plan-only` | plan JSON printed; no mutation | parse/plan errors | missing `--tasks-json` |
 | `omg team start` (live) | `startup_status=running` | `failed_start`/`degraded`/`blocked_start` | missing required flags |
 | `omg visual compare` | `compare()` returned `scored` or `blocked` | — | missing `--input` / `E_VISUAL_INPUT` / `E_VISUAL_CONTRACT` |
+| `omg visual capture` | captured or blocked (no driver → blocked, not a fake pass) | — | missing `--config` / `E_VISUAL_PATH` / `E_VISUAL_INPUT` |
+| `omg visual verdict` | scored or blocked envelope with `reviewer_status` | — | missing images / `E_VISUAL_REVIEWER` / `E_VISUAL_PATH` / `E_VISUAL_METADATA` |
+| `omg visual ralph` | loop finished (threshold_met / blocked / budget) | — | missing `--config` / `E_VISUAL_REVIEWER` / `E_VISUAL_PATH` |
 
 ---
 
