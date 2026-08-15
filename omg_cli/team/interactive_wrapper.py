@@ -193,8 +193,10 @@ def child_waiting_on_stdin(pid: int, expected_tty: str) -> bool:
             nr, arg0 = _parse_syscall_line(raw)
             if nr is None:
                 continue
-            if nr in read_set and arg0 == 0:
-                return True
+            if nr in read_set:
+                if arg0 == 0:
+                    return True
+                continue
             if nr in wait_set:
                 # poll/select/epoll: require S-state AND TUI input mode.
                 # Arg0 is a pointer/epfd, not fd 0; sleeping in poll is not

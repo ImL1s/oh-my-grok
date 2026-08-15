@@ -1064,6 +1064,25 @@ def test_child_waiting_on_stdin_read_fd0_does_not_need_raw(
     assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is True
 
 
+def test_child_waiting_on_stdin_read_non_fd0_is_not_stdin_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    syscall = tmp_path / "syscall"
+    syscall.write_text(
+        "0 0x3 0x7fff0000 0x400 0 0 0 0x7fff1000 0x401000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: True)
+    monkeypatch.setattr(wrap, "_proc_fd0_target", lambda _pid: "/dev/pts/3")
+    monkeypatch.setattr(wrap, "_iter_task_syscall_paths", lambda _pid: [syscall])
+    monkeypatch.setattr(wrap, "_proc_state_sleeping", lambda _pid: True)
+    monkeypatch.setattr(wrap, "_machine", lambda: "x86_64")
+    monkeypatch.setattr(wrap, "_tty_in_raw_or_noncanonical", lambda: True)
+    assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is False
+
+
 def test_child_waiting_on_stdin_zombie_ignores_leftover_raw_tty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

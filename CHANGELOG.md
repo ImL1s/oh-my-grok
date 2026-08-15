@@ -26,8 +26,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   spawn-only false-green. poll/select/epoll sleep is not stdin-wait unless
   the shared TTY is already raw/noncanonical; zombies are not live.
   aarch64 stdin-wait uses `epoll_pwait` 22 / `epoll_pwait2` 441 (not the
-  x86_64 232/281 numbers). Wrapper timeout signals the child **process group**
-  (SIGTERM then SIGKILL) with bounded WNOHANG reaps. Refs #147 (does not close).
+  x86_64 232/281 numbers). Read-family syscalls only count as stdin-wait when
+  `arg0 == 0` (they do not fall through to the poll/raw-TTY branch). Wrapper
+  timeout signals the child **process group** (SIGTERM then SIGKILL) with
+  bounded WNOHANG reaps. Refs #147 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records
