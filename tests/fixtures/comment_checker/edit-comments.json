@@ -1,0 +1,5 @@
+{
+  "banned_patterns": ["DO NOT SHIP"],
+  "suppress": [{"path": "vendor_like.py", "rule": "ai_meta"}],
+  "ignore_paths": ["ignored_slop.py"]
+}

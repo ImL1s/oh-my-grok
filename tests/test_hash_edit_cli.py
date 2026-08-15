@@ -102,6 +102,10 @@ def test_parser_wires_edit_handlers() -> None:
     ns = parser.parse_args(["edit", "apply", "--input", "x.json"])
     assert ns.func is edit_cmds.cmd_edit
     assert ns.edit_action == "apply"
+    ns = parser.parse_args(["edit", "comments", "--paths", "a.py"])
+    assert ns.edit_action == "comments"
+    ns = parser.parse_args(["edit", "simplify", "--paths", "a.py", "--enable"])
+    assert ns.edit_action == "simplify"
 
 
 @_SKIP_PLAN
