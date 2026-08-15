@@ -1016,4 +1016,40 @@ def redact_value(value: Any, *, _key: object | None = None) -> Any:
     return redact_text(str(value))
 
 
-__all__ = ["REDACTED", "is_sensitive_key", "redact_text", "redact_value"]
+def redact_argv(argv: Any) -> Any:
+    """Redact argv, including the value that follows a sensitive flag.
+
+    ``redact_value`` walks list items independently, so
+    ``["tool", "--token", "supersecret"]`` would otherwise persist the secret.
+    Inline ``--token=supersecret`` is handled by ``redact_text``.
+    """
+
+    if not isinstance(argv, (list, tuple)):
+        return redact_value(argv)
+    out: list[Any] = []
+    hide_next = False
+    for item in argv:
+        if hide_next:
+            out.append(REDACTED)
+            hide_next = False
+            continue
+        if isinstance(item, str):
+            out.append(redact_text(item))
+            if item.startswith("-"):
+                flag, sep, _inline = item.partition("=")
+                if not sep:
+                    name = flag.lstrip("-")
+                    if name and is_sensitive_key(name):
+                        hide_next = True
+            continue
+        out.append(redact_value(item))
+    return out
+
+
+__all__ = [
+    "REDACTED",
+    "is_sensitive_key",
+    "redact_argv",
+    "redact_text",
+    "redact_value",
+]

@@ -34,7 +34,7 @@ from omg_cli.contracts.visual_contract import (
     compare,
     validate_image_descriptor,
 )
-from omg_cli.redaction import redact_value
+from omg_cli.redaction import redact_argv, redact_text
 
 SCHEMA_VERSION = 1
 CAPTURE_RESULT_KIND = "omg.visual.capture_result"
@@ -48,6 +48,7 @@ ENV_CAPTURE = "OMG_VISUAL_CAPTURE"
 ENV_OUTPUT = "OMG_VISUAL_OUTPUT"
 ENV_FAKE_SOURCE = "OMG_VISUAL_FAKE_SOURCE"
 ARTIFACT_DIR = ".omg/artifacts/visual"
+MAX_CAPTURE_ERROR_CHARS = 4096
 MAX_CONFIG_BYTES = 256 * 1024
 CAPTURE_TIMEOUT_SEC = 60
 RUN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -659,6 +660,15 @@ def _require_hw(spec: Mapping[str, Any], config: Mapping[str, Any], *, width: in
     return w, h
 
 
+def _redact_capture_error(raw: str | None) -> str | None:
+    if not raw:
+        return raw
+    text = redact_text(str(raw))
+    if len(text) > MAX_CAPTURE_ERROR_CHARS:
+        return text[:MAX_CAPTURE_ERROR_CHARS] + "…"
+    return text
+
+
 def execute_capture_command(
     argv: Sequence[str],
     *,
@@ -692,7 +702,7 @@ def execute_capture_command(
     except FileNotFoundError as exc:
         return {
             "exit_code": 127,
-            "error": f"capture executable not found: {exc}",
+            "error": _redact_capture_error(f"capture executable not found: {exc}"),
             "status": "blocked",
         }
     except subprocess.TimeoutExpired:
@@ -704,10 +714,10 @@ def execute_capture_command(
     except OSError as exc:
         return {
             "exit_code": 1,
-            "error": f"capture failed to start: {exc}",
+            "error": _redact_capture_error(f"capture failed to start: {exc}"),
             "status": "blocked",
         }
-    err = (proc.stderr or "").strip()
+    err = _redact_capture_error((proc.stderr or "").strip())
     if proc.returncode != 0:
         return {
             "exit_code": int(proc.returncode),
@@ -745,7 +755,7 @@ def run_capture(
         "run_id": rid,
         "status": "blocked",
         "source": diagnosis["source"],
-        "command": redact_value(diagnosis.get("command")),
+        "command": redact_argv(diagnosis.get("command")),
         "tool": diagnosis.get("tool"),
         "target": target,
         "readiness": readiness or "unspecified",
@@ -782,7 +792,7 @@ def run_capture(
         extra_env=extra_env,
     )
     record["exit_code"] = executed.get("exit_code")
-    record["error"] = executed.get("error")
+    record["error"] = _redact_capture_error(executed.get("error"))
     if executed.get("status") != "captured" or not output.is_file():
         record["status"] = "blocked"
         record["block_code"] = "capture_failed"
@@ -805,7 +815,7 @@ def run_capture(
     except VisualRuntimeError as exc:
         record["status"] = "blocked"
         record["block_code"] = "capture_metadata"
-        record["error"] = str(exc)
+        record["error"] = _redact_capture_error(str(exc))
     write_json(run_dir / "capture.json", record)
     _write_manifest(root, rid, command="visual.capture", extra={"capture": record})
     return record

@@ -760,6 +760,39 @@ def test_capture_redacts_command_secrets(tmp_path: Path, capsys) -> None:
     assert secret not in capture_json.read_text(encoding="utf-8")
 
 
+def test_capture_redacts_split_flag_and_stderr(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    secret = "supersecret-split-token"
+    fail_script = tmp_path / "fail_capture.py"
+    fail_script.write_text(
+        "import sys\n"
+        f"sys.stderr.write('token={secret}\\n')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    config = _compat_cfg(
+        capture={
+            "command": [sys.executable, str(fail_script), "--token", secret],
+            "target": "about:blank",
+            "readiness": "explicit",
+        }
+    )
+    cfg = _write_config(tmp_path, config)
+    rc = main(_argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "redact2"))
+    assert rc == 0
+    payload = _out(capsys)
+    dumped = json.dumps(payload)
+    assert secret not in dumped
+    capture_json = tmp_path / ".omg" / "artifacts" / "visual" / "redact2" / "capture.json"
+    body = capture_json.read_text(encoding="utf-8")
+    assert secret not in body
+    command = payload["result"]["command"]
+    assert secret not in command
+    assert command[command.index("--token") + 1] == "[REDACTED]" or (
+        command[command.index("--token") + 1] != secret
+    )
+
+
 def test_verdict_missing_image_is_path_error(tmp_path: Path, capsys) -> None:
     _seed(tmp_path)
     cfg = _write_config(tmp_path, _compat_cfg())
