@@ -25,7 +25,8 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `state` | run | active run status |
 | `cancel` | run | abort active run |
 | `resume` | run | print / clear RESUME.md |
-| `session` | run | session recovery helpers |
+| `session` | run | host-session argv plus search/replay (#74) |
+| `trace` | run | read-only lifecycle event timeline (#74) |
 | `recover` | run | bounded recovery |
 | `memory` | memory | project memory |
 | `tracker` | memory | lifecycle tracker |

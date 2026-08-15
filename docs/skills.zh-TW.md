@@ -512,9 +512,10 @@ find_references/symbols/diagnostics）、
 
 | 指令 | Contract |
 |---|---|
-| `omg session allocate\|route` | 精確 create/resume/continue/fork argv；child UUID 不可重用。 |
+| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history` | Host-session argv，加上已脫敏的 search/friction/replay/observatory/retention；AG history 為唯讀 unsupported stub。Replay 永不重放命令。Refs #74。 |
+| `omg trace timeline` | 唯讀、有界的 lifecycle timeline（`--run` / `--session`）。永不列印原始 prompt。Refs #74。 |
 | `omg recover` | 不可變、受限 JSONL suffix；部分恢復保留 broken-chain/未知紀錄警告。 |
-| `omg memory put\|search\|show\|export\|import\|rescan` | Redacted、確定性的專案 facts。 |
+| `omg memory put\|search\|show\|export\|import\|rescan\|layers` | Redacted、確定性的專案 facts，外加唯讀 memory-layer 目錄（不會合併成一份 unbounded memory.json）。 |
 | `omg tracker status\|project\|reconcile` | Passive、generation-fenced lifecycle projection。 |
 | `omg compact create\|show\|render` | Lossless guidance checkpoint / restore。 |
 | `omg notify status\|send\|process` | 只出站、非權威 delivery queue。 |

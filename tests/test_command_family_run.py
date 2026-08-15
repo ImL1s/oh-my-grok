@@ -14,7 +14,7 @@ from omg_cli.main import (
 )
 
 
-RUN_CMDS = ("state", "cancel", "resume", "session", "recover")
+RUN_CMDS = ("state", "cancel", "resume", "session", "trace", "recover")
 
 
 def test_main_reexports_run_handlers() -> None:
@@ -34,6 +34,7 @@ def test_parser_wires_run_handlers() -> None:
         "cancel": ["cancel"],
         "resume": ["resume", "--no-write"],
         "session": ["session", "allocate"],
+        "trace": ["trace", "timeline"],
         "recover": ["recover", "/tmp/x"],
     }
     for name in RUN_CMDS:
