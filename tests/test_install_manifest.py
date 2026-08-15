@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -11,12 +12,18 @@ import pytest
 
 from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
 from omg_cli.install_manifest import (
+    EXPECTED_IDS_BY_RUNTIME_SCOPE,
+    OPTIONAL_ARTIFACT_IDS,
+    RUNTIMES,
+    SCOPES,
     InstallManifestError,
     apply_manifest,
+    assert_expected_artifact_ids,
     build_manifest,
     classify_auth,
     classify_bytes,
     classify_path,
+    desired_artifacts,
     inspect_install_manifest,
     refuse_home_project,
     rollback_interrupted,
@@ -62,7 +69,8 @@ def test_preserve_user_owned_without_force(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload.get("drift") == []
     assert payload.get("enabled") is False
-    assert payload.get("installed") is False
+    assert payload.get("installed") is True
+    assert "project.ag.projection" not in (payload.get("enabled_runtime") or [])
 
 
 def test_force_replaces_user_owned(tmp_path: Path) -> None:
@@ -171,6 +179,9 @@ def test_inspect_manifest_unverified(tmp_path: Path) -> None:
     assert payload["observed"] is False
     assert payload["healthy"] is False
     assert payload["runtime"] == "antigravity"
+    assert payload.get("enabled") is True
+    assert payload.get("loadable") is True
+    assert "project.ag.projection" in (payload.get("enabled_runtime") or [])
 
 
 def test_setup_cli_flags_exist() -> None:
@@ -364,6 +375,7 @@ def test_failed_commit_rolls_back_manifest(
     assert dest.exists() is False
     projection = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
     assert projection.exists() is False
+    assert (tmp_path / ".gitignore").exists() is False
 
 
 def test_claimed_symlink_is_drift(tmp_path: Path) -> None:
@@ -473,6 +485,29 @@ def test_refuses_symlinked_omg_parent(tmp_path: Path) -> None:
             plugin=ROOT,
         )
     assert not (outside / "projections").exists()
+
+
+def test_refuses_symlinked_omg_artifacts(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".omg").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (project / ".omg" / "artifacts").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    if os.name != "posix":
+        pytest.skip("confined mkdir is POSIX-only")
+    with pytest.raises(InstallManifestError, match="E_PATH"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=project,
+            here=True,
+            plugin=ROOT,
+        )
+    assert list(outside.iterdir()) == []
 
 
 def test_oversize_file_not_overwritten(
@@ -665,3 +700,381 @@ def test_rollback_uses_fallback_when_marker_malformed(tmp_path: Path) -> None:
     )
     assert dest.exists() is False
     assert out["rolled_back"] is True
+
+
+def test_directory_occupying_managed_path_is_foreign(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.mkdir(parents=True)
+    assert classify_path(dest, desired=b"x") == "foreign"
+    manifest = build_manifest(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        transaction_id="j" * 32,
+        plugin=ROOT,
+    )
+    result = apply_manifest(manifest, project_root=tmp_path, force=False, plugin=ROOT)
+    assert dest.is_dir()
+    assert any(row["class"] == "foreign" for row in result["skipped"])
+    assert result["verified"] is False
+
+
+def test_force_refuses_directory_occupant(tmp_path: Path) -> None:
+    dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
+    dest.mkdir(parents=True)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            force=True,
+            plugin=ROOT,
+        )
+    assert dest.is_dir()
+    assert list(dest.iterdir()) == []
+
+
+def test_antigravity_and_grok_apply_gitignore(tmp_path: Path) -> None:
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    gi = tmp_path / ".gitignore"
+    assert gi.is_file()
+    assert ".omg/" in gi.read_text(encoding="utf-8")
+    run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+    )
+    text = gi.read_text(encoding="utf-8")
+    assert text.count("# oh-my-grok") == 1
+    assert (tmp_path / "AGENTS.md").is_file()
+
+
+def test_agents_merge_rolls_back_on_commit_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("user notes\n", encoding="utf-8")
+    orig = Path.write_text
+
+    def wrapped(self, data="", *args, **kwargs):
+        if self.name == "current.json.tmp" and "committed" in str(data):
+            raise OSError("disk full")
+        return orig(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", wrapped)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+        )
+    assert agents.read_text(encoding="utf-8") == "user notes\n"
+
+
+def test_global_rules_inside_transaction_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    rules = grok_home / "rules" / "omg.md"
+    rules.parent.mkdir(parents=True)
+    rules.write_text("prior-rules\n", encoding="utf-8")
+    bak = rules.with_suffix(".md.bak")
+    bak.write_text("prior-bak\n", encoding="utf-8")
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("keep-agents\n", encoding="utf-8")
+    orig = Path.write_text
+
+    def wrapped(self, data="", *args, **kwargs):
+        if self.name == "current.json.tmp" and "committed" in str(data):
+            raise OSError("disk full")
+        return orig(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", wrapped)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_rules=True,
+            install_hook=False,
+        )
+    assert agents.read_text(encoding="utf-8") == "keep-agents\n"
+    assert rules.read_text(encoding="utf-8") == "prior-rules\n"
+    assert bak.read_text(encoding="utf-8") == "prior-bak\n"
+
+
+def test_hook_failure_rolls_back_rules_and_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("keep-agents\n", encoding="utf-8")
+
+    def boom(*, home=None, root=None):
+        return (grok_home / "hooks" / "omg-pretool-deny.json", "failed:Boom")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", boom)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_rules=True,
+            install_hook=True,
+        )
+    assert agents.read_text(encoding="utf-8") == "keep-agents\n"
+    assert not (grok_home / "rules" / "omg.md").exists()
+
+
+def test_quarantined_hook_is_not_restored_on_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def quarantine(*, home=None, root=None):
+        dest = json_path.with_name("omg-pretool-deny.broken-1.bak")
+        if json_path.exists() or json_path.is_symlink():
+            json_path.replace(dest)
+        return (json_path, "quarantined-no-source")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", quarantine)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_hook=True,
+        )
+    assert not json_path.exists()
+    assert (hooks / "omg-pretool-deny.broken-1.bak").is_file()
+
+
+def test_malformed_hook_json_is_repaired_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def repair(*, home=None, root=None):
+        json_path.write_text('{"hooks": []}\n', encoding="utf-8")
+        return (json_path, "repaired")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", repair)
+    result = run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+        install_hook=True,
+    )
+    assert result["ok"] is True
+    assert json_path.read_text(encoding="utf-8") == '{"hooks": []}\n'
+
+
+def test_failed_hook_after_quarantine_is_not_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def fail_after_quarantine(*, home=None, root=None):
+        dest = json_path.with_name("omg-pretool-deny.broken-1.bak")
+        if json_path.exists() or json_path.is_symlink():
+            json_path.replace(dest)
+        return (json_path, "failed:OSError")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", fail_after_quarantine)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_hook=True,
+        )
+    assert not os.path.lexists(json_path)
+    assert (hooks / "omg-pretool-deny.broken-1.bak").is_file()
+
+
+def test_dangling_hook_symlink_is_reconciled_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    try:
+        json_path.symlink_to(tmp_path / "missing-hook.json")
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def repair(*, home=None, root=None):
+        if json_path.is_symlink() or json_path.exists():
+            json_path.unlink()
+        json_path.write_text('{"hooks": []}\n', encoding="utf-8")
+        return (json_path, "repaired")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", repair)
+    result = run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+        install_hook=True,
+    )
+    assert result["ok"] is True
+    assert json_path.is_file()
+    assert not json_path.is_symlink()
+    assert json_path.read_text(encoding="utf-8") == '{"hooks": []}\n'
+
+
+def test_user_scope_grok_marker_is_not_runtime_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.user_store", lambda: fake_home / ".omg-user"
+    )
+    result = run_scoped_setup(runtime="grok", scope="user", plugin=ROOT)
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert result["observed"] is False
+    assert result["healthy"] is False
+    payload = inspect_install_manifest(project_root=None, scope="user")
+    assert payload["configured"] is True
+    assert payload["installed"] is True
+    assert payload["enabled"] is False
+    assert payload["loadable"] is False
+    assert payload["healthy"] is False
+    assert payload["observed"] is False
+    assert payload["verified"] is False
+    assert payload.get("enabled_markers") == ["user.manifest.marker"]
+    assert payload.get("enabled_runtime") == []
+
+
+def test_desired_artifact_ids_match_frozen_expected_set(tmp_path: Path) -> None:
+    for runtime in RUNTIMES:
+        for scope in SCOPES:
+            root = tmp_path if scope == "project" else None
+            rows = desired_artifacts(
+                runtime=runtime,
+                scope=scope,
+                project_root=root,
+                plugin=ROOT,
+            )
+            got = {row["id"] for row in rows} - set(OPTIONAL_ARTIFACT_IDS)
+            assert got == EXPECTED_IDS_BY_RUNTIME_SCOPE[(runtime, scope)]
+            assert all(rows)
+
+
+def test_expected_ids_fail_closed_on_mismatch() -> None:
+    with pytest.raises(InstallManifestError, match="E_IDS"):
+        assert_expected_artifact_ids("grok", "project", [{"id": "only.one"}])
+    with pytest.raises(InstallManifestError, match="E_IDS"):
+        assert_expected_artifact_ids(
+            "grok",
+            "project",
+            [{"id": "project.agents"}, {"id": "project.gitignore"}, {"id": "extra"}],
+        )
+    with pytest.raises(TypeError):
+        EXPECTED_IDS_BY_RUNTIME_SCOPE[("grok", "project")] = frozenset()  # type: ignore[index]
+
+
+def test_optional_global_ids_only_for_project_grok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    rows = desired_artifacts(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        plugin=ROOT,
+        install_rules=True,
+        install_hook=True,
+    )
+    ids = {row["id"] for row in rows}
+    assert "user.grok.rules" in ids
+    assert "user.grok.hook" in ids
+    assert {row["id"] for row in rows} - set(OPTIONAL_ARTIFACT_IDS) == (
+        EXPECTED_IDS_BY_RUNTIME_SCOPE[("grok", "project")]
+    )
+    ag_rows = desired_artifacts(
+        runtime="antigravity",
+        scope="project",
+        project_root=tmp_path,
+        plugin=ROOT,
+        install_rules=True,
+        install_hook=True,
+    )
+    ag_ids = {row["id"] for row in ag_rows}
+    assert "user.grok.rules" not in ag_ids
+    assert "user.grok.hook" not in ag_ids
+
+
+def test_cmd_setup_does_not_call_run_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.main import main
+
+    captured: dict = {}
+
+    def fake_setup(**kwargs):
+        captured.update(kwargs)
+        return {"manifest": "x", "written": [], "skipped": [], "actions": []}
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr("omg_cli.commands.install.project_root", lambda: tmp_path)
+    monkeypatch.setattr("omg_cli.install_manifest.run_scoped_setup", fake_setup)
+    monkeypatch.setattr(
+        "omg_cli.install_manifest.refuse_home_project", lambda *_a, **_k: None
+    )
+    sys.modules.pop("omg_cli.setup_cmd", None)
+    rc = main(["setup", "--runtime", "grok", "--here"])
+    assert rc == 0
+    assert "omg_cli.setup_cmd" not in sys.modules
+    assert captured.get("install_rules") is True
+    assert captured.get("install_hook") is (os.name == "posix")
+    sys.modules.pop("omg_cli.setup_cmd", None)
+    rc = main(["setup", "--runtime", "grok", "--here", "--no-global-rules", "--no-global-hook"])
+    assert rc == 0
+    assert captured.get("install_rules") is False
+    assert captured.get("install_hook") is False

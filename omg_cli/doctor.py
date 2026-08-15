@@ -1344,6 +1344,7 @@ def check_install_manifest() -> SoftResult:
             f"project_configured={project.get('configured')}; "
             f"user_configured={user.get('configured')}; "
             f"installed={bool(project.get('installed') or user.get('installed'))}; "
+            f"enabled={bool(project.get('enabled') or user.get('enabled'))}; "
             f"observed=False; "
             f"healthy=False; "
             f"verified=False; "
