@@ -85,6 +85,14 @@ def test_inspect_negotiates_medley_caps(tmp_path: Path) -> None:
     assert fields["selected_model_ref"] == "review-primary-example"
     assert fields["route_receipt_digest"] == "a" * 64
     assert fields["attempt"] == 2
+    assert (
+        receipt_for_policy(
+            doc,
+            policy_id="verifier.default",
+            policy_digest="c" * 64,
+        )
+        is None
+    )
 
 
 def test_inspect_secret_is_rejected(tmp_path: Path) -> None:

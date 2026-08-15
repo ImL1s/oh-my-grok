@@ -260,19 +260,32 @@ def receipt_for_policy(
     *,
     policy_id: str,
     agent_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> dict[str, Any] | None:
     if doc is None:
         return None
+    want_digest = str(policy_digest or "").strip()
     for row in doc.receipts:
         consumer = str(
             row.get("consumerPolicyId")
             or row.get("consumer_policy_id")
             or ""
         ).strip()
-        if consumer == policy_id:
-            return dict(row)
-        if agent_id and str(row.get("agent_id") or row.get("agentId") or "") == agent_id:
-            return dict(row)
+        row_digest = str(
+            row.get("consumerPolicyDigest")
+            or row.get("consumer_policy_digest")
+            or ""
+        ).strip()
+        id_match = consumer == policy_id
+        agent_match = bool(
+            agent_id and str(row.get("agent_id") or row.get("agentId") or "") == agent_id
+        )
+        if not id_match and not agent_match:
+            continue
+        if want_digest:
+            if not row_digest or row_digest != want_digest:
+                continue
+        return dict(row)
     return None
 
 

@@ -22,7 +22,6 @@ from typing import Any, Mapping
 from omg_cli.agents_catalog import (
     ALLOWED_CAPABILITY_MODES,
     FORBIDDEN_CAPABILITY_MODES,
-    HOST_NATIVE_PROFILES,
     AgentsCatalogError,
     load_agents_catalog,
     plugin_root,
@@ -493,16 +492,8 @@ def load_policy_bundle(root: Path | None = None) -> PolicyBundle:
             agents_raw[record.id], label=f"agents.{record.id}"
         )
         short = record.id[4:] if record.id.startswith("omg-") else record.id
-        aliases = [record.id]
-        if short.lower() not in HOST_NATIVE_PROFILES:
-            aliases.append(short)
-        for extra in record.aliases:
-            if extra.lower() in HOST_NATIVE_PROFILES:
-                continue
-            if extra not in aliases:
-                aliases.append(extra)
-        aliases_tuple = tuple(aliases)
-        for alias in aliases_tuple:
+        aliases = (record.id, short)
+        for alias in aliases:
             key = alias.lower()
             if key in seen_aliases and seen_aliases[key] != record.id:
                 raise AgentPolicyError(
@@ -512,7 +503,7 @@ def load_policy_bundle(root: Path | None = None) -> PolicyBundle:
         identities.append(
             PolicyIdentity(
                 agent_id=record.id,
-                aliases=aliases_tuple,
+                aliases=aliases,
                 category=record.tier,
                 tier=record.tier,
                 capability_mode=record.capability_mode,
@@ -966,6 +957,7 @@ def resolve_agent_policy(
             inspect_doc,
             policy_id=str(policy["policy_id"]),
             agent_id=identity.agent_id,
+            policy_digest=digest,
         )
         if rec is not None:
             fields = apply_receipt_to_view_fields(rec)
