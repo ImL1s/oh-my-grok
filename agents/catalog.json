@@ -230,7 +230,7 @@
       "tier": "planner",
       "spawn_policy": "leaf",
       "aliases": [
-        "explore-high"
+        "explore"
       ],
       "categories": [
         "quick"
