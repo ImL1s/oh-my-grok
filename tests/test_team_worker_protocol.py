@@ -34,8 +34,11 @@ def test_protocol_without_board_id_tells_worker_to_list() -> None:
             api_task_id=None,
         )
     )
-    assert "list-tasks" in text
-    assert "claim-task" in text
+    assert "list-tasks --input" in text
+    assert '"run_id":"run-a"' in text
+    assert '"team_id":"team"' in text
+    assert "claim-task --input" in text
+    assert "BOARD_TASK_ID_FROM_LIST" in text
     assert '"task_id":"1"' not in text
 
 
