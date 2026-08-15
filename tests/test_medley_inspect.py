@@ -220,3 +220,66 @@ def test_authorization_key_is_still_secret(tmp_path: Path) -> None:
     with pytest.raises(MedleyInspectError) as exc:
         resolve_host_snapshot(inspect_path=path)
     assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"
+
+
+def test_supported_without_version_is_not_authorized(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "no-version.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+                "version": None,
+                "reason": "receipt",
+            }
+        ],
+        receipts=[],
+    )
+    snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert doc is not None
+    advertised = advertised_from_inspect(doc)
+    assert advertised["medley.native-route-receipt.v1"] == "missing"
+    assert snap.state_of("medley.native-route-receipt.v1") == "unavailable"
+    assert not snap.is_supported("medley.native-route-receipt.v1")
+
+
+def test_unknown_capability_state_is_preserved(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "unknown.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "unknown",
+                "version": None,
+                "reason": "host did not answer",
+            }
+        ],
+        receipts=[],
+    )
+    snap, _doc = resolve_host_snapshot(inspect_path=inspect)
+    assert snap.state_of("medley.native-route-receipt.v1") == "unknown"
+    assert not snap.is_supported("medley.native-route-receipt.v1")
+
+
+def test_duplicate_capability_rows_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "dup.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-exact-model.v1",
+                "state": "supported",
+                "version": "v1",
+                "reason": "exact",
+            },
+            {
+                "capability_id": "medley.native-exact-model.v1",
+                "state": "incompatible",
+                "version": "v1",
+                "reason": "conflict",
+            },
+        ],
+        receipts=[],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"

@@ -17,6 +17,8 @@ from typing import Any, Mapping
 
 from omg_cli.host_capabilities import (
     ADVERTISED_MISSING,
+    ADVERTISED_UNKNOWN,
+    CURRENT_VERSION,
     HOST_TIER_MEDLEY,
     HostCapabilitySnapshot,
     negotiate,
@@ -158,6 +160,7 @@ def load_inspect_document(
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
     cap_rows: list[dict[str, Any]] = []
+    seen_caps: dict[str, str] = {}
     for item in caps:
         if not isinstance(item, dict):
             raise MedleyInspectError(
@@ -171,6 +174,12 @@ def load_inspect_document(
                 "capability row needs capability_id and state",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
+        if cap_id in seen_caps:
+            raise MedleyInspectError(
+                f"duplicate capability_id {cap_id!r}",
+                code="E_MEDLEY_INSPECT_SCHEMA",
+            )
+        seen_caps[cap_id] = state
         cap_rows.append(
             {
                 "capability_id": cap_id,
@@ -206,18 +215,21 @@ def advertised_from_inspect(doc: MedleyInspectDocument) -> dict[str, str]:
         state = str(row["state"])
         version = row.get("version")
         if state == "supported":
-            advertised[cap_id] = str(version).strip() if version else "v1"
+            ver = str(version).strip() if isinstance(version, str) else ""
+            if not ver:
+                advertised[cap_id] = ADVERTISED_MISSING
+            else:
+                advertised[cap_id] = ver
         elif state == "unavailable":
             advertised[cap_id] = ADVERTISED_MISSING
         elif state == "incompatible":
             # Never forward a recognized version: negotiate() would mark
             # incompatible+v1 as supported.
             advertised[cap_id] = _ADVERTISED_INCOMPATIBLE
-        # unsupported / unknown: omit so negotiate reports unsupported
-    if any(
-        str(row["capability_id"]) == EXACT_MEDLEY_CAP and str(row["state"]) == "supported"
-        for row in doc.capabilities
-    ):
+        elif state == "unknown":
+            advertised[cap_id] = ADVERTISED_UNKNOWN
+        # unsupported: omit so negotiate reports unsupported
+    if advertised.get(EXACT_MEDLEY_CAP) in {CURRENT_VERSION, "v1", "1"}:
         advertised.setdefault(EXACT_HOST_CAP, "v1")
     return advertised
 

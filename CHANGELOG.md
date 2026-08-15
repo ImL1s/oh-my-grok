@@ -154,10 +154,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Build stays the baseline (Medley caps **unsupported**). Doctor routing and
   policy views overlay secret-free receipts when the inspect document
   advertises `medley.native-route-receipt.v1`. Inspect `incompatible` stays
-  incompatible even when a version is present; receipt rows are schema-checked
-  before overlay; diagnostic reason text is not treated as a secret. Does
-  **not** close #131/#134: live spawn wiring, session-persisted receipts, and
-  Medley `/agents` TUI (#290) remain host-owned. Refs #131 #134.
+  incompatible even when a version is present; `supported` without a version is
+  unavailable; explicit `unknown` is preserved; duplicate capability ids fail
+  closed; receipt rows are schema-checked before overlay; diagnostic reason
+  text is not treated as a secret. Does **not** close #131/#134: live spawn
+  wiring, session-persisted receipts, and Medley `/agents` TUI (#290) remain
+  host-owned. Refs #131 #134.
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

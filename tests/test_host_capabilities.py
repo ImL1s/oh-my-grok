@@ -68,6 +68,15 @@ def test_incompatible_version_is_not_authorized() -> None:
     assert not snap.is_supported("medley.native-route-receipt.v1")
 
 
+def test_advertised_unknown_is_not_unsupported() -> None:
+    snap = negotiate(
+        host_tier=HOST_TIER_MEDLEY,
+        advertised={"medley.native-route-receipt.v1": "unknown"},
+    )
+    assert snap.state_of("medley.native-route-receipt.v1") == "unknown"
+    assert not snap.is_supported("medley.native-route-receipt.v1")
+
+
 def test_claimed_but_missing_is_unavailable() -> None:
     snap = negotiate(
         host_tier=HOST_TIER_GROK,
