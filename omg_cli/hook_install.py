@@ -102,13 +102,8 @@ def _looks_like_venv_python(path: str) -> bool:
     return False
 
 
-def _looks_like_version_manager_shim(path: str) -> bool:
-    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``).
-
-    Detects default layouts (``~/.pyenv/shims``, ``~/.asdf/shims``) and
-    customized ``PYENV_ROOT`` / ``ASDF_DATA_DIR`` shims dirs. Does not
-    ``Path.resolve()`` through package-manager symlinks.
-    """
+def _shim_dir_layout(path: str) -> bool:
+    """True when *path* lives in a pyenv/asdf shims directory (no symlink follow)."""
     try:
         parent = os.path.abspath(str(Path(path).parent))
         parts = [part.lower() for part in Path(path).parts]
@@ -132,6 +127,27 @@ def _looks_like_version_manager_shim(path: str) -> bool:
         if parent == shim_dir:
             return True
     return False
+
+
+def _looks_like_version_manager_shim(path: str) -> bool:
+    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``).
+
+    Detects default layouts (``~/.pyenv/shims``, ``~/.asdf/shims``), customized
+    ``PYENV_ROOT`` / ``ASDF_DATA_DIR`` shims dirs, and a single symlink hop
+    whose target is such a shim (e.g. ``/usr/local/bin/python3`` → pyenv).
+    Does not ``Path.resolve()`` through Homebrew Cellar inodes.
+    """
+    if _shim_dir_layout(path):
+        return True
+    try:
+        if not os.path.islink(path):
+            return False
+        target = os.readlink(path)
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(os.path.abspath(path)), target)
+        return _shim_dir_layout(os.path.abspath(target))
+    except OSError:
+        return False
 
 
 def _wrapper_embedded_interpreter(wrapper_text: str | bytes | None) -> str | None:
@@ -173,7 +189,11 @@ def python3_executable() -> str:
     """
     for candidate in _DURABLE_PYTHON3:
         try:
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            if (
+                os.path.isfile(candidate)
+                and os.access(candidate, os.X_OK)
+                and not _looks_like_version_manager_shim(candidate)
+            ):
                 return candidate
         except OSError:
             continue

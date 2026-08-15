@@ -876,6 +876,29 @@ def test_python3_executable_rejects_custom_pyenv_asdf_root_shims(
     assert hi.python3_executable() == "/usr/bin/python3"
 
 
+def test_python3_executable_rejects_durable_symlink_to_pyenv_shim(
+    tmp_path, monkeypatch
+):
+    """A /usr/local/bin/python3 symlink to a pyenv shim is not durable."""
+    from omg_cli import hook_install as hi
+
+    shim = tmp_path / ".pyenv" / "shims" / "python3"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    launcher = tmp_path / "usr" / "local" / "bin" / "python3"
+    launcher.parent.mkdir(parents=True)
+    try:
+        launcher.symlink_to(shim)
+    except OSError:
+        pytest.skip("symlink python3 fixture unavailable")
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(launcher),))
+    monkeypatch.setattr(hi.shutil, "which", lambda *_a, **_k: None)
+    monkeypatch.delenv("PATH", raising=False)
+    assert hi._looks_like_version_manager_shim(str(launcher)) is True
+    assert hi.python3_executable() == "/usr/bin/python3"
+
+
 def test_install_quarantines_shim_wrapper_when_durable_python_missing(
     tmp_path, monkeypatch
 ):

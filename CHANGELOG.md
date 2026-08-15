@@ -123,7 +123,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   shims when `/usr/bin/python3` (and other durable candidates) are absent,
   so install/doctor do not persist a cwd-dependent `.python-version` shim
   that later fail-opens via `|| true`. Custom `PYENV_ROOT` / `ASDF_DATA_DIR`
-  shim dirs are rejected as well. A failed repair that cannot replace
+  shim dirs are rejected as well, as is a durable-looking launcher that is a
+  symlink to such a shim (one `readlink` hop; Homebrew Cellar stays
+  un-resolved). A failed repair that cannot replace
   an already-installed shim wrapper quarantines the active hook JSON
   instead of leaving the shim live. Refs #79 (does not close).
 - **Grok 1.0.4 PreToolUse execvp:** grok 1.0.4 `execvp()`s the hook
