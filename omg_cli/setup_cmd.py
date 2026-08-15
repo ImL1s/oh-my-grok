@@ -1594,10 +1594,16 @@ def install_package(
         if receipt_snapshot["kind"] == "foreign":
             raise InstallError("foreign receipt pointer is preserved")
 
-        hook_json = grok_path / "hooks" / "omg-pretool-deny.json"
-        hook_py = grok_path / "hooks" / "omg_pretool_deny_standalone.py"
+        from omg_cli.hook_install import HOOK_JSON_NAME, STANDALONE_BASENAME, WRAPPER_BASENAME
+
+        hook_json = grok_path / "hooks" / HOOK_JSON_NAME
+        hook_wrapper = grok_path / "hooks" / WRAPPER_BASENAME
+        hook_py = grok_path / "hooks" / STANDALONE_BASENAME
         rules = grok_path / "rules" / "omg.md"
-        global_snapshots = [_file_snapshot(path) for path in (hook_json, hook_py, rules, rules.with_suffix(".md.bak"))]
+        global_snapshots = [
+            _file_snapshot(path)
+            for path in (hook_json, hook_wrapper, hook_py, rules, rules.with_suffix(".md.bak"))
+        ]
 
         prior_rows = _read_plugin_inventory(runner, commands)
         prior_plugin_path: Path | None = None
@@ -1845,6 +1851,7 @@ def install_package(
                 [
                     {"path": str(candidate_plugin_path), "kind": "host_plugin", "identity": str(identity["digest"])},
                     {"path": str(hook_json), "kind": "global_hook", "identity": _sha256_file(hook_json)},
+                    {"path": str(hook_wrapper), "kind": "global_hook", "identity": _sha256_file(hook_wrapper)},
                     {"path": str(hook_py), "kind": "global_hook", "identity": _sha256_file(hook_py)},
                     {
                         "path": str(rules),

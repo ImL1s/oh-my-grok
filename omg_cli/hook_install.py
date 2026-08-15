@@ -112,6 +112,16 @@ def launcher_command(installed_py: Path) -> str:
     return str(wrapper_path_for(installed_py))
 
 
+def managed_hook_paths(*, home: Path | None = None) -> tuple[Path, Path, Path]:
+    """JSON, execvp wrapper, standalone — receipt / uninstall inventory order."""
+    hooks_dir = grok_home(home) / "hooks"
+    return (
+        hooks_dir / HOOK_JSON_NAME,
+        hooks_dir / WRAPPER_BASENAME,
+        hooks_dir / STANDALONE_BASENAME,
+    )
+
+
 def _hook_json_obj(installed_py: Path) -> dict:
     return {
         "hooks": {
@@ -368,10 +378,10 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
 
 
 def remove_global_hook(*, home: Path | None = None) -> list[str]:
-    """Uninstall: remove the JSON FIRST (stop discovery), then the standalone .py.
+    """Uninstall: remove the JSON FIRST (stop discovery), then wrapper + standalone.
 
-    The .py is only removed once the JSON is gone — reversing the order would leave
-    an active json pointing at a missing script.
+    Binaries are only removed once the JSON is gone — reversing the order would
+    leave an active json pointing at a missing executable.
     """
     gh = grok_home(home)
     hooks_dir = gh / "hooks"

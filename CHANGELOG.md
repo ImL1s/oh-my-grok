@@ -124,7 +124,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `deny.py` unchanged. Live team smoke `--live` passes `--yolo` so grok
   1.0.4 headless can run `claim-task` (otherwise `PermissionCancelled`,
   board stays `pending`, `mailbox_ack=0`). Board ids were already in the
-  spawn prompt after #190. Refs #79 (does not close).
+  spawn prompt after #190. Doctor compares wrapper bytes to
+  `render_wrapper`; setup receipts and uninstall rollback include the
+  wrapper so a failed uninstall cannot restore JSON that points at a
+  missing executable. Refs #79 (does not close).
 - **Live WSL evidence (2026-08-15):** PATH `omg` shebang stays LF across
   Windows autocrlf (`bin/omg` / `scripts/*.sh` `eol=lf` plus installer CR
   strip). Project-root **and** state-root discovery fail-close on unrelated

@@ -777,8 +777,10 @@ def test_remove_deletes_json_then_py(tmp_path):
     hi.install_global_hook(home=gh)
     removed = hi.remove_global_hook(home=gh)
     assert any(hi.HOOK_JSON_NAME in r for r in removed)
+    assert any(hi.WRAPPER_BASENAME in r for r in removed)
     assert any(hi.STANDALONE_BASENAME in r for r in removed)
     assert not (gh / "hooks" / hi.HOOK_JSON_NAME).is_file()
+    assert not (gh / "hooks" / hi.WRAPPER_BASENAME).is_file()
     assert not (gh / "hooks" / hi.STANDALONE_BASENAME).is_file()
 
 

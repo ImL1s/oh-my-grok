@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -59,7 +61,6 @@ def test_launcher_neutralizes_shell_injection_path():
     evil = Path('/tmp/a"; exit 2; #/x.py')  # would break naive double-quotes → inject exit 2
     body = render_wrapper(evil, "/usr/bin/python3")
     assert "|| true" in body
-    import tempfile, os, subprocess
     fd, tmp = tempfile.mkstemp(suffix=".sh")
     os.close(fd)
     try:
@@ -137,6 +138,26 @@ def test_doctor_rejects_noncanonical_command(tmp_path, monkeypatch):
     jpath.write_text(json.dumps(data, indent=2) + "\n")
     name, ok, detail = doctor.check_global_pretool_hook()
     assert ok is False and "canonical" in detail
+
+
+def test_doctor_rejects_mutated_wrapper_that_still_delegates(tmp_path, monkeypatch):
+    """Codex P2: wrapper bytes must match render_wrapper, not just probe output."""
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from omg_cli import doctor, hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    body = wrapper.read_text(encoding="utf-8")
+    wrapper.write_text(body + "# extra side-effect line\n", encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False, detail
+    assert "render_wrapper" in detail
+    _, level, fresh = doctor.check_global_pretool_hook_freshness()
+    assert level == "warn"
+    assert "wrapper" in fresh.lower()
 
 
 # --- Codex re-verify round: 4 remaining blockers ---

@@ -367,6 +367,7 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
         STANDALONE_BASENAME,
         grok_home,
         launcher_command,
+        render_wrapper,
     )
 
     name = "global PreToolUse soft-gate"
@@ -441,10 +442,18 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
     if not resolved_wrapper.is_file() or not os.access(resolved_wrapper, os.X_OK):
         return _check(name, False, f"hook wrapper missing / not executable: {resolved_wrapper}")
     try:
-        with open(resolved_wrapper, "rb"):
-            pass
+        wrapper_bytes = resolved_wrapper.read_bytes()
     except OSError as e:
         return _check(name, False, f"hook wrapper cannot be opened: {e}")
+    canonical_wrapper = render_wrapper(expected_py).encode("utf-8")
+    if wrapper_bytes != canonical_wrapper:
+        return _check(
+            name,
+            False,
+            f"hook wrapper is not canonical render_wrapper({expected_py}) bytes "
+            f"(sha {hashlib.sha256(wrapper_bytes).hexdigest()[:12]}…); "
+            "run: omg install-hook",
+        )
     try:
         resolved = expected_py.resolve()
         resolved.relative_to(gh.resolve())
@@ -502,10 +511,17 @@ def check_global_pretool_hook() -> tuple[str, bool, str]:
 
 def check_global_pretool_hook_freshness() -> SoftResult:
     """WARN (→ FAIL under --strict) if the installed standalone drifted from the
-    committed one, or if ``$GROK_HOME`` resolves under a TCC-protected location
-    (doctor's own read succeeding does not prove grok's process can read it — only a
-    live cross-workspace grok canary proves that seam)."""
-    from omg_cli.hook_install import committed_standalone, grok_home, STANDALONE_BASENAME
+    committed one, if the execvp wrapper drifted from ``render_wrapper``, or if
+    ``$GROK_HOME`` resolves under a TCC-protected location (doctor's own read
+    succeeding does not prove grok's process can read it — only a live
+    cross-workspace grok canary proves that seam)."""
+    from omg_cli.hook_install import (
+        STANDALONE_BASENAME,
+        WRAPPER_BASENAME,
+        committed_standalone,
+        grok_home,
+        render_wrapper,
+    )
 
     name = "global soft-gate freshness"
     gh = grok_home()
@@ -524,6 +540,15 @@ def check_global_pretool_hook_freshness() -> SoftResult:
             sh = None
         if sh is not None and ih != sh:
             return (name, "warn", "installed standalone is STALE vs committed (run: omg install-hook)")
+    wrapper = gh / "hooks" / WRAPPER_BASENAME
+    if wrapper.is_file():
+        try:
+            wh = hashlib.sha256(wrapper.read_bytes()).hexdigest()
+            expected_w = hashlib.sha256(render_wrapper(installed).encode("utf-8")).hexdigest()
+        except OSError as e:
+            return (name, "warn", f"cannot hash installed wrapper: {e}")
+        if wh != expected_w:
+            return (name, "warn", "installed wrapper is STALE vs canonical render_wrapper (run: omg install-hook)")
     try:
         parts = set(gh.resolve().parts)
     except OSError:
