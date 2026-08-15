@@ -165,9 +165,9 @@ def validate_dimensions(value: Any) -> list[dict[str, Any]]:
         _require_exact_keys(row, DIMENSION_KEYS, label=f"dimensions[{index}]")
         dim_id = row["id"]
         if not isinstance(dim_id, str) or dim_id not in DIMENSION_IDS:
-            raise VisualContractError(f"unknown dimension id {dim_id!r}")
+            raise VisualContractError(f"unknown dimension id at dimensions[{index}]")
         if dim_id in seen:
-            raise VisualContractError(f"duplicate dimension id {dim_id!r}")
+            raise VisualContractError(f"duplicate dimension id at dimensions[{index}]")
         seen.add(dim_id)
         score = _require_int(
             row["score"], label=f"dimensions[{index}].score", minimum=0, maximum=SCORE_SCALE

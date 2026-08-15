@@ -28,6 +28,7 @@ from omg_cli.hash_edit import (
     apply_hash_edit,
     parse_hash_edit_descriptor,
     plan_hash_edit,
+    read_confined_regular_file,
 )
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 
@@ -503,3 +504,18 @@ def test_atomic_failure_wrong_kind_leaves_directory(tmp_path: Path) -> None:
     with pytest.raises(HashEditPathError):
         apply_hash_edit(tmp_path, payload, plan)
     assert marker.read_text(encoding="utf-8") == "stay"
+
+
+def test_confined_read_accumulates_short_os_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "docs" / "example.md"
+    payload = b"short-read-accumulation-body"
+    _write(target, payload.decode("utf-8"))
+    real_read = os.read
+
+    def _one_byte(fd: int, n: int) -> bytes:
+        return real_read(fd, 1 if n else 0)
+
+    monkeypatch.setattr(os, "read", _one_byte)
+    assert read_confined_regular_file(tmp_path, "docs/example.md") == payload

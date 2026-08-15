@@ -38,6 +38,7 @@ from .errors import (
     HashEditApplyError,
     HashEditConcurrencyError,
     HashEditDescriptorError,
+    HashEditInputError,
     HashEditPathError,
 )
 from .planner import (
@@ -145,6 +146,63 @@ def _open_parent_fd(root_fd: int, parts: list[str]) -> tuple[int, str]:
         raise
 
 
+def _posix_nofollow_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
+def read_confined_regular_file(workspace_root: Path | str, relative: str) -> bytes:
+    """Read a workspace-relative regular file without following a swapped symlink.
+
+    POSIX: pinned ``O_NOFOLLOW`` directory descriptors (same walk as apply).
+    Other hosts fail closed — there is no no-follow ``dir_fd`` walk to pin the
+    target, so a pathname reopen would race. Size is inspected on the pinned
+    descriptor before allocating the full contents.
+    """
+
+    rel = require_workspace_relpath(relative, label="edit path")
+    if not _posix_nofollow_ready():
+        raise HashEditPathError(
+            "confined target read requires POSIX O_NOFOLLOW/dir_fd"
+        )
+    root = _workspace_root(workspace_root)
+    parts = rel.split("/")
+    _confined_target(root, rel)
+    root_fd = _open_workspace_root_fd(root)
+    try:
+        parent_fd, name = _open_parent_fd(root_fd, parts)
+        try:
+            body, _mode = _read_regular_at(parent_fd, name)
+            return body
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _read_fd_until(descriptor: int, *, limit: int) -> bytes:
+    """Accumulate ``os.read`` from a pinned fd until *limit* bytes or EOF.
+
+    A single ``os.read`` may return short of the request; comparing that
+    partial length to ``st_size`` would false-fire concurrency errors.
+    """
+
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise HashEditApplyError("read limit must be a non-negative integer")
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def _read_regular_at(parent_fd: int, name: str) -> tuple[bytes, int]:
     try:
         probed = os.lstat(name, dir_fd=parent_fd)
@@ -183,12 +241,15 @@ def _read_regular_at(parent_fd: int, name: str) -> tuple[bytes, int]:
                 f"target must be a single-link regular file: {name} (nlink={before.st_nlink})"
             )
         if before.st_size > MAX_PLAN_FILE_BYTES:
-            raise HashEditApplyError(
+            raise HashEditInputError(
                 f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
             )
-        body = os.read(descriptor, before.st_size + 1)
+        body = _read_fd_until(
+            descriptor,
+            limit=min(int(before.st_size) + 1, MAX_PLAN_FILE_BYTES + 1),
+        )
         if len(body) > MAX_PLAN_FILE_BYTES:
-            raise HashEditApplyError(
+            raise HashEditInputError(
                 f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
             )
         after = os.fstat(descriptor)

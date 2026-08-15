@@ -3,6 +3,7 @@ name: omg-orchestrator
 description: Coordinates ULW/RALPH workstreams for oh-my-grok. Decomposes goals, spawns depth=1 Grok-native workers, integrates results. Prefer over direct large writes when workers are available.
 promptMode: extend
 permissionMode: default
+capabilityMode: read-write
 agentsMd: true
 ---
 

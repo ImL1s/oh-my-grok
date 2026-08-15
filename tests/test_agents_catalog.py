@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,25 @@ from omg_cli.agents_catalog import (
     plugin_root,
     render_antigravity_projections,
     write_antigravity_projections,
+    _read_plugin_regular_text,
 )
 from omg_cli.team.roles import role_posture
 
 ROOT = Path(__file__).resolve().parents[1]
+_PIN_READY = (
+    os.name == "posix"
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
+@pytest.fixture(autouse=True)
+def _skip_without_agent_pin(request: pytest.FixtureRequest) -> None:
+    if request.node.name.startswith("test_catalog_pin_unavailable"):
+        return
+    if not _PIN_READY:
+        pytest.skip("agent file pin requires POSIX O_NOFOLLOW/dir_fd")
+
 
 _READ_ONLY_EXPLORE_LIKE = frozenset(
     {
@@ -266,6 +282,128 @@ def test_projection_renderer_roundtrip(tmp_path: Path) -> None:
     rel = _projection_rel("omg-verifier")
     assert "PROJECTION" in rendered[rel]
     assert check_antigravity_projections(tmp_path) == []
+
+
+def test_frontmatter_snake_capability_mode_alias_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapability_mode: read-write\n"
+        "permissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="must use capabilityMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_snake_permission_mode_alias_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapabilityMode: read-write\n"
+        "permission_mode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="must use permissionMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_catalog_pin_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "omg_cli.agents_catalog._posix_nofollow_ready", lambda: False
+    )
+    with pytest.raises(AgentsCatalogError, match="O_NOFOLLOW"):
+        load_agents_catalog(ROOT, require_projections=False)
+
+
+def test_read_plugin_regular_text_rejects_symlink(tmp_path: Path) -> None:
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text(
+        "---\nname: omg-executor\ncapabilityMode: read-write\n"
+        "permissionMode: default\n---\n# leaked\n",
+        encoding="utf-8",
+    )
+    (agents / "omg-executor.md").symlink_to(outside)
+    with pytest.raises(AgentsCatalogError, match="missing agent"):
+        _read_plugin_regular_text(tmp_path, "agents/omg-executor.md")
+
+
+def test_read_plugin_regular_text_rejects_fifo(tmp_path: Path) -> None:
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    os.mkfifo(agents / "omg-executor.md")
+    with pytest.raises(AgentsCatalogError, match="missing agent"):
+        _read_plugin_regular_text(tmp_path, "agents/omg-executor.md")
+
+
+def test_frontmatter_omitted_capability_mode_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\npermissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="missing capabilityMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_capability_mode_mismatch_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-only")
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="does not match catalog"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_forbidden_capability_mode_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapabilityMode: execute\n"
+        "permissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="forbidden"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_plugin_orchestrator_frontmatter_matches_catalog() -> None:
+    catalog = load_agents_catalog(ROOT)
+    text = (ROOT / "agents" / "omg-orchestrator.md").read_text(encoding="utf-8")
+    assert "capabilityMode: read-write" in text
+    assert catalog.by_id()["omg-orchestrator"].capability_mode == "read-write"
 
 
 def test_inspect_payload_never_claims_verified() -> None:

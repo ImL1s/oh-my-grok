@@ -17,9 +17,14 @@ from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 from omg_cli.main import build_parser, cmd_edit, main
 
 _APPLY_SUPPORTED = sys.platform != "win32" and hasattr(os, "O_NOFOLLOW")
+_PLAN_SUPPORTED = _APPLY_SUPPORTED
 _SKIP_APPLY = pytest.mark.skipif(
     not _APPLY_SUPPORTED,
     reason="apply_hash_edit requires POSIX O_NOFOLLOW/fcntl",
+)
+_SKIP_PLAN = pytest.mark.skipif(
+    not _PLAN_SUPPORTED,
+    reason="plan target read requires POSIX O_NOFOLLOW/dir_fd",
 )
 _REPLACEMENT = "UNIQUE_REPLACEMENT_TOKEN_XYZ"
 
@@ -99,6 +104,7 @@ def test_parser_wires_edit_handlers() -> None:
     assert ns.edit_action == "apply"
 
 
+@_SKIP_PLAN
 def test_cli_plan_does_not_mutate_files(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -131,6 +137,7 @@ def test_cli_plan_does_not_mutate_files(
     assert list(project.rglob("*.hash-edit.lock")) == []
 
 
+@_SKIP_PLAN
 def test_cli_plan_stale_base_fails_closed(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -149,6 +156,7 @@ def test_cli_plan_stale_base_fails_closed(
     assert target.read_bytes() == stale.encode("utf-8")
 
 
+@_SKIP_PLAN
 def test_cli_plan_ambiguous_fails_closed(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -276,3 +284,91 @@ def test_cli_apply_fail_closed_without_posix_lock(
     dumped = json.dumps(payload)
     assert _REPLACEMENT not in dumped
     assert not (project / ".omg" / "state").exists()
+
+
+@pytest.mark.skipif(
+    _PLAN_SUPPORTED,
+    reason="win32-only: plan must fail closed without O_NOFOLLOW/dir_fd",
+)
+def test_cli_plan_fail_closed_without_posix_nofollow(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    current = "before\nalpha\nafter\n"
+    target = _write_target(project, current)
+    desc = _write_descriptor(project, _payload(current))
+    rc = main(["--json", "edit", "plan", "--input", str(desc)])
+    assert rc == 1
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_PATH"
+    assert target.read_bytes() == current.encode("utf-8")
+    dumped = json.dumps(payload)
+    assert _REPLACEMENT not in dumped
+    assert not (project / ".omg" / "state").exists()
+
+
+def test_cli_missing_input_emits_json_usage(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["--json", "edit", "plan"])
+    assert rc == 2
+    payload = _out(capsys)
+    assert payload["ok"] is False
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_USAGE"
+    rc = main(["--json", "edit", "apply"])
+    assert rc == 2
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_USAGE"
+
+
+def test_cli_unreadable_input_omits_absolute_path(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = project / "no-such-descriptor.json"
+    abs_path = str(missing.resolve())
+    rc = main(["--json", "edit", "apply", "--input", abs_path])
+    assert rc == 2
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_USAGE"
+    dumped = json.dumps(payload)
+    assert abs_path not in dumped
+    assert str(project) not in dumped
+    err = payload.get("error") or {}
+    assert "cannot read --input" in (err.get("message") or payload.get("message") or "")
+
+
+@_SKIP_PLAN
+def test_cli_plan_oversized_target_is_input_error(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("omg_cli.hash_edit.apply.MAX_PLAN_FILE_BYTES", 16)
+    monkeypatch.setattr("omg_cli.hash_edit.planner.MAX_PLAN_FILE_BYTES", 16)
+    current = "before\nalpha\nafter\n"
+    assert len(current.encode("utf-8")) > 16
+    _write_target(project, current)
+    desc = _write_descriptor(project, _payload(current))
+    rc = main(["--json", "edit", "plan", "--input", str(desc)])
+    assert rc == 1
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_INPUT"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink target confinement")
+def test_cli_plan_rejects_symlink_target(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    current = "before\nalpha\nafter\n"
+    real = _write_target(project, current, rel="docs/real.md")
+    link = project / "docs" / "example.md"
+    link.symlink_to(real)
+    desc = _write_descriptor(project, _payload(current))
+    rc = main(["--json", "edit", "plan", "--input", str(desc)])
+    assert rc == 1
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_PATH"
+    assert real.read_bytes() == current.encode("utf-8")

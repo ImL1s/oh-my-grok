@@ -4,8 +4,14 @@ Single registry of ``agents/omg-*.md``. Dual-host routing (#131) must consume
 this catalog — do not add a second plugin-agent registry.
 
 Fail-closed: missing catalog, missing agent file, extra uncatalogued
-``omg-*.md``, duplicate id, or ``capability_mode`` outside
-``{read-only, read-write}``. Never ``execute`` / ``all``.
+``omg-*.md``, duplicate id, ``capability_mode`` outside
+``{read-only, read-write}``, or agent frontmatter that omits, aliases, or
+disagrees with catalog ``capabilityMode`` / ``permissionMode``. Grok agent
+files must use those camelCase keys; snake_case aliases are rejected so a
+read-only/plan agent cannot silently fall back to host defaults. Agent
+markdown is opened with ``O_NOFOLLOW|O_NONBLOCK`` and read through that
+pinned descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
+``all``.
 
 Not a routing runtime. Antigravity ``agent.md`` files are static projections
 only — not an installed AG plugin and not live AG evidence.
@@ -13,7 +19,10 @@ only — not an installed AG plugin and not live AG evidence.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -34,6 +43,8 @@ READ_ONLY_TIERS = frozenset({"reviewer", "verifier", "planner"})
 READ_WRITE_TIERS = frozenset({"orchestrator", "implementer"})
 GROK_PROJECTION_KIND = "plugin_agent"
 ANTIGRAVITY_PROJECTION_KIND = "agent_md_projection"
+MAX_AGENT_FILE_BYTES = 1 * 1024 * 1024
+_NOFOLLOW_ERRNOS = {errno.ELOOP, getattr(errno, "EMLINK", -1), errno.EINVAL}
 PROJECTION_BANNER_TITLE = "PROJECTION — not an installed Antigravity plugin"
 PROJECTION_BANNER_NEEDLES = (
     "not an installed",
@@ -275,6 +286,96 @@ def _load_json(path: Path) -> Any:
         raise AgentsCatalogError(f"catalog is not valid JSON: {path}: {exc}") from exc
 
 
+def _posix_nofollow_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
+def _read_plugin_regular_text(root: Path, relative: str) -> str:
+    """Read a plugin-relative regular file without following a swapped symlink."""
+
+    rel = _posix_relative(relative, label="agent file")
+    if not _posix_nofollow_ready():
+        raise AgentsCatalogError(
+            "agent catalog load requires POSIX O_NOFOLLOW/dir_fd"
+        )
+    parts = rel.split("/")
+    if not parts or any(not part for part in parts):
+        raise AgentsCatalogError(f"missing agent: {relative}")
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise AgentsCatalogError("cannot open plugin root") from exc
+    current: int | None = None
+    descriptor: int | None = None
+    try:
+        current = os.dup(root_fd)
+        for component in parts[:-1]:
+            try:
+                nxt = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+            except OSError as exc:
+                if exc.errno in _NOFOLLOW_ERRNOS or exc.errno == errno.ELOOP:
+                    raise AgentsCatalogError(f"missing agent: {relative}") from exc
+                raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+            os.close(current)
+            current = nxt
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(parts[-1], flags, dir_fd=current)
+        except OSError as exc:
+            if (
+                exc.errno in _NOFOLLOW_ERRNOS
+                or exc.errno
+                in {errno.ELOOP, errno.ENOENT, errno.ENXIO, errno.EAGAIN}
+            ):
+                raise AgentsCatalogError(f"missing agent: {relative}") from exc
+            raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise AgentsCatalogError(f"missing agent: {relative}")
+        if before.st_size > MAX_AGENT_FILE_BYTES:
+            raise AgentsCatalogError(f"agent file exceeds size bound: {relative}")
+        remaining = min(int(before.st_size) + 1, MAX_AGENT_FILE_BYTES + 1)
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        body = b"".join(chunks)
+        if len(body) > MAX_AGENT_FILE_BYTES:
+            raise AgentsCatalogError(f"agent file exceeds size bound: {relative}")
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ) or after.st_size != len(body):
+            raise AgentsCatalogError(f"agent file changed while reading: {relative}")
+        try:
+            return body.decode("utf-8")
+        except UnicodeError as exc:
+            raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if current is not None:
+            os.close(current)
+        os.close(root_fd)
+
+
 def load_agents_catalog(
     root: Path | None = None,
     *,
@@ -321,9 +422,8 @@ def load_agents_catalog(
             "uncatalogued agents/omg-*.md on disk: " + ", ".join(extra)
         )
     for record in records:
-        agent_path = base / record.file
-        if not agent_path.is_file() or agent_path.is_symlink():
-            raise AgentsCatalogError(f"missing agent: {record.file}")
+        text = _read_plugin_regular_text(base, record.file)
+        _require_frontmatter_matches_catalog(text, record)
         if require_projections:
             rel = record.projections["antigravity"].path
             proj = base / rel
@@ -377,6 +477,9 @@ def inspect_agents_catalog(root: Path | None = None) -> dict[str, Any]:
     }
 
 
+_FRONTMATTER_VALUE_MAX = 64
+
+
 def strip_markdown_frontmatter(text: str) -> str:
     """Return markdown body after a leading YAML frontmatter fence."""
     if not text.startswith("---"):
@@ -385,6 +488,93 @@ def strip_markdown_frontmatter(text: str) -> str:
     if len(parts) >= 3:
         return parts[2].strip()
     return text.strip()
+
+
+def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
+    """Parse scalar YAML-ish agent frontmatter. Fail closed on a missing fence."""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{agent_id}: missing YAML frontmatter")
+    end = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end = index
+            break
+    if end is None:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+    fields: dict[str, str] = {}
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[:1].isspace() or stripped.startswith("-"):
+            continue
+        if ":" not in line:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        if not key:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        scalar = raw_value.strip()
+        if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
+            scalar = scalar[1:-1]
+        if key in fields:
+            raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter key")
+        fields[key] = scalar
+    return fields
+
+
+def _frontmatter_canonical(
+    fields: dict[str, str],
+    *,
+    camel: str,
+    snake: str,
+    agent_id: str,
+) -> str:
+    """Require the Grok camelCase key; reject snake_case aliases."""
+    if snake in fields:
+        raise AgentsCatalogError(
+            f"{agent_id}: frontmatter must use {camel}, not {snake}"
+        )
+    value = fields.get(camel)
+    if value is None or not str(value).strip():
+        raise AgentsCatalogError(f"{agent_id}: frontmatter missing {camel}")
+    value = str(value).strip()
+    if len(value) > _FRONTMATTER_VALUE_MAX:
+        raise AgentsCatalogError(f"{agent_id}: frontmatter {camel} is too long")
+    return value
+
+
+def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None:
+    """Reject source frontmatter that omits or disagrees with the catalog posture."""
+
+    fields = _parse_agent_frontmatter(text, agent_id=record.id)
+    declared_cap = _frontmatter_canonical(
+        fields,
+        camel="capabilityMode",
+        snake="capability_mode",
+        agent_id=record.id,
+    )
+    declared_perm = _frontmatter_canonical(
+        fields,
+        camel="permissionMode",
+        snake="permission_mode",
+        agent_id=record.id,
+    )
+    if declared_cap.lower() in FORBIDDEN_CAPABILITY_MODES:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter capabilityMode is forbidden "
+            "(never execute/all)"
+        )
+    if declared_cap != record.capability_mode:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter capabilityMode does not match catalog"
+        )
+    if declared_perm != record.permission_mode:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter permissionMode does not match catalog"
+        )
 
 
 def _yaml_bool(value: bool) -> str:

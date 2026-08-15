@@ -10,14 +10,20 @@ decide pass/fail from ``aggregate`` vs ``threshold``.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
+from typing import Any, Final
 
 from omg_cli.cli_envelope import emit_json, failure, success
-from omg_cli.cli_util import read_json_path
 from omg_cli.contracts.visual_contract import VisualContractError, compare
 
 
 CMD_COMPARE = "visual.compare"
+MAX_COMPARE_DOCUMENT_BYTES: Final[int] = 1 * 1024 * 1024
+CONTRACT_VALIDATION_MESSAGE = (
+    "comparison document failed Visual Contract V1 validation"
+)
 
 
 def cmd_visual(args: argparse.Namespace) -> int:
@@ -27,6 +33,21 @@ def cmd_visual(args: argparse.Namespace) -> int:
         return _cmd_visual_compare(args)
     print("usage: omg visual {compare}", file=sys.stderr)
     return 2
+
+
+def _load_compare_document(input_path: str) -> Any:
+    path = Path(input_path)
+    try:
+        with path.open("rb") as handle:
+            body = handle.read(MAX_COMPARE_DOCUMENT_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("visual compare input is not readable JSON") from exc
+    if len(body) > MAX_COMPARE_DOCUMENT_BYTES:
+        raise ValueError("visual compare input exceeds size limit")
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("visual compare input is not readable JSON") from exc
 
 
 def _cmd_visual_compare(args: argparse.Namespace) -> int:
@@ -43,7 +64,7 @@ def _cmd_visual_compare(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        document = read_json_path(input_path, label="visual compare input")
+        document = _load_compare_document(input_path)
     except ValueError as exc:
         emit_json(
             failure(
@@ -57,12 +78,12 @@ def _cmd_visual_compare(args: argparse.Namespace) -> int:
 
     try:
         result = compare(document)
-    except VisualContractError as exc:
+    except VisualContractError:
         emit_json(
             failure(
                 CMD_COMPARE,
                 "E_VISUAL_CONTRACT",
-                str(exc),
+                CONTRACT_VALIDATION_MESSAGE,
                 next_action="Fix the comparison document per docs/visual-contract-v1.md",
             )
         )
@@ -101,6 +122,9 @@ def register_visual_parsers(
 
 
 __all__ = [
+    "CMD_COMPARE",
+    "CONTRACT_VALIDATION_MESSAGE",
+    "MAX_COMPARE_DOCUMENT_BYTES",
     "cmd_visual",
     "register_visual_parsers",
 ]

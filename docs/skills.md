@@ -631,7 +631,12 @@ surface.
 
 Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
 (loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
-`agents_catalog`). Antigravity `agent.md` files under
+`agents_catalog`). Load fail-closes when an agent's frontmatter omits,
+uses snake_case aliases (`capability_mode` / `permission_mode`), or
+disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
+must not conceal a more permissive plugin definition). Agent markdown is
+opened with `O_NOFOLLOW|O_NONBLOCK` and read through that pinned descriptor. Antigravity
+`agent.md` files under
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 are **projections only** — not an installed AG plugin and not live AG evidence.
 Team routing floors remain in `omg_cli/team/roles.py`. Dual-host model policy

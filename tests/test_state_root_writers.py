@@ -226,3 +226,63 @@ def test_centralized_verified_only_via_set_verified(
     disk = json.loads(status_path.read_text(encoding="utf-8"))
     assert disk["verified"] is True
     assert not (project / ".omg" / "state" / "runs" / rid / "status.json").exists()
+
+
+@pytest.mark.skipif(not _POSIX, reason="ensure_managed_dir requires POSIX")
+def test_ensure_omg_dirs_rejects_project_local_state_symlink_when_centralized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leftover writers still use <project>/.omg/state; confine it under OMG_STATE_DIR."""
+
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.state import ensure_omg_dirs
+
+    _clear_state_root_env(monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".omg").mkdir()
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    marker = outside / "payload"
+    marker.write_bytes(b"keep-me")
+    (project / ".omg" / "state").symlink_to(outside, target_is_directory=True)
+    central = tmp_path / "central"
+    central.mkdir()
+    monkeypatch.setenv(ENV_STATE_DIR, str(central))
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        ensure_omg_dirs(project)
+    with pytest.raises(ContractPathError, match="symlink"):
+        create_run(project, mode="ralph", goal="must not follow local state link")
+
+    assert marker.read_bytes() == b"keep-me"
+    assert not (outside / "runs").exists()
+    assert not (outside / "prd.json").exists()
+
+
+@pytest.mark.skipif(not _POSIX, reason="ensure_managed_dir requires POSIX")
+def test_prd_scaffold_rejects_project_local_state_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leftover Ralph PRD writer must not follow a swapped .omg/state symlink."""
+
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.modes import _write_prd_scaffold
+
+    _clear_state_root_env(monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".omg").mkdir()
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    marker = outside / "payload"
+    marker.write_bytes(b"keep-prd")
+    (project / ".omg" / "state").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        _write_prd_scaffold(project, "run-leftover-prd", "must not follow")
+
+    assert marker.read_bytes() == b"keep-prd"
+    assert not (outside / "runs").exists()
+    assert not (outside / "prd.json").exists()
+    assert not list(outside.rglob("prd.json"))

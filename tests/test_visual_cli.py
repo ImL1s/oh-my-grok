@@ -225,6 +225,48 @@ def test_cli_missing_input_flag_is_usage_exit(capsys) -> None:
     assert err.get("code") == "E_USAGE" or payload.get("error_code") == "E_USAGE"
 
 
+def test_cli_invalid_dimension_id_does_not_echo_payload(
+    tmp_path: Path, capsys
+) -> None:
+    from omg_cli.commands.visual import CONTRACT_VALIDATION_MESSAGE
+
+    payload_id = "iVBORw0KGgoAAAANSUhEUgAA" + ("A" * 64)
+    document = _document()
+    document["dimensions"][0]["id"] = payload_id  # type: ignore[index]
+    path = _write_input(tmp_path, document)
+    rc = main(["visual", "compare", "--input", str(path)])
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_CONTRACT" or payload.get("error_code") == (
+        "E_VISUAL_CONTRACT"
+    )
+    dumped = json.dumps(payload, ensure_ascii=False)
+    assert payload_id not in dumped
+    assert "iVBORw0KGgo" not in dumped
+    message = err.get("message") or payload.get("message") or ""
+    assert message == CONTRACT_VALIDATION_MESSAGE
+    _assert_no_forbidden(payload)
+
+
+def test_cli_oversized_document_is_input_exit(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    from omg_cli.commands import visual as visual_mod
+
+    monkeypatch.setattr(visual_mod, "MAX_COMPARE_DOCUMENT_BYTES", 64)
+    path = tmp_path / "padded.json"
+    path.write_bytes(b"{" + (b" " * 80) + b"}")
+    rc = main(["visual", "compare", "--input", str(path)])
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_INPUT" or payload.get("error_code") == (
+        "E_VISUAL_INPUT"
+    )
+    assert "exceeds size limit" in (err.get("message") or payload.get("message") or "")
+
+
 def test_cli_missing_compare_action_is_usage_exit(capsys) -> None:
     rc = main(["visual"])
     assert rc == 2
