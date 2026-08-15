@@ -5,6 +5,10 @@
 This is **not** an installed Antigravity plugin, not live AG evidence,
 and not proof that `agy` hook discovery works.
 
+`hooks.json` beside this README is a **static** hooks.json-shaped
+projection for a later install path (#77). Copying it does not mean
+`agy` loaded hooks.
+
 Grok honesty:
 
 - `PreToolUse` / `Stop` may block (Stop: grok >=0.2.107, cap 8/turn, fail-open).

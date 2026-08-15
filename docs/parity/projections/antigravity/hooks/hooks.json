@@ -1,0 +1,71 @@
+{
+  "healthy": false,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "omg-antigravity-hook-projection:omg.pretool.deny",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "live_ag": false,
+        "matcher": "*",
+        "omg_hook_id": "omg.pretool.deny",
+        "projection": true
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "omg-antigravity-hook-projection:omg.session.start.observe",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "live_ag": false,
+        "matcher": "*",
+        "omg_hook_id": "omg.session.start.observe",
+        "projection": true
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "omg-antigravity-hook-projection:omg.stop.gate",
+            "timeout": 120,
+            "type": "command"
+          }
+        ],
+        "live_ag": false,
+        "matcher": "*",
+        "omg_hook_id": "omg.stop.gate",
+        "projection": true
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "omg-antigravity-hook-projection:omg.subagent.stop.observe",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "live_ag": false,
+        "matcher": "*",
+        "omg_hook_id": "omg.subagent.stop.observe",
+        "projection": true
+      }
+    ]
+  },
+  "kind": "static_projection",
+  "live_ag": false,
+  "note": "Static hooks.json-shaped projection for #72. Not an installed Antigravity plugin and not proof that agy loaded hooks. UserPromptSubmit injection is unsupported.",
+  "observed": false,
+  "schema": "omg-antigravity-hooks-projection/v1",
+  "verified": false
+}

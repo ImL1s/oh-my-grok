@@ -12,6 +12,8 @@ honor ``DISABLE_OMG`` / ``OMG_SKIP_HOOKS`` via ``hooks/bin/_common.py``.
 
 Antigravity files under ``docs/parity/projections/antigravity/hooks/`` are
 static projections — not an installed AG plugin and not live AG evidence.
+Timeouts are recorded after the synchronous handler returns (Python cannot
+preempt). Dispatch appends a bounded redacted journal row (fail-open).
 Never sets ``verified``.
 """
 
@@ -31,6 +33,8 @@ ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/hooks"
 MAX_HOOK_OUTPUT_BYTES = 16_384
 MAX_HANDOFF_BYTES = 8_192
 AGGREGATE_BUDGET_MS = 2_000
+TIMEOUT_KIND = "post_hoc"
+BUS_SOURCE = "omg-hooks-bus"
 
 # Logical names honored by hooks/bin/_common.py hook_disabled().
 _LEGACY_SKIP_ALIASES: dict[str, tuple[str, ...]] = {
@@ -108,6 +112,47 @@ GROK_EVENT_MAP: dict[str, str] = {
     "artifact.created": "reconciled",
     "job.terminal": "wrapper",
     "team.member.transition": "wrapper",
+}
+
+# Event → allowed Grok/AG host_hook names. ``host_hook: null`` is always
+# allowed (CLI wrapper / reconciled). Any other name fails closed on load.
+HOST_HOOK_ALLOWLIST: dict[str, frozenset[str]] = {
+    "prompt.submit": frozenset({"UserPromptSubmit"}),
+    "session.start": frozenset({"SessionStart"}),
+    "session.end": frozenset({"SessionEnd"}),
+    "tool.pre": frozenset({"PreToolUse"}),
+    "tool.post": frozenset({"PostToolUse"}),
+    "tool.failure": frozenset({"PostToolUse"}),
+    "permission.request": frozenset({"PermissionRequest"}),
+    "subagent.start": frozenset({"SubagentStart"}),
+    "subagent.stop": frozenset({"SubagentStop"}),
+    "compact.pre": frozenset({"PreCompact"}),
+    "idle": frozenset({"Stop"}),
+    "stop.request": frozenset({"Stop"}),
+    "workflow.transition": frozenset(),
+    "artifact.created": frozenset(),
+    "job.terminal": frozenset(),
+    "team.member.transition": frozenset(),
+}
+
+# Canonical bus event → event_contract LIFECYCLE_EVENTS type.
+BUS_EVENT_TYPES: dict[str, str] = {
+    "prompt.submit": "turn_started",
+    "session.start": "session_started",
+    "session.end": "agent_closed",
+    "tool.pre": "turn_started",
+    "tool.post": "turn_completed",
+    "tool.failure": "agent_failed",
+    "permission.request": "turn_started",
+    "subagent.start": "spawn_requested",
+    "subagent.stop": "agent_closed",
+    "compact.pre": "turn_started",
+    "idle": "agent_closed",
+    "stop.request": "agent_closed",
+    "workflow.transition": "turn_completed",
+    "artifact.created": "turn_completed",
+    "job.terminal": "agent_closed",
+    "team.member.transition": "turn_completed",
 }
 
 _HOOK_REQUIRED = (
@@ -242,6 +287,13 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
     host_hook = obj.get("host_hook")
     if host_hook is not None:
         host_hook = _require_str(host_hook, label=f"{label}.host_hook")
+        allowed = HOST_HOOK_ALLOWLIST.get(event)
+        if allowed is None:
+            raise HooksRegistryError(f"{hook_id}: event {event!r} has no host_hook allowlist")
+        if host_hook not in allowed:
+            raise HooksRegistryError(
+                f"{hook_id}: host_hook {host_hook!r} is not allowed for event {event!r}"
+            )
     required = obj.get("required_capabilities") or []
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
         raise HooksRegistryError(f"{hook_id}: required_capabilities must be strings")
@@ -270,7 +322,15 @@ def _parse_hook(value: Any, *, index: int) -> HookRecord:
     )
 
 
-def load_hooks_registry(root: Path | None = None) -> HooksRegistry:
+def load_hooks_registry(
+    root: Path | None = None, *, allow_incomplete: bool = False
+) -> HooksRegistry:
+    if set(HOST_HOOK_ALLOWLIST) != set(CANONICAL_EVENTS):
+        raise HooksRegistryError("HOST_HOOK_ALLOWLIST must cover every canonical event")
+    if set(BUS_EVENT_TYPES) != set(CANONICAL_EVENTS):
+        raise HooksRegistryError("BUS_EVENT_TYPES must cover every canonical event")
+    if set(GROK_EVENT_MAP) != set(CANONICAL_EVENTS):
+        raise HooksRegistryError("GROK_EVENT_MAP must cover every canonical event")
     base = Path(root) if root is not None else plugin_root()
     path = registry_path(base)
     if not path.is_file():
@@ -300,6 +360,16 @@ def load_hooks_registry(root: Path | None = None) -> HooksRegistry:
             raise HooksRegistryError(f"duplicate hook id {record.id!r}")
         seen.add(record.id)
         records.append(record)
+    if not allow_incomplete:
+        missing = [
+            hook_id
+            for hook_id in SECURITY_HANDLER_BINDINGS
+            if hook_id not in seen
+        ]
+        if missing:
+            raise HooksRegistryError(
+                "missing required security hook ids: " + ", ".join(missing)
+            )
     records.sort(key=lambda item: (item.event, item.priority, item.id))
     return HooksRegistry(schema=schema, hooks=tuple(records))
 
@@ -342,10 +412,13 @@ def inspect_hooks_registry(
         "hook_count": len(registry.hooks),
         "hooks": [hook.to_inspect_row() for hook in registry.hooks],
         "grok_event_map": grok_map,
+        "timeout_kind": TIMEOUT_KIND,
+        "security_hook_ids": list(SECURITY_HANDLER_BINDINGS),
         "note": (
             "Grok PreToolUse/Stop may block; SessionStart/SubagentStop are passive; "
             "UserPromptSubmit injection is unsupported. Antigravity hook files are "
-            "projections only, not live AG evidence. Never sets verified."
+            "projections only, not live AG evidence. Timeouts are post-hoc after "
+            "the synchronous handler returns. Never sets verified."
         ),
     }
 
@@ -522,10 +595,38 @@ def dispatch(
     """Run enabled hooks for *event*. Fail-open unless the hook is fail-closed.
 
     A hook crash never corrupts run state (this function does not write
-    ``.omg/state``). Oversized/untrusted output is rejected.
+    ``.omg/state`` ``passes`` / ``verified``). Oversized/untrusted output is
+    rejected. Timeout is cooperative: duration is recorded after the handler
+    returns. Journal append is fail-open.
     """
     if event not in CANONICAL_EVENTS:
         raise HooksRegistryError(f"unknown event {event!r}")
+    started = time.monotonic()
+    body = dict(payload or {})
+    result = _dispatch_event(
+        event,
+        body,
+        root=root,
+        env=env,
+        registry=registry,
+        handlers=handlers,
+    )
+    result["duration_ms"] = int((time.monotonic() - started) * 1000)
+    result["timeout_kind"] = TIMEOUT_KIND
+    result["verified"] = False
+    _fail_open_journal(result, event=event, payload=body)
+    return result
+
+
+def _dispatch_event(
+    event: str,
+    body: dict[str, Any],
+    *,
+    root: Path | None,
+    env: Mapping[str, str] | None,
+    registry: HooksRegistry | None,
+    handlers: Mapping[str, Callable[[HookRecord, Mapping[str, Any]], Any]] | None,
+) -> dict[str, Any]:
     e = env if env is not None else os.environ
     if bus_disabled(e):
         return {
@@ -537,12 +638,18 @@ def dispatch(
         }
     loaded = registry or load_hooks_registry(root)
     skip = skipped_hook_ids(e)
-    body = dict(payload or {})
     results: list[dict[str, Any]] = []
     started = time.monotonic()
     for record in loaded.for_event(event):
         if not record.enabled or _hook_skipped(record, skip):
-            results.append({"id": record.id, "status": "skipped"})
+            results.append(
+                {
+                    "id": record.id,
+                    "status": "skipped",
+                    "duration_ms": 0,
+                    "timeout_kind": TIMEOUT_KIND,
+                }
+            )
             continue
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if elapsed_ms >= AGGREGATE_BUDGET_MS:
@@ -550,6 +657,8 @@ def dispatch(
                 "id": record.id,
                 "status": "budget_exceeded",
                 "fail_policy": record.fail_policy,
+                "duration_ms": elapsed_ms,
+                "timeout_kind": TIMEOUT_KIND,
             }
             if record.fail_policy == "fail-closed":
                 return {
@@ -568,15 +677,30 @@ def dispatch(
             raw = runner(record, body) if runner else _run_handler(record, body)
             duration_ms = int((time.monotonic() - hook_started) * 1000)
             if duration_ms > record.timeout_ms:
-                raise HooksRegistryError(f"{record.id} exceeded timeout {record.timeout_ms}ms")
+                raise HooksRegistryError(
+                    f"{record.id} exceeded timeout {record.timeout_ms}ms"
+                )
             output = _validate_hook_output(raw)
-            results.append({"id": record.id, "status": "ok", "output": output})
+            results.append(
+                {
+                    "id": record.id,
+                    "status": "ok",
+                    "output": output,
+                    "duration_ms": duration_ms,
+                    "timeout_ms": record.timeout_ms,
+                    "timeout_kind": TIMEOUT_KIND,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 — bus must fail-open
+            duration_ms = int((time.monotonic() - hook_started) * 1000)
             row = {
                 "id": record.id,
                 "status": "error",
                 "error": f"{type(exc).__name__}: {exc}",
                 "fail_policy": record.fail_policy,
+                "duration_ms": duration_ms,
+                "timeout_ms": record.timeout_ms,
+                "timeout_kind": TIMEOUT_KIND,
             }
             if record.fail_policy == "fail-closed":
                 return {
@@ -591,6 +715,77 @@ def dispatch(
     return {"ok": True, "event": event, "results": results, "verified": False}
 
 
+def _workspace_from_payload(payload: Mapping[str, Any]) -> Path | None:
+    raw = payload.get("root") or payload.get("workspace")
+    if not raw:
+        return None
+    try:
+        return Path(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fail_open_journal(
+    result: dict[str, Any], *, event: str, payload: Mapping[str, Any]
+) -> None:
+    """Append a bounded redacted bus event. Never raises; never sets verified."""
+    workspace = _workspace_from_payload(payload)
+    if workspace is None:
+        result["journal"] = {
+            "ok": False,
+            "skipped": "no_workspace",
+            "verified": False,
+        }
+        return
+    try:
+        from omg_cli.runtime_events import append_bus_event
+
+        summary = {
+            "canonical_event": event,
+            "ok": result.get("ok"),
+            "skipped": result.get("skipped"),
+            "error": result.get("error"),
+            "duration_ms": result.get("duration_ms"),
+            "timeout_kind": TIMEOUT_KIND,
+            "results": [
+                {
+                    "id": row.get("id"),
+                    "status": row.get("status"),
+                    "duration_ms": row.get("duration_ms"),
+                    "fail_open": row.get("fail_open"),
+                }
+                for row in (result.get("results") or [])
+                if isinstance(row, dict)
+            ],
+            "verified": False,
+        }
+        journal = append_bus_event(
+            workspace,
+            canonical_event=event,
+            event_type=BUS_EVENT_TYPES.get(event, "agent_failed"),
+            payload=summary,
+            run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
+            session_id=(
+                payload.get("session_id")
+                if isinstance(payload.get("session_id"), str)
+                else None
+            ),
+        )
+        result["journal"] = {
+            "ok": True,
+            "source_sequence": journal.get("source_sequence"),
+            "event_id": journal.get("event_id"),
+            "verified": False,
+        }
+    except Exception as exc:  # noqa: BLE001 — journal must not crash a session
+        result["journal"] = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "fail_open": True,
+            "verified": False,
+        }
+
+
 def render_antigravity_projection(registry: HooksRegistry) -> str:
     lines = [
         "# Antigravity hook projection",
@@ -600,6 +795,10 @@ def render_antigravity_projection(registry: HooksRegistry) -> str:
         "",
         "This is **not** an installed Antigravity plugin, not live AG evidence,",
         "and not proof that `agy` hook discovery works.",
+        "",
+        "`hooks.json` beside this README is a **static** hooks.json-shaped",
+        "projection for a later install path (#77). Copying it does not mean",
+        "`agy` loaded hooks.",
         "",
         "Grok honesty:",
         "",
@@ -618,37 +817,144 @@ def render_antigravity_projection(registry: HooksRegistry) -> str:
     return "\n".join(lines)
 
 
+def render_antigravity_hooks_json(registry: HooksRegistry) -> dict[str, Any]:
+    """hooks.json-shaped static projection. Not live AG evidence."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for hook in registry.hooks:
+        if hook.host_hook is None:
+            continue
+        if hook.host_capability == "unsupported":
+            continue
+        grouped.setdefault(hook.host_hook, []).append(
+            {
+                "matcher": "*",
+                "omg_hook_id": hook.id,
+                "projection": True,
+                "live_ag": False,
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"omg-antigravity-hook-projection:{hook.id}",
+                        "timeout": max(1, (hook.timeout_ms + 999) // 1000),
+                    }
+                ],
+            }
+        )
+    return {
+        "schema": "omg-antigravity-hooks-projection/v1",
+        "kind": "static_projection",
+        "verified": False,
+        "live_ag": False,
+        "observed": False,
+        "healthy": False,
+        "hooks": grouped,
+        "note": (
+            "Static hooks.json-shaped projection for #72. Not an installed "
+            "Antigravity plugin and not proof that agy loaded hooks. "
+            "UserPromptSubmit injection is unsupported."
+        ),
+    }
+
+
+def antigravity_hooks_json_text(registry: HooksRegistry) -> str:
+    return (
+        json.dumps(
+            render_antigravity_hooks_json(registry),
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 def write_antigravity_projection(root: Path) -> str:
     registry = load_hooks_registry(root)
-    rel = f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md"
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_antigravity_projection(registry), encoding="utf-8", newline="\n")
-    return rel
+    dest = root / ANTIGRAVITY_PROJECTION_ROOT
+    dest.mkdir(parents=True, exist_ok=True)
+    readme = dest / "README.md"
+    hooks_json = dest / "hooks.json"
+    readme.write_text(
+        render_antigravity_projection(registry), encoding="utf-8", newline="\n"
+    )
+    hooks_json.write_text(
+        antigravity_hooks_json_text(registry), encoding="utf-8", newline="\n"
+    )
+    return f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md"
 
 
 def check_antigravity_projection(root: Path) -> list[str]:
     registry = load_hooks_registry(root)
-    expected = render_antigravity_projection(registry)
-    rel = f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md"
-    path = root / rel
-    if not path.is_file():
-        return [f"missing {rel}"]
-    actual = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-    if actual != expected.replace("\r\n", "\n"):
-        return [f"stale {rel}"]
-    return []
+    expected_readme = render_antigravity_projection(registry)
+    expected_json = antigravity_hooks_json_text(registry)
+    errors: list[str] = []
+    readme = root / ANTIGRAVITY_PROJECTION_ROOT / "README.md"
+    hooks_json = root / ANTIGRAVITY_PROJECTION_ROOT / "hooks.json"
+    if not readme.is_file():
+        errors.append(f"missing {ANTIGRAVITY_PROJECTION_ROOT}/README.md")
+    else:
+        actual = readme.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if actual != expected_readme.replace("\r\n", "\n"):
+            errors.append(f"stale {ANTIGRAVITY_PROJECTION_ROOT}/README.md")
+    if not hooks_json.is_file():
+        errors.append(f"missing {ANTIGRAVITY_PROJECTION_ROOT}/hooks.json")
+    else:
+        actual_json = hooks_json.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if actual_json != expected_json.replace("\r\n", "\n"):
+            errors.append(f"stale {ANTIGRAVITY_PROJECTION_ROOT}/hooks.json")
+    return errors
+
+
+def install_antigravity_hook_projection(
+    dest: Path | str,
+    *,
+    root: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Copy the static AG hook projection into *dest*.
+
+    Callable later by the #77 install manifest. Does **not** claim that
+    ``agy`` loaded hooks. Never sets ``verified``.
+    """
+    dest_dir = Path(dest)
+    if dest_dir.exists() and dest_dir.is_file():
+        raise HooksRegistryError("install dest must be a directory")
+    registry = load_hooks_registry(root)
+    files = {
+        "README.md": render_antigravity_projection(registry),
+        "hooks.json": antigravity_hooks_json_text(registry),
+    }
+    planned = [str(dest_dir / name) for name in files]
+    if not dry_run:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in files.items():
+            (dest_dir / name).write_text(body, encoding="utf-8", newline="\n")
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "files": planned,
+        "verified": False,
+        "live_ag": False,
+        "observed": False,
+        "healthy": False,
+        "note": "static projection copy; agy did not load these hooks",
+    }
 
 
 __all__ = [
     "AGGREGATE_BUDGET_MS",
     "ANTIGRAVITY_PROJECTION_ROOT",
+    "BUS_EVENT_TYPES",
+    "BUS_SOURCE",
     "CANONICAL_EVENTS",
     "GROK_EVENT_MAP",
+    "HOST_HOOK_ALLOWLIST",
     "KIND",
     "MAX_HANDOFF_BYTES",
     "REGISTRY_RELATIVE",
     "SCHEMA",
+    "SECURITY_HANDLER_BINDINGS",
+    "TIMEOUT_KIND",
     "HookRecord",
     "HooksRegistry",
     "HooksRegistryError",
@@ -656,8 +962,10 @@ __all__ = [
     "check_antigravity_projection",
     "dispatch",
     "inspect_hooks_registry",
+    "install_antigravity_hook_projection",
     "load_hooks_registry",
     "plugin_root",
+    "render_antigravity_hooks_json",
     "resolve_continuation",
     "skipped_hook_ids",
     "write_antigravity_projection",

@@ -668,6 +668,13 @@ passes task-ID-bound receipts to `omg workflow run`. See
 | `omg-vision` | `read-only` | Visual review — cannot edit |
 | `omg-qa-tester` / `omg-analyst` | see taxonomy | QA scenarios / interview analysis |
 
+Machine-readable plugin hook registry: [`hooks/registry.json`](../hooks/registry.json)
+(loader `omg_cli/hooks_registry.py`; inspect via `omg capabilities` →
+`hooks_registry` or `omg doctor`). Antigravity files under
+[`docs/parity/projections/antigravity/hooks/`](./parity/projections/antigravity/hooks/)
+are **projections only** — not an installed AG plugin and not live AG evidence.
+See [hooks-lifecycle.md](./hooks-lifecycle.md).
+
 Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog.json)
 (loader `omg_cli/skills_catalog.py`; `omg skill list|show|resolve|resources` or
 `omg capabilities` → `skills_catalog`). Antigravity `SKILL.md` files under

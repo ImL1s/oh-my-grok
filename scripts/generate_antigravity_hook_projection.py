@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate / check the Antigravity hook projection README (#72)."""
+"""Generate / check the Antigravity hook projection README + hooks.json (#72)."""
 
 from __future__ import annotations
 
