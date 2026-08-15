@@ -41,7 +41,7 @@ def team_worker_protocol_lines(
         f"'{_dumps(ack)}'`",
         "If the API returns team control plane missing / team_not_found,",
         "retry that exact command every 2s for up to 45s — `team.json`",
-        "publishes after pane spawn. Do not skip ACK/claim.",
+        "publishes after pane spawn. Do not skip ACK.",
     ]
     if api_task_id:
         claim = {"task_id": str(api_task_id), "worker": worker_id}
@@ -58,6 +58,7 @@ def team_worker_protocol_lines(
                 f"(not `{worker_id}` — that is the worker id):",
                 "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api claim-task --input "
                 f"'{_dumps(claim)}'`",
+                "Do not skip claim — a numeric board task is already bound.",
                 "3. Do the assignment in this worktree. Then complete using the",
                 "`claimToken` string from step 2 stdout (replace the placeholder):",
                 "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api "
