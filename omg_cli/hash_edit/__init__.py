@@ -2,7 +2,7 @@
 
 This package is a library contract. It does not write ``.omg/state``,
 does not set ``verified``, and does not claim that unobserved host-native
-edits used this protocol. The public CLI (``omg edit plan|apply``) wraps
+edits used this protocol. The public CLI (``omg edit plan|apply|comments|simplify``) wraps
 these functions; a protocol claim still requires ``apply_hash_edit`` to
 return ``HashEditApplyResultV1``.
 """

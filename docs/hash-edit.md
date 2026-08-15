@@ -1,15 +1,16 @@
 # Hash-anchored edit protocol V1 (#76)
 
-Library contract in `omg_cli.hash_edit`, plus a public CLI wrapper
-(`omg edit plan|apply`). It **supplements** host-native edit tools. It does
-**not** make unobserved host edits hash-anchored. There is no Team / read-only
-role authority, and no `.omg/state` writer.
+Library contract in `omg_cli.hash_edit`, plus a public CLI
+(`omg edit plan|apply|comments|simplify`). It **supplements** host-native
+edit tools. It does **not** make unobserved host edits hash-anchored. The
+CLI never writes `passes` / `verified`.
 
-A caller may claim this protocol was used only after `apply_hash_edit`
-returns a `HashEditApplyResultV1` (including via `omg edit apply`). Constructing
-that dataclass by hand is not proof.
+A caller may claim the hash-anchored protocol was used only after
+`apply_hash_edit` returns a `HashEditApplyResultV1` (including via
+`omg edit apply`). Constructing that dataclass by hand is not proof.
 
-Refs #76. This slice does not close the issue.
+Refs #76. This slice does not close the issue: there is still no
+`omo.edit.hash_anchored` host parity.
 
 ## Surfaces
 
@@ -19,7 +20,9 @@ Refs #76. This slice does not close the issue.
 | `plan_hash_edit` | Pure planner: descriptor + caller-supplied current bytes |
 | `apply_hash_edit` | Confined re-read, re-plan, atomic same-dir replace |
 | `omg edit plan --input <descriptor.json>` | Read-only CLI over parse + plan (no file write) |
-| `omg edit apply --input <descriptor.json>` | CLI apply via `apply_hash_edit` only |
+| `omg edit apply --input <descriptor.json>` | CLI apply via `apply_hash_edit` only, after Team / read-only gates |
+| `omg edit comments --input PATH\|--git-diff\|--paths` | Language-aware AI-slop / comment report (optional conservative `--fix`) |
+| `omg edit simplify --paths …` | Bounded simplifier assignment; no LLM in the CLI |
 
 `kind` is `omg.hash_edit.v1`. `schema_version` is the integer `1` (not `true`).
 
@@ -39,9 +42,18 @@ mutate the target, does not `patch(1)` a unified diff, and does not write
 `apply_hash_edit` (re-read, re-plan under lock, splice at offsets, atomic
 replace). Apply JSON is copy-safe: relative `path`, digests, offsets,
 `rebased`, `preserved_mode`. It omits raw source, replacement, unified-diff
-text, and local absolute paths (including `--input` read failures).
+text, and local absolute paths (including `--input` read failures). Successful
+apply also writes a redacted artifact under `.omg/artifacts/edit/<digest>.json`.
 
-Neither command writes `passes` / `verified` or any `.omg/state` stamp that
+**Team / role authority:** `apply` (and other mutating edit tools: `comments
+--fix`, `simplify --apply-edits`) refuse when `OMG_CAPABILITY_MODE=read-only`
+(`E_READ_ONLY`). When `--run-id`/`--task-id` or `OMG_RUN_ID`/`OMG_TASK_ID`
+are set **and** an ownership manifest exists for that run, the target path
+must be owned by the calling task (`E_OWNERSHIP`, via
+`omg_cli.workers.load_ownership_manifest`). If no manifest exists, host
+edits still proceed.
+
+These commands do not write `passes` / `verified` or any `.omg/state` stamp that
 claims OMG accepted the edit. This does **not** claim `omo.edit.hash_anchored`
 host parity.
 
@@ -61,6 +73,8 @@ Library failures map to stable CLI codes (exit `1`). Missing/unreadable
 | `E_HASH_EDIT_APPLY` | `HashEditApplyError` |
 | `E_HASH_EDIT_PLAN` | other `HashEditPlannerError` |
 | `E_HASH_EDIT` | other `HashEditError` |
+| `E_READ_ONLY` | `OMG_CAPABILITY_MODE=read-only` on mutating tools |
+| `E_OWNERSHIP` | active ULW/Team manifest and path not owned by calling task |
 
 Stale, ambiguous, and path errors fail closed. Plan and apply on hosts
 without `O_NOFOLLOW` / `dir_fd` (win32) fail closed in the library; do not
@@ -127,8 +141,35 @@ The result is copy-safe: relative `path`, digests, offsets, `rebased`,
 `preserved_mode`. It does not include raw source, replacement, unified-diff
 text, or local absolute paths.
 
+## Comment checker
+
+`omg edit comments` is language-aware and **report-only by default**. It
+flags redundant narration, AI/task meta-commentary, stale TODOs without
+ownership, unverifiable claims, banner noise, best-effort
+comment-vs-code inconsistency, copied prompt/reasoning, and optional
+banned patterns from `.omg/edit-comments.json`. Findings include path,
+line, rule id, severity, and a suggested repair. SPDX / Copyright /
+`security:` comments are allowlisted and never flagged or deleted.
+
+`--fix` is explicit and conservative: it only deletes whole-line
+auto-fixable `ai_meta` / `banner_noise` comments. It does not rewrite
+legal comments.
+
+## Bounded simplifier
+
+`omg edit simplify --paths …` is **disabled** unless `--enable` or
+`.omg/simplify.json` has `enabled: true`. Bounds: extension list, max
+files, max bytes. Generated / vendor / lock / minified paths are skipped.
+A once-per-stage marker is written to `.omg/state/simplify-guard.json`
+(not `verified`).
+
+The CLI does **not** call an LLM and does not invent edits. With no
+`--apply-edits` descriptors it records an assignment artifact for
+`omg-code-simplifier` (`read-write`) and returns blocked with
+`next_action` to spawn that role then `omg-code-reviewer` (`read-only`).
+The simplifier cannot approve itself.
+
 ## Out of scope
 
-Comment hygiene, simplifier roles, lifecycle hooks, MCP, Antigravity
-projection, Team ownership / read-only role authority, and claiming
+Lifecycle hooks, MCP, Antigravity projection, and claiming
 `omo.edit.hash_anchored` host parity.

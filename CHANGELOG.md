@@ -108,6 +108,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   and redacts bounded stderr before it is persisted. Visual Ralph is a bounded evidence loop (repair prompt artifact, no agent
   spawn, no `verified` stamp). Hermetic: `tests/test_visual_cli.py`. Refs #75
   (does not close — no live screenshot smoke / no AG vision model).
+- **#76 comment checker, simplifier, Team authority:** `omg edit comments`
+  (`--input` / `--git-diff` / `--paths`, report-only unless `--fix`) and
+  `omg edit simplify` (disabled unless `--enable` or `.omg/simplify.json`;
+  CLI never calls an LLM; assignment artifact for `omg-code-simplifier` then
+  independent `omg-code-reviewer`). `omg edit apply` refuses
+  `OMG_CAPABILITY_MODE=read-only` (`E_READ_ONLY`) and unowned ULW/Team paths
+  when an ownership manifest exists (`E_OWNERSHIP`; host edits still allowed
+  with no manifest). Durable redacted artifacts under `.omg/artifacts/edit/`.
+  Never writes `passes`/`verified`. Does not claim `omo.edit.hash_anchored`
+  host parity. Docs: `docs/hash-edit.md`. Hermetic:
+  `tests/test_comment_checker.py`. Refs #76 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records
