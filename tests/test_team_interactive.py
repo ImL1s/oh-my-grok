@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 
 from omg_cli.team.interactive import (
     E_TEAM_IO_MODE_UNSUPPORTED,
+    ECHO_PROBE_ENV,
+    GROK_INTERACTIVE_RULES,
     INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
     capture_contains_tui_ready,
@@ -72,8 +75,12 @@ def test_grok_interactive_argv_has_no_prompt_file() -> None:
     assert "--no-alt-screen" in argv
     assert "--minimal" in argv
     assert "--no-subagents" in argv
-    assert "--rules" in argv
-    assert argv[argv.index("--rules") + 1].startswith("When the user sends a line")
+    assert "--rules" not in argv
+    echo = grok_interactive_argv(
+        cwd="/tmp/wt", posture="read-write", rules=GROK_INTERACTIVE_RULES
+    )
+    assert "--rules" in echo
+    assert echo[echo.index("--rules") + 1].startswith("When the user sends a line")
     assert "bypassPermissions" not in argv
     yolo = grok_interactive_argv(cwd="/tmp/wt", posture="read-write", yolo=True)
     assert "bypassPermissions" in yolo
@@ -272,13 +279,38 @@ def test_dry_run_interactive_grok_argv(
     assert "bypassPermissions" not in rec["argv"]
     assert "--no-alt-screen" in rec["argv"]
     assert "--minimal" in rec["argv"]
-    assert "--rules" in rec["argv"]
+    assert "--rules" not in rec["argv"]
     assert "supervisor" not in rec["pane_command"]
     exec_path = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.sh"
     script = exec_path.read_text(encoding="utf-8")
     assert "omg_cli.team.interactive_wrapper" in script
     assert "PYTHONPATH=" in script
     assert "--prompt-file" not in script
+    rules = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.rules.txt"
+    assert not rules.is_file()
+
+
+@_POSIX
+def test_dry_run_interactive_echo_probe_attaches_rules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable(monkeypatch)
+    monkeypatch.setenv(ECHO_PROBE_ENV, "1")
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive grok",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1", ECHO_PROBE_ENV: "1"},
+    )
+    rec = meta["tasks"][0]
+    assert "--rules" in rec["argv"]
+    assert rec["argv"][rec["argv"].index("--rules") + 1].startswith(
+        "When the user sends a line"
+    )
     rules = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.rules.txt"
     assert rules.is_file()
     assert "PROVIDER_ECHO:" in rules.read_text(encoding="utf-8")
@@ -962,6 +994,35 @@ def test_child_alive_false_after_waitpid_reaps(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(os, "waitpid", lambda _pid, _flags: (99, 0))
     monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: True)
     assert wrap._child_alive(99) is False
+
+
+def test_reap_child_bounded_kills_after_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    if not hasattr(os, "WNOHANG"):
+        pytest.skip("WNOHANG is POSIX")
+    signals: list[int] = []
+
+    def fake_kill(_pid: int, signum: int) -> None:
+        signals.append(signum)
+
+    waits = {"n": 0}
+
+    def fake_waitpid(_pid: int, flags: int) -> tuple[int, int]:
+        waits["n"] += 1
+        if flags == os.WNOHANG and signal.SIGKILL not in signals:
+            return (0, 0)
+        if signal.SIGKILL in signals:
+            return (77, 0)
+        return (0, 0)
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(os, "killpg", fake_kill)
+    monkeypatch.setattr(os, "waitpid", fake_waitpid)
+    wrap._reap_child_bounded(77, grace_s=0.0)
+    assert signal.SIGTERM in signals
+    assert signal.SIGKILL in signals
+    assert waits["n"] >= 2
 
 
 def test_child_waiting_on_stdin_poll_sleep_requires_raw_tty(

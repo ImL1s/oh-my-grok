@@ -3623,9 +3623,11 @@ def start_team(
 
                 if want_interactive:
                     from omg_cli.team.interactive import (
+                        GROK_INTERACTIVE_RULES,
                         INTERACTIVE_NONCE_ENV,
                         INTERACTIVE_WRAPPER_MODULE,
                         assert_not_supervisor_pane_command,
+                        echo_probe_enabled,
                         fixture_interactive_argv,
                         grok_interactive_argv,
                         make_interactive_nonce,
@@ -3651,13 +3653,18 @@ def start_team(
                         routed_model = None
                         if multi_cli and resolved is not None:
                             routed_model = resolved.for_role(role).model
-                        write_interactive_rules_file(dest=rules_path)
+                        probe_rules = (
+                            GROK_INTERACTIVE_RULES if echo_probe_enabled(env) else None
+                        )
+                        if probe_rules:
+                            write_interactive_rules_file(dest=rules_path, body=probe_rules)
                         argv = grok_interactive_argv(
                             cwd=wt,
                             posture=posture,
                             model=routed_model,
                             safe=safe,
                             yolo=yolo,
+                            rules=probe_rules,
                         )
                         wrap_module = INTERACTIVE_WRAPPER_MODULE
                         pythonpath = str(Path(__file__).resolve().parents[2])

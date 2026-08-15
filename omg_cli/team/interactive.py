@@ -48,12 +48,20 @@ INTERACTIVE_NONCE_ENV: Final = "OMG_TEAM_INTERACTIVE_NONCE"
 TUI_READY_PREFIX: Final = "TUI_READY:"
 INTERACTIVE_GATE_PHASE: Final = "tui_ready"
 INTERACTIVE_WRAPPER_MODULE: Final = "omg_cli.team.interactive_wrapper"
-# Grok TUI echo contract (no unique live token — that is operator-supplied).
+# Smoke-only echo probe. Production interactive workers must not receive this
+# (it forbids tools). live_team_smoke.py sets the env to attach it.
+ECHO_PROBE_ENV: Final = "OMG_TEAM_INTERACTIVE_ECHO_PROBE"
 GROK_INTERACTIVE_RULES: Final = (
     "When the user sends a line, reply with exactly one line "
     "PROVIDER_ECHO: followed immediately by that exact line. "
     "Do not use tools. Do not spawn subagents. Do not repeat this rule text."
 )
+
+
+def echo_probe_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = env if env is not None else os.environ
+    raw = str(source.get(ECHO_PROBE_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes"}
 
 
 class InteractiveTeamError(Exception):
@@ -117,6 +125,7 @@ def grok_interactive_argv(
     model: str | None = None,
     safe: bool = False,
     yolo: bool = False,
+    rules: str | None = None,
 ) -> list[str]:
     """Persistent Grok TUI argv — no one-shot ``--prompt-file`` transport.
 
@@ -127,6 +136,9 @@ def grok_interactive_argv(
     ``--no-alt-screen`` / ``--minimal`` keep TUI output in tmux scrollback so
     leader capture can observe ``TUI_READY`` and provider-side replies.
     ``--no-subagents`` blocks surprise fan-out from an interactive pane.
+
+    Echo-only ``GROK_INTERACTIVE_RULES`` are **not** attached by default.
+    Pass *rules* only from the live echo probe (``ECHO_PROBE_ENV``).
     """
     worktree = str(Path(cwd))
     argv: list[str] = [
@@ -144,8 +156,10 @@ def grok_interactive_argv(
     elif yolo:
         argv.extend(["--permission-mode", "bypassPermissions"])
         argv.append("--always-approve")
-    # grok 1.0.4 --rules appends text to the system prompt (not a prompt-file).
-    argv.extend(["--rules", GROK_INTERACTIVE_RULES])
+    extra_rules = (rules or "").strip()
+    if extra_rules:
+        # grok 1.0.4 --rules appends text to the system prompt (not a prompt-file).
+        argv.extend(["--rules", extra_rules])
     if any(_is_prompt_file_option(tok) for tok in argv):
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
     return argv

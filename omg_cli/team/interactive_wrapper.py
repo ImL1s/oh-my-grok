@@ -83,6 +83,8 @@ _AARCH64_STDIN_WAIT: Final = frozenset(
 
 _READY_HOLD_POLLS: Final = 2
 _POLL_S: Final = 0.05
+_TERM_GRACE_S: Final = 2.0
+_KILL_GRACE_S: Final = 1.0
 E_WRAPPER_NO_TTY: Final = "E_WRAPPER_NO_TTY"
 E_WRAPPER_NO_CHILD: Final = "E_WRAPPER_NO_CHILD"
 E_WRAPPER_ARGV: Final = "E_WRAPPER_ARGV"
@@ -295,6 +297,37 @@ def _forward_signal(pid: int, signum: int) -> None:
             pass
 
 
+def _reap_child_bounded(pid: int, *, grace_s: float | None = None) -> None:
+    """SIGTERM, poll, then SIGKILL the process group. Never block forever."""
+    term_grace = _TERM_GRACE_S if grace_s is None else max(0.0, grace_s)
+    _forward_signal(pid, signal.SIGTERM)
+    deadline = time.monotonic() + term_grace
+    while True:
+        try:
+            waited, _status = os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            return
+        if waited == pid:
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_POLL_S)
+    _forward_signal(pid, signal.SIGKILL)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    kill_deadline = time.monotonic() + _KILL_GRACE_S
+    while time.monotonic() < kill_deadline:
+        try:
+            waited, _status = os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            return
+        if waited == pid:
+            return
+        time.sleep(_POLL_S)
+
+
 def _spawn_same_tty(argv: list[str]) -> int:
     """Fork/exec *argv* on the current TTY; return child pid (process group)."""
     pid = os.fork()
@@ -352,17 +385,7 @@ def run_wrapper(argv: list[str], *, nonce: str, timeout_s: float | None = None) 
 
     ready = _wait_for_stdin_ready(child, tty, timeout_s=timeout_s)
     if not ready or not _process_is_live(child):
-        if _child_alive(child):
-            _forward_signal(child, signal.SIGTERM)
-            try:
-                os.waitpid(child, 0)
-            except OSError:
-                _forward_signal(child, signal.SIGKILL)
-        else:
-            try:
-                os.waitpid(child, 0)
-            except OSError:
-                pass
+        _reap_child_bounded(child)
         print(E_WRAPPER_NO_CHILD, file=sys.stderr, flush=True)
         return 3
 

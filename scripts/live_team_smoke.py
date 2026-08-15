@@ -90,6 +90,7 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
     token = f"OMG147-LIVE-{secrets.token_hex(6)}"
     live_env = dict(env)
     live_env.setdefault("OMG_TEAM_READY_TIMEOUT_MS", "45000")
+    live_env["OMG_TEAM_INTERACTIVE_ECHO_PROBE"] = "1"
     evidence: dict = {
         "ok": False,
         "mode": "interactive-live",
