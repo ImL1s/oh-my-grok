@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from omg_cli.hooks_registry import (
+    BUS_EVENT_TYPES,
     CANONICAL_EVENTS,
     GROK_EVENT_MAP,
     HOST_HOOK_ALLOWLIST,
@@ -656,4 +657,12 @@ def test_install_antigravity_hook_projection(tmp_path: Path) -> None:
     assert "PreToolUse" in data["hooks"]
     assert data["kind"] == "static_projection"
     assert "not proof that agy loaded hooks" in data["note"]
+
+
+def test_bus_event_types_keep_stop_and_tool_failure_nonterminal() -> None:
+    assert BUS_EVENT_TYPES["stop.request"] == "turn_started"
+    assert BUS_EVENT_TYPES["idle"] == "turn_started"
+    assert BUS_EVENT_TYPES["tool.failure"] == "turn_completed"
+    assert BUS_EVENT_TYPES["session.end"] == "agent_closed"
+    assert BUS_EVENT_TYPES["subagent.stop"] == "agent_closed"
 
