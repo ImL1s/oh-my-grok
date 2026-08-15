@@ -5,7 +5,7 @@ English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 **45 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/)
 (16 original + 13 Wave B + 16 Wave C).  
 Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI stamps.
-Not live-verified. Antigravity files remain **projections**.
+Not a live smoke. Antigravity files remain **projections**.
 
 Machine catalog (aliases, classifications, pipeline metadata, continuation
 policy): [`skills/catalog.json`](../skills/catalog.json) · generated tables
@@ -67,7 +67,7 @@ injector). Antigravity projections are **not** an installed AG plugin.
 **Priority when several keywords match** (catalog-driven; same order in Grok rules):  
 `cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`, then remaining continuation owners, then others.
 
-### Wave B/C chooser (configured playbooks — not live-verified)
+### Wave B/C chooser (configured playbooks — not a live smoke)
 
 | When | Skill | Honest CLI |
 |------|-------|------------|
@@ -667,7 +667,7 @@ Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog
 `omg capabilities` → `skills_catalog`). Antigravity `SKILL.md` files under
 [`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
 are **projections only**. The 45 Grok plugin playbooks are the in-session
-surface (Wave B/C included). They are **not** live-verified.
+surface (Wave B/C included). They are **not** a live smoke.
 
 Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
 (loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →

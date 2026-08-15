@@ -17,7 +17,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   triggers/aliases (no UserPromptSubmit injector; no second skill list).
   Localized catalog tables: `docs/parity/skills-catalog.zh.md` and
   `skills-catalog.zh-TW.md`. Projection writes are atomic/no-follow and prune
-  obsolete AG files. **Not** live-verified; Antigravity files remain
+  obsolete AG files. **Not** a live smoke; Antigravity files remain
   projections; `live_verification` stays `unproven`. Does not set `verified`.
   Refs #70 (does not close — no live smoke).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
