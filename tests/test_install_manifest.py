@@ -767,6 +767,8 @@ def test_global_rules_inside_transaction_rollback(
     rules = grok_home / "rules" / "omg.md"
     rules.parent.mkdir(parents=True)
     rules.write_text("prior-rules\n", encoding="utf-8")
+    bak = rules.with_suffix(".md.bak")
+    bak.write_text("prior-bak\n", encoding="utf-8")
     agents = tmp_path / "AGENTS.md"
     agents.write_text("keep-agents\n", encoding="utf-8")
     orig = Path.write_text
@@ -789,6 +791,7 @@ def test_global_rules_inside_transaction_rollback(
         )
     assert agents.read_text(encoding="utf-8") == "keep-agents\n"
     assert rules.read_text(encoding="utf-8") == "prior-rules\n"
+    assert bak.read_text(encoding="utf-8") == "prior-bak\n"
 
 
 def test_hook_failure_rolls_back_rules_and_agents(

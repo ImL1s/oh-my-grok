@@ -520,6 +520,8 @@ def _writable_restore_paths(
             py_path, wrapper_path = _hook_companion_paths(target)
             allowed.add(py_path.absolute())
             allowed.add(wrapper_path.absolute())
+        if row["id"] == "user.grok.rules":
+            allowed.add(target.with_suffix(".md.bak").absolute())
     if scope == "user":
         allowed.add(user_manifest_path().absolute())
     elif project_root is not None:
@@ -783,6 +785,8 @@ def _apply_merge_or_install(
     elif kind == "rules":
         from omg_cli.guidance import GuidanceError, install_global_rules
 
+        bak_sidecar = target.with_suffix(".md.bak")
+        _backup_existing(backup_dir, f"{ident}.md.bak", bak_sidecar)
         try:
             rpath, raction = install_global_rules(home=_machine_grok_home())
         except GuidanceError as exc:
