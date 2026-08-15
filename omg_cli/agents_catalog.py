@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from omg_cli.catalog_yaml import CatalogYamlError, dump_yaml, parse_yaml
+from omg_cli.catalog_yaml import CatalogYamlError, parse_yaml
 
 SCHEMA = "omg-agents-catalog/v1"
 KIND = "read_only_machine_catalog"
