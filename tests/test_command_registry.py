@@ -41,7 +41,7 @@ def test_edit_is_registered_with_plan_apply() -> None:
                 if isinstance(nested, argparse._SubParsersAction):
                     choices = set(nested.choices)
                     break
-    assert choices == {"plan", "apply"}
+    assert choices == {"plan", "apply", "comments", "simplify"}
 
 
 def test_job_help_mentions_auto_retry_pr5() -> None:
