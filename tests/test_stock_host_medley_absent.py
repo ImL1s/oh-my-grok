@@ -756,17 +756,32 @@ def test_guarded_subprocess_rejects_executable_and_launch_overrides(
     assert "0.2.121" in (reviewed.stdout or "")
 
 
+def _install_reviewed_hook_pair(grok_home: Path) -> Path:
+    from omg_cli.hook_install import (
+        STANDALONE_BASENAME,
+        WRAPPER_BASENAME,
+        committed_standalone,
+        render_wrapper,
+    )
+
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    installed = hooks / STANDALONE_BASENAME
+    installed.write_bytes(committed_standalone().read_bytes())
+    wrapper = hooks / WRAPPER_BASENAME
+    wrapper.write_text(render_wrapper(installed), encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    return installed
+
+
 def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
     tmp_path, monkeypatch
 ) -> None:
-    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+    from omg_cli.hook_install import launcher_command
 
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
-    hooks = grok_home / "hooks"
-    hooks.mkdir()
-    installed = hooks / STANDALONE_BASENAME
-    installed.write_bytes(committed_standalone().read_bytes())
+    installed = _install_reviewed_hook_pair(grok_home)
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     expected = launcher_command(installed)
     args = [expected]
@@ -777,14 +792,11 @@ def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
 def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
     tmp_path, monkeypatch
 ) -> None:
-    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+    from omg_cli.hook_install import launcher_command
 
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
-    hooks = grok_home / "hooks"
-    hooks.mkdir()
-    installed = hooks / STANDALONE_BASENAME
-    installed.write_bytes(committed_standalone().read_bytes())
+    installed = _install_reviewed_hook_pair(grok_home)
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     expected = launcher_command(installed)
     valid = [expected]
@@ -854,6 +866,23 @@ def test_reviewed_hook_shell_argv_rejects_bad_installed_hook(
 
     installed.write_text("not the committed standalone\n", encoding="utf-8")
     reject("stale bytes")
+
+
+def test_reviewed_hook_shell_argv_rejects_mutated_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    from omg_cli.hook_install import WRAPPER_BASENAME, launcher_command
+
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    installed = _install_reviewed_hook_pair(grok_home)
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    wrapper = grok_home / "hooks" / WRAPPER_BASENAME
+    wrapper.write_text("#!/bin/sh\necho pwned\n", encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    args = [launcher_command(installed)]
+    assert _is_reviewed_hook_shell_argv(args, args[0], grok_home) is False
+    assert _allowed_subprocess_argv(args, tmp_path / "bin", grok_home) is False
 
 
 def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> None:

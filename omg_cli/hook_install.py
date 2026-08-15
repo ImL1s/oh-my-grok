@@ -83,13 +83,16 @@ def committed_standalone(root: Path | None = None) -> Path:
 
 
 def python3_executable() -> str:
-    """Absolute python3 grok's empty hook PATH may not find as ``python3``."""
+    """Absolute python3 grok's empty hook PATH may not find as ``python3``.
+
+    Keep the ``shutil.which`` path (``os.path.abspath``, not ``Path.resolve()``).
+    Homebrew's ``/opt/homebrew/bin/python3`` must stay the stable launcher, not a
+    Cellar inode that a brew upgrade deletes so every hook spawn ``|| true``
+    fail-opens until someone re-runs doctor.
+    """
     found = shutil.which("python3")
     if found:
-        try:
-            return str(Path(found).resolve())
-        except OSError:
-            return found
+        return os.path.abspath(found)
     return "/usr/bin/python3"
 
 

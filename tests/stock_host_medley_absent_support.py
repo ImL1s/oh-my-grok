@@ -472,28 +472,48 @@ def _is_reviewed_python_launch(
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
     """Doctor hook smoke: grok 1.0.4 execvp()s the wrapper path (no shell).
 
-    Authorizes only ``(launcher_command(final_path),)`` when the committed
-    standalone at ``$GROK_HOME/hooks/<standalone>`` is a regular non-symlink
-    file (``os.lstat``) and ``sha256`` of those bytes matches committed.
+    Authorizes only ``(launcher_command(final_path),)`` when both the committed
+    standalone and the execvp wrapper at ``$GROK_HOME/hooks/`` are regular
+    non-symlink files (``os.lstat``) and their bytes match committed /
+    ``render_wrapper``.
     """
     gh = _usable_grok_home(grok_home)
     if gh is None:
         return False
     try:
-        from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+        from omg_cli.hook_install import (
+            STANDALONE_BASENAME,
+            WRAPPER_BASENAME,
+            committed_standalone,
+            launcher_command,
+            render_wrapper,
+        )
 
         expected_path = gh / "hooks" / STANDALONE_BASENAME
+        wrapper_path = gh / "hooks" / WRAPPER_BASENAME
         expected_cmd = launcher_command(expected_path)
-        if len(args) != 1 or str(args[0]) != expected_cmd or raw != expected_cmd:
+        if (
+            len(args) != 1
+            or str(args[0]) != expected_cmd
+            or raw != expected_cmd
+            or str(wrapper_path) != expected_cmd
+        ):
             return False
         st = os.lstat(expected_path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
             return False
+        wst = os.lstat(wrapper_path)
+        if stat.S_ISLNK(wst.st_mode) or not stat.S_ISREG(wst.st_mode):
+            return False
         actual = hashlib.sha256(expected_path.read_bytes()).digest()
         wanted = hashlib.sha256(committed_standalone().read_bytes()).digest()
+        wrapper_actual = hashlib.sha256(wrapper_path.read_bytes()).digest()
+        wrapper_wanted = hashlib.sha256(
+            render_wrapper(expected_path).encode("utf-8")
+        ).digest()
     except (OSError, TypeError, ValueError):
         return False
-    return actual == wanted
+    return actual == wanted and wrapper_actual == wrapper_wanted
 
 
 def _allowed_subprocess_argv(

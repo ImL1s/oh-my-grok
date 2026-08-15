@@ -792,3 +792,28 @@ def test_grok_home_honors_env(tmp_path, monkeypatch):
     monkeypatch.delenv("GROK_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     assert hi.grok_home() == tmp_path / ".grok"
+
+
+def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeypatch):
+    """Codex P2: do not bake a Homebrew Cellar inode into the persistent wrapper."""
+    from omg_cli import hook_install as hi
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cellar = tmp_path / "Cellar" / "python@3.12" / "3.12.11" / "bin" / "python3"
+    cellar.parent.mkdir(parents=True)
+    cellar.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    cellar.chmod(0o755)
+    stable = bin_dir / "python3"
+    try:
+        stable.symlink_to(cellar)
+    except OSError:
+        pytest.skip("symlink python3 fixture unavailable")
+    def _which(name, *args, **kwargs):
+        return str(stable) if name == "python3" else None
+
+    monkeypatch.setattr(hi.shutil, "which", _which)
+    got = hi.python3_executable()
+    assert got == os.path.abspath(str(stable))
+    assert "Cellar" not in got
+    assert os.path.realpath(got) == os.path.realpath(cellar)
