@@ -614,7 +614,8 @@ def dispatch(
     result["duration_ms"] = int((time.monotonic() - started) * 1000)
     result["timeout_kind"] = TIMEOUT_KIND
     result["verified"] = False
-    _fail_open_journal(result, event=event, payload=body)
+    if result.get("skipped") != "disabled":
+        _fail_open_journal(result, event=event, payload=body)
     return result
 
 

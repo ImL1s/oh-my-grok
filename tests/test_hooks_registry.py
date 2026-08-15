@@ -593,6 +593,8 @@ def test_journal_does_not_persist_payload_secrets(tmp_path: Path) -> None:
 
 
 def test_disable_and_skip_still_work_with_journal(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import BUS_SOURCE, source_journal_path
+
     disabled = dispatch(
         "tool.pre",
         {"root": str(tmp_path), "toolName": "read_file"},
@@ -602,6 +604,8 @@ def test_disable_and_skip_still_work_with_journal(tmp_path: Path) -> None:
     assert disabled["ok"] is True
     assert disabled["skipped"] == "disabled"
     assert disabled["verified"] is False
+    assert "journal" not in disabled
+    assert not source_journal_path(tmp_path, BUS_SOURCE).exists()
     skipped = dispatch(
         "tool.pre",
         {"root": str(tmp_path), "toolName": "read_file"},

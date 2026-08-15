@@ -68,7 +68,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `omg.continuation.guard`) are omitted (test stubs may pass
   `allow_incomplete=True`). `dispatch()` appends a bounded redacted
   JSONL row via `omg_cli/runtime_events.py` with a monotonic
-  per-root sequence; journal write failures fail open. `duration_ms` is
+  per-root sequence; journal write failures fail open. Globally disabled
+  buses (`OMG_DISABLE_HOOKS` / `DISABLE_OMG`) skip journaling. `duration_ms` is
   always recorded; timeout is **post-hoc** after the synchronous handler
   returns (Python cannot preempt). Antigravity `hooks.json` + README under
   `docs/parity/projections/antigravity/hooks/` plus
