@@ -2204,6 +2204,179 @@ def test_stop_tmux_session_nonce_or_pane_rebind(
         assert not any(command[0] == "kill-session" for command in commands)
 
 
+def test_stop_kills_owned_session_when_receipt_pid_gone_and_pane_rebound(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Headless grok exit: receipt pid gone, pane rebound — kill owned session.
+
+    Live failure after #191: ``_resolve_live_signal_target`` refused the
+    rebound shell PID, then stop also skipped ``kill-session``. Disappearance
+    of the *receipted* process while session/nonce remain owned must authorize
+    owned-session teardown without signalling the rebound PID.
+    """
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("rebound after exit", TASKS_TWO, root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    commands: list[list[str]] = []
+    signals: list[tuple[int, int]] = []
+    receipt_pids = {int(t["pid"]) for t in live["tasks"]}
+    receipt_pgids = {int(t["pgid"]) for t in live["tasks"]}
+    rebound_delta = 7777
+    rebound_pgid = 888888
+
+    def getpgid(pid: int) -> int:
+        if pid in receipt_pids:
+            raise ProcessLookupError("receipted worker gone")
+        return rebound_pgid
+
+    def killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            if pgid in receipt_pgids:
+                raise ProcessLookupError("receipted group gone")
+            return
+        signals.append((pgid, int(sig)))
+        raise AssertionError(f"must not signal rebound or receipt pgid={pgid}")
+
+    def leader_pgid(pid: int) -> tuple[int | None, str | None]:
+        if pid in receipt_pids:
+            return None, None
+        return rebound_pgid, None
+
+    def group_gone(pgid: int) -> tuple[bool, str | None]:
+        if pgid in receipt_pgids:
+            return True, None
+        return False, None
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        _tmux_identity_runner(live, commands, pane_pid_delta=rebound_delta),
+    )
+    monkeypatch.setattr(plane.os, "getpgid", getpgid)
+    monkeypatch.setattr(plane.os, "killpg", killpg)
+    monkeypatch.setattr(plane.os, "kill", killpg)
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", leader_pgid)
+    monkeypatch.setattr(plane, "_process_group_disappeared", group_gone)
+
+    result = stop_team(tmp_path, meta["run_id"])
+
+    assert signals == []
+    assert result["identity_verified"] is True
+    assert result["process_disappearance_verified"] is True
+    assert result["stop_completed"] is True
+    assert ["kill-session", "-t", "$9"] in commands
+    assert any(
+        a.startswith("receipted process already gone task=")
+        for a in result["actions"]
+    )
+    assert "identity mismatch: skipped tmux kill-session" not in result["actions"]
+    durable = load_team_meta(tmp_path, meta["run_id"])
+    assert durable["stop_state"] == "stopped"
+
+
+def test_stop_does_not_signal_rebound_pid_while_receipt_process_still_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same %pane, new live PID, receipted process still running → refuse.
+
+    Must not signal the rebound PID and must not kill-session while the
+    receipted worker is still alive.
+    """
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("rebound while live", TASKS_TWO, root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    commands: list[list[str]] = []
+    signals: list[tuple[int, int]] = []
+    receipt_pids = {int(t["pid"]): int(t["pgid"]) for t in live["tasks"]}
+    rebound_pgid = 888888
+
+    def getpgid(pid: int) -> int:
+        if pid in receipt_pids:
+            return receipt_pids[pid]
+        return rebound_pgid
+
+    def killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            return
+        signals.append((pgid, int(sig)))
+
+    def leader_pgid(pid: int) -> tuple[int | None, str | None]:
+        if pid in receipt_pids:
+            return receipt_pids[pid], None
+        return rebound_pgid, None
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        _tmux_identity_runner(live, commands, pane_pid_delta=7777),
+    )
+    monkeypatch.setattr(plane.os, "getpgid", getpgid)
+    monkeypatch.setattr(plane.os, "killpg", killpg)
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", leader_pgid)
+    monkeypatch.setattr(
+        plane, "_process_group_disappeared", lambda _pgid: (False, None)
+    )
+
+    result = stop_team(tmp_path, meta["run_id"])
+
+    assert signals == []
+    assert rebound_pgid not in {pg for pg, _sig in signals}
+    assert result["identity_verified"] is False
+    assert result["stop_completed"] is False
+    assert not any(command[0] == "kill-session" for command in commands)
+    assert any(
+        "live tmux pane/process identity mismatch" in error
+        for error in (result.get("errors") or [])
+    )
+
+
+def test_stop_refuses_kill_session_when_receipt_gone_but_nonce_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dead receipt pid is not enough: foreign/wrong nonce must not kill-session."""
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+    meta = start_team("gone but wrong nonce", TASKS_TWO, root=tmp_path, dry_run=True)
+    live = _write_live_stop_identity(tmp_path, meta, monkeypatch)
+    commands: list[list[str]] = []
+    signals: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(plane, "tmux_available", lambda: True)
+    monkeypatch.setattr(
+        plane,
+        "_tmux_run",
+        _tmux_identity_runner(
+            live, commands, pane_pid_delta=7777, nonce="b" * 32
+        ),
+    )
+    monkeypatch.setattr(
+        plane, "_receipt_leader_pgid", lambda _pid: (None, None)
+    )
+    monkeypatch.setattr(
+        plane, "_process_group_disappeared", lambda _pgid: (True, None)
+    )
+    monkeypatch.setattr(
+        plane.os,
+        "killpg",
+        lambda pgid, sig: (
+            signals.append((pgid, int(sig)))
+            if sig != 0
+            else (_ for _ in ()).throw(ProcessLookupError("gone"))
+        ),
+    )
+
+    result = stop_team(tmp_path, meta["run_id"])
+
+    assert signals == []
+    assert result["identity_verified"] is False
+    assert result["stop_completed"] is False
+    assert not any(command[0] == "kill-session" for command in commands)
+
+
 def test_stop_dry_run_entries_not_signalled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

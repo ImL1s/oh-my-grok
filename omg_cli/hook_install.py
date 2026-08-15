@@ -102,6 +102,20 @@ def _looks_like_venv_python(path: str) -> bool:
     return False
 
 
+def _looks_like_version_manager_shim(path: str) -> bool:
+    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``)."""
+    try:
+        parts = [part.lower() for part in Path(path).parts]
+    except (OSError, TypeError, ValueError):
+        return False
+    for index, part in enumerate(parts):
+        if part != "shims" or index == 0:
+            continue
+        if parts[index - 1] in {".pyenv", "pyenv", ".asdf", "asdf"}:
+            return True
+    return False
+
+
 def python3_executable() -> str:
     """Absolute python3 grok's empty hook PATH may not find as ``python3``.
 
@@ -111,6 +125,10 @@ def python3_executable() -> str:
 
     Do not ``Path.resolve()``: Homebrew's ``/opt/homebrew/bin/python3`` must
     stay the stable launcher, not a Cellar inode a brew upgrade deletes.
+
+    pyenv/asdf shims are never persisted: they pick an interpreter from the
+    process cwd. If no durable candidate exists, fall back to
+    ``/usr/bin/python3`` so install/smoke fail closed instead of baking a shim.
     """
     for candidate in _DURABLE_PYTHON3:
         try:
@@ -119,7 +137,11 @@ def python3_executable() -> str:
         except OSError:
             continue
     found = shutil.which("python3")
-    if found and not _looks_like_venv_python(found):
+    if (
+        found
+        and not _looks_like_venv_python(found)
+        and not _looks_like_version_manager_shim(found)
+    ):
         return os.path.abspath(found)
     path_env = os.environ.get("PATH") or ""
     for directory in path_env.split(os.pathsep):
@@ -131,11 +153,12 @@ def python3_executable() -> str:
                 os.path.isfile(cand)
                 and os.access(cand, os.X_OK)
                 and not _looks_like_venv_python(cand)
+                and not _looks_like_version_manager_shim(cand)
             ):
                 return os.path.abspath(cand)
         except OSError:
             continue
-    if found:
+    if found and not _looks_like_version_manager_shim(found):
         return os.path.abspath(found)
     return "/usr/bin/python3"
 

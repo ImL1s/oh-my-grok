@@ -4947,6 +4947,12 @@ def _resolve_live_signal_target(
     Signal only the receipted pid/pgid/pid_start. PID drift requires a CLI
     identity-chain relaunch receipt (already reflected in ``row``), not a live
     pane rebind.
+
+    Returning ``None`` is never authority to signal the live pane PID. After a
+    headless worker exits, tmux often rebounds a shell under the same ``%N``.
+    Callers that still own the session/nonce must prove the *receipted* pid/pgid
+    are gone (:func:`_owned_receipt_process_disappeared`) and tear down the
+    owned session — they must not adopt the rebound PID as a signal target.
     """
     window_index = row.get("window_index")
     pane_id = row.get("pane_id")
@@ -5060,6 +5066,70 @@ def _live_signal_target_matches(
         )
         is not None
     )
+
+
+def _owned_receipt_process_disappeared(
+    session: str,
+    receipt: Mapping[str, Any],
+    row: Mapping[str, Any],
+    *,
+    session_owned: bool = True,
+    window_id: str | None = None,
+) -> tuple[bool, str | None]:
+    """Prove the receipted pid/pgid are gone while this Team still owns identity.
+
+    Used when live pane pid/pgid drifted (rebound shell after the worker exited).
+    Never inspects or returns the live pane PID — a rebound process is not a
+    signal target. Returns ``(True, None)`` only when:
+
+    - live tmux session id still matches the launch receipt, and
+    - launch nonce is still owned (session option, or window/pane for inside
+      mode), and
+    - the *receipted* leader pid is proven gone (``ProcessLookupError``), and
+    - the *receipted* process group is proven gone.
+
+    ``PermissionError`` / other probe failures are unknown, not absence.
+    """
+    if _read_tmux_session_identity(session) != (session, receipt.get("session_id")):
+        return False, "session identity mismatch"
+    pane_id = row.get("pane_id")
+    pane_ids = [str(pane_id)] if isinstance(pane_id, str) else None
+    if not _team_launch_nonce_matches(
+        session=session,
+        receipt=receipt,
+        session_owned=session_owned,
+        window_id=window_id,
+        pane_ids=pane_ids,
+    ):
+        return False, "launch nonce mismatch"
+
+    receipt_pid = row.get("pid")
+    receipt_pgid = row.get("pgid")
+    if (
+        isinstance(receipt_pid, bool)
+        or not isinstance(receipt_pid, int)
+        or receipt_pid <= 0
+    ):
+        return False, "invalid receipt pid"
+    if (
+        isinstance(receipt_pgid, bool)
+        or not isinstance(receipt_pgid, int)
+        or receipt_pgid <= 0
+    ):
+        return False, "invalid receipt pgid"
+
+    leader_pgid, leader_error = _receipt_leader_pgid(receipt_pid)
+    if leader_error is not None:
+        return False, leader_error
+    if leader_pgid is not None:
+        return False, "receipted process still live"
+
+    group_gone, group_error = _process_group_disappeared(receipt_pgid)
+    if group_error is not None:
+        return False, group_error
+    if not group_gone:
+        return False, "receipted process group still live"
+    return True, None
 
 
 def _process_group_disappeared(pgid: int) -> tuple[bool, str | None]:
@@ -5227,7 +5297,13 @@ def stop_team(
     """Stop only an exact nonce-bound immutable launch identity.
 
     ``team.json`` alone is never process authority.  The immutable receipt,
-    live tmux session/pane identity, pane PID and OS PGID must all agree.
+    live tmux session/pane identity, pane PID and OS PGID must all agree
+    before any process is signalled.
+
+    When the receipted pid/pgid are already gone (headless worker exited) and
+    the session/nonce are still owned by this Team, disappearance is treated
+    as verified and the *owned* session is ``kill-session``'d. A rebound pane
+    PID is never adopted as a signal target.
 
     Always writes a durable ``shutdown-request.json`` first.  When API board
     tasks are ``in_progress``, non-``force`` stops fail closed (no teardown).
@@ -5426,6 +5502,8 @@ def _stop_team_locked(
     verified_targets: list[dict[str, Any]] = []
     receipt: dict[str, Any] | None = None
     identity_verified = False
+    receipt_gone_task_ids: set[str] = set()
+    stop_nonce_pane_ids: list[str] = []
     session_owned = bool(meta.get("session_owned", True))
     window_id = meta.get("window_id")
     window_id_str = (
@@ -5462,6 +5540,11 @@ def _stop_team_locked(
             current_rows = (
                 receipt["tasks"] if len(chain) == 1 else chain[-1]["tasks_after"]
             )
+            stop_nonce_pane_ids = [
+                str(row.get("pane_id"))
+                for row in current_rows
+                if isinstance(row, Mapping) and isinstance(row.get("pane_id"), str)
+            ]
             if not tmux_available():
                 raise TeamError("tmux unavailable for launch identity readback")
             observed_session = _read_tmux_session_identity(session)
@@ -5473,11 +5556,7 @@ def _stop_team_locked(
                 receipt=receipt,
                 session_owned=session_owned,
                 window_id=window_id_str,
-                pane_ids=[
-                    str(row.get("pane_id"))
-                    for row in current_rows
-                    if isinstance(row.get("pane_id"), str)
-                ],
+                pane_ids=stop_nonce_pane_ids,
             ):
                 raise TeamError("live tmux launch nonce mismatch")
             # observed_panes used only as a soft preflight; kill authority is
@@ -5491,9 +5570,29 @@ def _stop_team_locked(
                     session_owned=session_owned,
                     window_id=window_id_str,
                 )
-                if resolved is None:
-                    raise TeamError("live tmux pane/process identity mismatch")
-                verified_targets.append(resolved)
+                if resolved is not None:
+                    verified_targets.append(resolved)
+                    continue
+                # Live pane pid/pgid drifted (rebound shell). Never adopt that
+                # PID. If the receipted worker is already gone and we still own
+                # session/nonce, treat disappearance as verified.
+                disappeared, disappear_err = _owned_receipt_process_disappeared(
+                    session,
+                    receipt,
+                    row,
+                    session_owned=session_owned,
+                    window_id=window_id_str,
+                )
+                if disappeared:
+                    tid = str(row.get("task_id") or "")
+                    actions.append(f"receipted process already gone task={tid}")
+                    if tid:
+                        receipt_gone_task_ids.add(tid)
+                    continue
+                detail = f": {disappear_err}" if disappear_err else ""
+                raise TeamError(
+                    f"live tmux pane/process identity mismatch{detail}"
+                )
             identity_verified = True
         except (TeamError, ProcessLookupError, PermissionError, OSError) as exc:
             errors.append(f"identity verification refused signalling: {exc}")
@@ -5502,8 +5601,10 @@ def _stop_team_locked(
     # still live. Do this before killing tmux: after kill-session the pane
     # authority is gone and a recorded PGID could already have been reused.
     signalled: list[dict[str, Any]] = []
-    attempted_task_ids: set[str] = set()
-    process_disappearance_verified = bool(identity_verified and verified_targets)
+    attempted_task_ids: set[str] = set(receipt_gone_task_ids)
+    process_disappearance_verified = bool(identity_verified) and (
+        bool(verified_targets) or bool(receipt_gone_task_ids)
+    )
     for raw in verified_targets:
         tid = raw.get("task_id")
         try:
@@ -5523,40 +5624,27 @@ def _stop_team_locked(
             )
             if resolved is None:
                 # Worker may have already exited (claim→completed) while the
-                # owned session/nonce still match. Treat as already stopped
-                # only when pane absence is *proven* (not probe-unknown).
-                session_ok = _read_tmux_session_identity(session) == (
+                # owned session/nonce still match. A rebound shell under the
+                # same pane token is not a signal target — prove the receipted
+                # pid/pgid are gone, then continue to owned-session teardown.
+                disappeared, disappear_err = _owned_receipt_process_disappeared(
                     session,
-                    receipt.get("session_id"),
-                ) and _team_launch_nonce_matches(
-                    session=session,
-                    receipt=receipt,
+                    receipt,
+                    raw,
                     session_owned=session_owned,
                     window_id=window_id_str,
-                    pane_ids=[str(raw["pane_id"])]
-                    if isinstance(raw.get("pane_id"), str)
-                    else None,
                 )
-                pane_id = raw.get("pane_id")
-                pane_absent: bool | None = None
-                pane_probe_error: str | None = None
-                if isinstance(pane_id, str) and _TMUX_PANE_ID.fullmatch(pane_id):
-                    pane_absent, pane_probe_error = _pane_proven_absent(pane_id)
-                if session_ok and pane_absent is True:
+                if disappeared:
                     actions.append(f"process already gone before signal task={tid}")
                     attempted_task_ids.add(str(tid))
                     continue
                 identity_verified = False
                 process_disappearance_verified = False
-                if pane_probe_error:
-                    errors.append(
-                        f"signal identity drift refused signalling for task={tid}: "
-                        f"{pane_probe_error}"
-                    )
-                else:
-                    errors.append(
-                        f"signal identity drift refused signalling for task={tid}"
-                    )
+                detail = f": {disappear_err}" if disappear_err else ""
+                errors.append(
+                    f"signal identity drift refused signalling for task={tid}"
+                    f"{detail}"
+                )
                 continue
             pid = resolved["pid"]
             pgid = resolved["pgid"]
@@ -5775,7 +5863,8 @@ def _stop_team_locked(
                         receipt=receipt,
                         session_owned=session_owned,
                         window_id=window_id_str,
-                        pane_ids=[
+                        pane_ids=stop_nonce_pane_ids
+                        or [
                             str(t.get("pane_id"))
                             for t in verified_targets
                             if isinstance(t.get("pane_id"), str)
