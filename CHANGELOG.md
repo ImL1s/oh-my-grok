@@ -23,7 +23,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   is **not** claimed. Leftover is grok TUI submit/echo, not wrapper
   spawn-only false-green. poll/select/epoll sleep is not stdin-wait unless
   the shared TTY is already raw/noncanonical; zombies are not live.
-  Refs #147 (does not close).
+  aarch64 stdin-wait uses `epoll_pwait` 22 / `epoll_pwait2` 441 (not the
+  x86_64 232/281 numbers). Refs #147 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

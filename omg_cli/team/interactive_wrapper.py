@@ -43,6 +43,7 @@ _X86_64_EPOLL_WAIT: Final = 232
 _X86_64_PSELECT6: Final = 270
 _X86_64_PPOLL: Final = 271
 _X86_64_EPOLL_PWAIT: Final = 281
+_X86_64_EPOLL_PWAIT2: Final = 441
 _X86_64_STDIN_WAIT: Final = frozenset(
     {
         _X86_64_READ,
@@ -55,16 +56,19 @@ _X86_64_STDIN_WAIT: Final = frozenset(
         _X86_64_PSELECT6,
         _X86_64_PPOLL,
         _X86_64_EPOLL_PWAIT,
+        _X86_64_EPOLL_PWAIT2,
     }
 )
-# Linux aarch64 (WSL-on-ARM / native).
+# Linux aarch64 (WSL-on-ARM / native). asm-generic: epoll_pwait=22,
+# ppoll=73, pselect6=72. 232/281 are x86_64 epoll_wait/epoll_pwait and
+# mean mincore/execveat on aarch64 — do not reuse them.
 _AARCH64_READ: Final = 63
 _AARCH64_PREAD64: Final = 67
 _AARCH64_READV: Final = 65
 _AARCH64_PPOLL: Final = 73
 _AARCH64_PSELECT6: Final = 72
-_AARCH64_EPOLL_WAIT: Final = 232
-_AARCH64_EPOLL_PWAIT: Final = 281
+_AARCH64_EPOLL_PWAIT: Final = 22
+_AARCH64_EPOLL_PWAIT2: Final = 441
 _AARCH64_STDIN_WAIT: Final = frozenset(
     {
         _AARCH64_READ,
@@ -72,8 +76,8 @@ _AARCH64_STDIN_WAIT: Final = frozenset(
         _AARCH64_READV,
         _AARCH64_PPOLL,
         _AARCH64_PSELECT6,
-        _AARCH64_EPOLL_WAIT,
         _AARCH64_EPOLL_PWAIT,
+        _AARCH64_EPOLL_PWAIT2,
     }
 )
 

@@ -927,6 +927,23 @@ def test_wrapper_no_tui_ready_when_child_never_reads(
             proc.wait(timeout=3)
 
 
+def test_aarch64_stdin_wait_syscalls_use_generic_epoll_pwait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    monkeypatch.setattr(wrap, "_machine", lambda: "aarch64")
+    wait_set = wrap._stdin_wait_syscalls()
+    assert 22 in wait_set  # epoll_pwait
+    assert 441 in wait_set  # epoll_pwait2
+    assert 232 not in wait_set  # x86_64 epoll_wait == aarch64 mincore
+    assert 281 not in wait_set  # x86_64 epoll_pwait == aarch64 execveat
+    monkeypatch.setattr(wrap, "_machine", lambda: "x86_64")
+    x86 = wrap._stdin_wait_syscalls()
+    assert 232 in x86 and 281 in x86 and 441 in x86
+    assert 22 not in x86
+
+
 def test_process_is_live_false_for_zombie_state(monkeypatch: pytest.MonkeyPatch) -> None:
     from omg_cli.team import interactive_wrapper as wrap
 
