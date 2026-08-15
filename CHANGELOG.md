@@ -113,7 +113,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `omg edit simplify` (disabled unless `--enable` or `.omg/simplify.json`;
   CLI never calls an LLM; assignment artifact for `omg-code-simplifier` then
   independent `omg-code-reviewer`). `omg edit apply` refuses
-  `OMG_CAPABILITY_MODE=read-only` (`E_READ_ONLY`) and unowned ULW/Team paths
+  `OMG_CAPABILITY_MODE=read-only` (`E_READ_ONLY`), ownership-task
+  `capability_mode=read-only`, and unowned ULW/Team paths
   when an ownership manifest exists (`E_OWNERSHIP`; host edits still allowed
   with no manifest). Durable redacted artifacts under `.omg/artifacts/edit/`.
   Never writes `passes`/`verified`. Does not claim `omo.edit.hash_anchored`

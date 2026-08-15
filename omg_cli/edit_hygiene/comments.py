@@ -648,6 +648,33 @@ def check_comments(
     return CommentReport(findings=findings, scanned_paths=scanned, skipped=skipped)
 
 
+def _comment_line_safe_to_drop(stripped: str) -> bool:
+    """True when *stripped* is comment-only and safe to delete on ``--fix``.
+
+    A closer (``*/``) must be last non-whitespace. Anything before it must
+    also look like a comment; trailing code after the closer refuses the drop.
+    """
+
+    if not stripped:
+        return False
+    if "*/" in stripped:
+        before, _, after = stripped.partition("*/")
+        if after.strip():
+            return False
+        head = before.strip()
+        if head and not (
+            head.startswith("/*") or head.startswith("*") or head.startswith("//")
+        ):
+            return False
+    return (
+        stripped.startswith("/*")
+        or stripped.startswith("#")
+        or stripped.startswith("//")
+        or stripped.startswith("*")
+        or stripped.startswith("*/")
+    )
+
+
 def apply_comment_fixes(
     root: Path,
     report: CommentReport,
@@ -670,17 +697,7 @@ def apply_comment_fixes(
             # Conservative: only drop when every line in the span is a comment line.
             ok = True
             for lineno in range(item.line, item.end_line + 1):
-                stripped = lines[lineno - 1].lstrip()
-                if stripped.startswith("/*"):
-                    if "*/" in stripped and not stripped.rstrip().endswith("*/"):
-                        ok = False
-                        break
-                elif not (
-                    stripped.startswith("#")
-                    or stripped.startswith("//")
-                    or stripped.startswith("*")
-                    or stripped.startswith("*/")
-                ):
+                if not _comment_line_safe_to_drop(lines[lineno - 1].lstrip()):
                     ok = False
                     break
             if not ok:

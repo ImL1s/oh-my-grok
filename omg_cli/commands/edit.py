@@ -297,6 +297,14 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         desc = _load_descriptor(getattr(args, "input_path", None))
         run_id, task_id = _ids(args)
         assert_mutative_edit_allowed(root, desc.path, run_id=run_id, task_id=task_id)
+        artifact_dir = Path(root) / ".omg" / "artifacts" / "edit"
+        try:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            probe = artifact_dir / ".write-probe"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HashEditError("cannot write edit artifacts before apply") from exc
         current = _read_current_bytes(root, desc.path)
         plan = plan_hash_edit(
             desc,

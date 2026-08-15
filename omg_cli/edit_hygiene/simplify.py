@@ -260,8 +260,10 @@ def run_simplify(
     if applying:
         if same_stage and status == "applied":
             raise SimplifyRecursion("simplifier already applied for this stage")
-        if same_stage and status not in {"", "assigned"}:
-            raise SimplifyRecursion("simplifier recursion guard blocked apply-edits")
+        if not (same_stage and status == "assigned"):
+            raise SimplifyRecursion(
+                "apply-edits requires a prior assignment for this stage"
+            )
     else:
         if same_stage and status in {"assigned", "applied"}:
             raise SimplifyRecursion("simplifier already ran for this stage")
@@ -329,7 +331,9 @@ def run_simplify(
         raise SimplifyError("apply-edits contained no descriptors")
 
     kept_set = {Path(rel).as_posix() for rel in kept}
-    applied: list[dict[str, Any]] = []
+    planned: list[tuple[Any, Any]] = []
+    from omg_cli.hash_edit.apply import read_confined_regular_file
+
     for desc in descriptors:
         desc_path = Path(str(desc.path)).as_posix()
         if desc_path not in kept_set:
@@ -337,10 +341,12 @@ def run_simplify(
                 f"apply-edits path {desc_path!r} is outside the bounded --paths set"
             )
         assert_mutative_edit_allowed(root, desc.path, run_id=run_id, task_id=task_id)
-        from omg_cli.hash_edit.apply import read_confined_regular_file
-
         current = read_confined_regular_file(root, desc.path)
         plan = plan_hash_edit(desc, HashEditCurrentFact(path=desc.path, current_bytes=current))
+        planned.append((desc, plan))
+
+    applied: list[dict[str, Any]] = []
+    for desc, plan in planned:
         result = apply_hash_edit(root, desc, plan)
         applied.append(
             {

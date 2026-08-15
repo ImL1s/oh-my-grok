@@ -113,6 +113,11 @@ def assert_path_owned_if_manifest(
             break
     if match is None:
         raise OwnershipEditError("calling task is not in the ownership manifest")
+    task_mode = str(match.get("capability_mode") or "").strip().lower().replace("_", "-")
+    if task_mode in {"read-only", "readonly"}:
+        raise ReadOnlyEditError(
+            "mutating edit refused: ownership task capability_mode is read-only"
+        )
     owned = {
         _norm_relpath(str(item))
         for item in (match.get("owned_files") or [])

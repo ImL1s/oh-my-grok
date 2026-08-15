@@ -469,11 +469,52 @@ def test_comments_fix_preserves_trailing_code(
     assert "const important = 42;" in src.read_text(encoding="utf-8")
 
 
+def test_comments_fix_preserves_code_after_block_closer(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = project / "closer.js"
+    src.write_text(
+        "/*\n * AI-generated helper\n */ const important = 42;\n",
+        encoding="utf-8",
+    )
+    rc = main(["--json", "edit", "comments", "--paths", "closer.js", "--fix"])
+    assert rc == 0
+    _out(capsys)
+    assert "const important = 42;" in src.read_text(encoding="utf-8")
+
+
+def test_simplify_apply_edits_requires_assignment(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "allowed.py").write_text("alpha", encoding="utf-8")
+    desc = project / "edits.json"
+    desc.write_text(json.dumps([_descriptor("allowed.py")]), encoding="utf-8")
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "allowed.py",
+            "--enable",
+            "--apply-edits",
+            str(desc),
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_RECURSION"
+    assert (project / "allowed.py").read_text(encoding="utf-8") == "alpha"
+
+
 def test_simplify_apply_edits_must_stay_in_paths(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (project / "allowed.py").write_text("alpha", encoding="utf-8")
     (project / "outside.py").write_text("alpha", encoding="utf-8")
+    rc = main(["--json", "edit", "simplify", "--paths", "allowed.py", "--enable"])
+    assert rc == 1
+    assert _code(_out(capsys)) == "E_SIMPLIFY_ASSIGNMENT"
     desc = project / "edits.json"
     desc.write_text(json.dumps([_descriptor("outside.py")]), encoding="utf-8")
     rc = main(
@@ -492,3 +533,31 @@ def test_simplify_apply_edits_must_stay_in_paths(
     payload = _out(capsys)
     assert _code(payload) == "E_SIMPLIFY"
     assert (project / "outside.py").read_text(encoding="utf-8") == "alpha"
+
+
+def test_apply_refuses_read_only_task_capability(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build_ownership_manifest(
+        project,
+        "run1",
+        [{"task_id": "t1", "owned_files": ["docs/example.md"], "capability_mode": "read-only"}],
+    )
+    desc = project / "descriptor.json"
+    desc.write_text(json.dumps(_descriptor("docs/example.md")), encoding="utf-8")
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "apply",
+            "--input",
+            str(desc),
+            "--run-id",
+            "run1",
+            "--task-id",
+            "t1",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_READ_ONLY"
