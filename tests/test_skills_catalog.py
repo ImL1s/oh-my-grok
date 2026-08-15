@@ -444,6 +444,14 @@ def test_resolve_trigger_requires_token_boundaries() -> None:
     assert team is not None and team.id == "omg-team"
 
 
+def test_resolve_trigger_cancel_beats_longer_owner() -> None:
+    catalog = load_skills_catalog(ROOT)
+    hit = resolve_trigger(catalog, "cancel autopilot")
+    assert hit is not None and hit.id == "omg-cancel"
+    ralplan = resolve_trigger(catalog, "ralplan then ralph")
+    assert ralplan is not None and ralplan.id == "omg-ralplan"
+
+
 def test_write_helpers_are_idempotent(tmp_path: Path) -> None:
     _stub_skill(tmp_path, "omg-using")
     _write_catalog(tmp_path, [_plugin_entry("omg-using")])

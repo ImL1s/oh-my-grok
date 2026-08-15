@@ -792,6 +792,15 @@ def resolve_trigger(catalog: SkillsCatalog, text: str) -> SkillRecord | None:
     if not candidates:
         token = lowered.split()[0].lstrip("/")
         return catalog.resolve(token)
+    # Documented cancel-first priority beats longer trigger phrases so
+    # "cancel autopilot" resolves to omg-cancel, not omg-autopilot.
+    by_id: dict[str, SkillRecord] = {}
+    for _length, record in candidates:
+        by_id.setdefault(record.id, record)
+    for skill_id in ROUTING_PRIORITY_HEAD:
+        hit = by_id.get(skill_id)
+        if hit is not None:
+            return hit
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
 

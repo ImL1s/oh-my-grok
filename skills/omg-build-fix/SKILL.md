@@ -38,7 +38,8 @@ Root-cause a broken build and apply a minimal fix. Use when the user says build-
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply a **minimal source fix** in the failing slice (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/` (e.g. `build-fix.md`).
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg qa *` for bounded repair. Debugger agent: `omg-debugger` with `capability_mode: read-write`.
 

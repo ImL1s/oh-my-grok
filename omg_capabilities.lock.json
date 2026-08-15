@@ -20,7 +20,7 @@
     "skills/omg-autoresearch-goal/SKILL.md": "ec9acf948357268de7a7d36a684663d7e74e5e3e47419eae2f5d29e29d32a403",
     "skills/omg-autoresearch/SKILL.md": "122950495552ed076ed87b9f8bbe39868c66fb0cb35ef07a71ff044908c6f66a",
     "skills/omg-best-practice-research/SKILL.md": "1992df615fd5434a4951c7e3adb1fd4cb973411268852c1a73c514d50704700b",
-    "skills/omg-build-fix/SKILL.md": "d8eab284650174b6d630e8eae31553866b7e5d9f71e363058fef01ca068328bf",
+    "skills/omg-build-fix/SKILL.md": "0b66620034bc39a163e9a8d744acf8186380c814ffb84b6ecaf8fa348b43ce89",
     "skills/omg-cancel/SKILL.md": "cc60cbe53fceac3bdbda0df29743c51f464e35c61f74ec150a8aa4a2bfa8a93f",
     "skills/omg-comment-checker/SKILL.md": "fba29c675c52ebe0efa559d2f826ec77e349341bbd25ceb4f3511c48e79743e8",
     "skills/omg-configure-notifications/SKILL.md": "d98044ff569d2bd19eb5f87c77007da8eb962201214c28cf0ac104dd1ac9759f",
@@ -60,7 +60,7 @@
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9",
     "skills/omg-writer-memory/SKILL.md": "f387a2607e5a643f450ff5c5c65743f8cf8e6fa85670b61693f62732e71def35"
   },
-  "aggregate": "d4a83d16024ceb2daf7a64f9c750b3e4319f137aa91072de5a5b4c7c8c95248e",
+  "aggregate": "0c26f164a38dd9198bd73939dadbf68dd68ec7f2d0ed191094903c95955fee71",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -103,7 +103,7 @@
       {
         "name": "omg-build-fix",
         "path": "skills/omg-build-fix/SKILL.md",
-        "sha256": "d8eab284650174b6d630e8eae31553866b7e5d9f71e363058fef01ca068328bf",
+        "sha256": "0b66620034bc39a163e9a8d744acf8186380c814ffb84b6ecaf8fa348b43ce89",
         "metadata_status": "valid"
       },
       {
@@ -678,5 +678,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "567137fd48dc14e18789d95b13de98a4b53a0f57692e1ff43855e1c8c3fbb9aa"
+  "session_surface_aggregate": "e6e5ee99dcc12e175fddd55a943c1dc70b8a6dd4aebf56ed978726312890e124"
 }
