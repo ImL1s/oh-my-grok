@@ -779,8 +779,7 @@ def resolve_trigger(catalog: SkillsCatalog, text: str) -> SkillRecord | None:
     lowered = (text or "").strip().lower()
     if not lowered:
         return None
-    # Prefer longer trigger phrases, then exact alias/id tokens.
-    candidates: list[tuple[int, SkillRecord]] = []
+    scored: list[tuple[int, str, SkillRecord]] = []
     for record in catalog.skills:
         if record.kind != "canonical":
             continue
@@ -788,21 +787,32 @@ def resolve_trigger(catalog: SkillsCatalog, text: str) -> SkillRecord | None:
         for name in names:
             needle = name.strip().lower()
             if needle and _trigger_contained(lowered, needle):
-                candidates.append((len(needle), record))
-    if not candidates:
+                scored.append((len(needle), needle, record))
+    if not scored:
         token = lowered.split()[0].lstrip("/")
         return catalog.resolve(token)
-    # Documented cancel-first priority beats longer trigger phrases so
-    # "cancel autopilot" resolves to omg-cancel, not omg-autopilot.
+    needles = {needle for _length, needle, _record in scored}
+    specific: list[tuple[int, str, SkillRecord]] = []
+    for length, needle, record in scored:
+        if any(
+            other != needle and _trigger_contained(other, needle) for other in needles
+        ):
+            continue
+        specific.append((length, needle, record))
+    pool = specific or scored
     by_id: dict[str, SkillRecord] = {}
-    for _length, record in candidates:
+    for _length, _needle, record in pool:
         by_id.setdefault(record.id, record)
-    for skill_id in ROUTING_PRIORITY_HEAD:
-        hit = by_id.get(skill_id)
-        if hit is not None:
-            return hit
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    # Genuine multi-intent ties (cancel vs autopilot) use documented owner
+    # priority. More-specific phrases (visual ralph, ralph init, parallel
+    # research) already dropped their shorter owners above.
+    if len(by_id) > 1:
+        for skill_id in ROUTING_PRIORITY_HEAD:
+            hit = by_id.get(skill_id)
+            if hit is not None:
+                return hit
+    pool.sort(key=lambda item: item[0], reverse=True)
+    return pool[0][2]
 
 
 def resolve_continuation(

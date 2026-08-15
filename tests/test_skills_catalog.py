@@ -452,6 +452,16 @@ def test_resolve_trigger_cancel_beats_longer_owner() -> None:
     assert ralplan is not None and ralplan.id == "omg-ralplan"
 
 
+def test_resolve_trigger_prefers_specific_playbook_phrases() -> None:
+    catalog = load_skills_catalog(ROOT)
+    visual = resolve_trigger(catalog, "visual ralph")
+    assert visual is not None and visual.id == "omg-visual-ralph"
+    init = resolve_trigger(catalog, "ralph init")
+    assert init is not None and init.id == "omg-ralph-init"
+    parallel = resolve_trigger(catalog, "parallel research")
+    assert parallel is not None and parallel.id == "omg-parallel-research"
+
+
 def test_write_helpers_are_idempotent(tmp_path: Path) -> None:
     _stub_skill(tmp_path, "omg-using")
     _write_catalog(tmp_path, [_plugin_entry("omg-using")])
