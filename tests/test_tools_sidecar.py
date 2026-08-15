@@ -16,8 +16,10 @@ from omg_cli.tools_sidecar import (
     SIDECAR_TOOL_NAMES,
     FakeLspTransport,
     ToolsError,
+    _astgrep_bin,
     ast_replace,
     ast_search,
+    codegraph_index,
     codegraph_query,
     codegraph_status,
     confine_path,
@@ -25,6 +27,7 @@ from omg_cli.tools_sidecar import (
     doctor_payload,
     handle_mcp_rpc,
     inspect_tools_sidecar,
+    inventory_lsp_servers,
     lsp_operation,
     media_descriptor,
     research_search,
@@ -86,6 +89,7 @@ def test_fake_lsp_protocol_operations(tmp_path: Path) -> None:
         "workspace_symbols",
         "diagnostics",
         "prepare_rename",
+        "code_action",
         "code_action_resolve",
     ):
         result = lsp_operation(
@@ -102,6 +106,19 @@ def test_lsp_servers_inventory_never_claims_healthy() -> None:
     assert result["verified"] is False
     assert result["healthy"] is False
     assert result["observed"] is False
+    for row in result["servers"]:
+        assert row["ready"] is False
+        assert "not started" in row["note"]
+
+
+def test_detected_language_server_is_not_ready() -> None:
+    rows = inventory_lsp_servers()
+    assert rows
+    for row in rows:
+        assert row["ready"] is False
+        if row["available"]:
+            assert row["path"]
+            assert "live-verified" in row["note"]
 
 
 def test_lsp_without_transport_is_blocked(tmp_path: Path) -> None:
@@ -172,12 +189,16 @@ def test_mcp_cannot_escalate_server_capability_mode(tmp_path: Path) -> None:
 
 def test_ast_missing_is_blocked_not_fake(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("omg_cli.tools_sidecar.shutil.which", lambda _name: None)
+    monkeypatch.setattr("omg_cli.tools_sidecar.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
     with pytest.raises(ToolsError, match="E_ASTGREP_MISSING"):
         ast_search(root=tmp_path, pattern="foo", lang="python")
 
 
 def test_ast_replace_defaults_dry_run(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("omg_cli.tools_sidecar.shutil.which", lambda _name: None)
+    monkeypatch.setattr("omg_cli.tools_sidecar.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
     with pytest.raises(ToolsError, match="E_ASTGREP_MISSING"):
         ast_replace(root=tmp_path, pattern="foo", rewrite="bar", lang="python", write=False)
 
@@ -204,12 +225,15 @@ def test_codegraph_modes_and_honesty(tmp_path: Path) -> None:
     assert off["effective_mode"] == "off"
     assert off["branch_accurate"] is False
     assert off["verified"] is False
+    assert off["index_present"] is False
     shared = codegraph_status(root=tmp_path, mode="shared")
     assert shared["effective_mode"] == "shared"
     assert shared["branch_accurate"] is False
     assert "uncommitted" in shared["note"]
     local = codegraph_status(root=tmp_path, mode="local")
-    assert local["branch_accurate"] is True
+    assert local["index_present"] is False
+    assert local["branch_accurate"] is False
+    assert local["not_scip"] is True
     with pytest.raises(ToolsError, match="E_CODEGRAPH_NO_INDEX"):
         codegraph_query(root=tmp_path, mode="local", query="Foo")
     with pytest.raises(ToolsError, match="E_CODEGRAPH_OFF"):
@@ -495,5 +519,235 @@ def test_ast_ignores_unrelated_sg_binary(
         "omg_cli.tools_sidecar.shutil.which",
         lambda name: str(fake) if name == "sg" else None,
     )
+    monkeypatch.setattr("omg_cli.tools_sidecar.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
     with pytest.raises(ToolsError, match="E_ASTGREP_MISSING"):
         ast_search(root=tmp_path, pattern="foo", lang="python")
+
+
+def test_astgrep_discovers_cargo_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cargo_bin = tmp_path / ".cargo" / "bin"
+    cargo_bin.mkdir(parents=True)
+    helper = tmp_path / "ag_help.py"
+    helper.write_text(
+        "print('ast-grep is a CLI tool for code structural search')\n"
+        "print('--pattern')\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake = cargo_bin / "ast-grep.cmd"
+        fake.write_text(f'@"{sys.executable}" "{helper}" %*\r\n', encoding="utf-8")
+    else:
+        fake = cargo_bin / "ast-grep"
+        fake.write_text(
+            f"#!/bin/sh\nexec '{sys.executable}' '{helper}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr("omg_cli.tools_sidecar.shutil.which", lambda _name: None)
+    monkeypatch.setattr("omg_cli.tools_sidecar.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    assert _astgrep_bin() == str(fake)
+
+
+def test_ast_search_live_python_snippet(tmp_path: Path) -> None:
+    binary = _astgrep_bin()
+    if not binary:
+        pytest.skip("ast-grep not installed")
+    sample = tmp_path / "sample.py"
+    sample.write_text("def hello():\n    return 1\n", encoding="utf-8")
+    result = ast_search(
+        root=tmp_path, pattern="def $NAME(): $$$", lang="python", path="sample.py"
+    )
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert result["binary"] == binary
+    assert result["count"] >= 1
+    blob = json.dumps(result["matches"])
+    assert "hello" in blob
+
+
+def test_lsp_code_action_includes_range(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    lsp_operation(
+        "code_action",
+        root=tmp_path,
+        path="a.py",
+        transport=transport,
+        line=1,
+        character=2,
+        end_line=1,
+        end_character=4,
+    )
+    params = next(
+        body for name, body in transport.calls if name == "textDocument/codeAction"
+    )
+    assert params["range"] == {
+        "start": {"line": 1, "character": 2},
+        "end": {"line": 1, "character": 4},
+    }
+    assert "position" not in params
+
+
+def test_lsp_did_change_after_disk_edit(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("x=1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+    target.write_text("x=22\nmore\n", encoding="utf-8")
+    lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+    names = [name for name, _ in transport.calls]
+    assert names.count("textDocument/didOpen") == 1
+    assert "textDocument/didChange" in names
+    change = next(
+        body for name, body in transport.calls if name == "textDocument/didChange"
+    )
+    assert change["textDocument"]["version"] == 2
+    assert change["contentChanges"][0]["text"].startswith("x=22")
+
+
+def test_codegraph_local_index_and_query(tmp_path: Path) -> None:
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / "mod.py").write_text(
+        "import json\n\nclass Greeter:\n    pass\n\ndef hello():\n    return 1\n",
+        encoding="utf-8",
+    )
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["ok"] is True
+    assert built["verified"] is False
+    assert built["index_present"] is True
+    assert built["effective_mode"] == "local"
+    assert built["branch_accurate"] is True
+    assert built["not_scip"] is True
+    assert built["indexer"] == "import_symbol_scan"
+    status = codegraph_status(root=tmp_path, mode="local")
+    assert status["index_present"] is True
+    hits = codegraph_query(root=tmp_path, mode="local", query="hello")
+    assert hits["answered_by"] == "local"
+    assert hits["branch_accurate"] is True
+    assert hits["not_scip"] is True
+    assert hits["verified"] is False
+    assert any(row["name"] == "hello" for row in hits["hits"])
+    imports = codegraph_query(root=tmp_path, mode="local", query="json")
+    assert any(row["kind"] == "import" for row in imports["hits"])
+
+
+def test_codegraph_shared_dirty_is_not_branch_accurate(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("def shared_sym():\n    return 0\n", encoding="utf-8")
+    codegraph_index(root=tmp_path, mode="shared")
+    status = codegraph_status(root=tmp_path, mode="shared")
+    assert status["index_present"] is True
+    assert status["branch_accurate"] is False
+    assert status["not_scip"] is True
+    if status["worktree_dirty"]:
+        assert "dirty" in status["note"]
+
+
+def test_codegraph_index_confined_to_workspace(tmp_path: Path) -> None:
+    (tmp_path / "ok.py").write_text("def inside():\n    return 1\n", encoding="utf-8")
+    outside = tmp_path.parent / "escape.py"
+    outside.write_text("def leaked():\n    return 1\n", encoding="utf-8")
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["index_present"] is True
+    blob = json.dumps(
+        codegraph_query(root=tmp_path, mode="local", query="leaked")["hits"]
+    )
+    assert "leaked" not in blob
+    assert any(
+        row["name"] == "inside"
+        for row in codegraph_query(root=tmp_path, mode="local", query="inside")["hits"]
+    )
+
+
+def test_lsp_command_remainder_keeps_server_stdio() -> None:
+    from omg_cli.commands.tools import normalize_tools_argv
+    from omg_cli.main import build_parser
+
+    rewritten = normalize_tools_argv(
+        [
+            "tools",
+            "serve",
+            "--stdio",
+            "--lsp-command",
+            "rust-analyzer",
+            "--",
+            "--stdio",
+        ]
+    )
+    assert rewritten[-1] == "--lsp-extra=--stdio"
+    assert "--" not in rewritten
+    parser = build_parser()
+    args = parser.parse_args(rewritten)
+    assert args.stdio is True
+    assert args.lsp_command == ["rust-analyzer"]
+    assert args.lsp_extra == ["--stdio"]
+
+    lsp_rewritten = normalize_tools_argv(
+        [
+            "tools",
+            "lsp",
+            "hover",
+            "--path",
+            "a.py",
+            "--lsp-command",
+            "rust-analyzer",
+            "--",
+            "--stdio",
+        ]
+    )
+    lsp_args = parser.parse_args(lsp_rewritten)
+    assert lsp_args.lsp_command == ["rust-analyzer"]
+    assert lsp_args.lsp_extra == ["--stdio"]
+    assert lsp_args.path == "a.py"
+    json_rewritten = normalize_tools_argv(
+        [
+            "--json",
+            "tools",
+            "serve",
+            "--stdio",
+            "--lsp-command",
+            "rust-analyzer",
+            "--",
+            "--stdio",
+        ]
+    )
+    json_args = parser.parse_args(json_rewritten)
+    assert json_args.stdio is True
+    assert json_args.lsp_extra == ["--stdio"]
+    assert normalize_tools_argv(["ask", "tools", "--", "--stdio"]) == [
+        "ask",
+        "tools",
+        "--",
+        "--stdio",
+    ]
+
+
+def test_cli_doctor_strict_keeps_outer_envelope(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.main import main
+
+    monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
+    assert main(["tools", "doctor", "--strict", "--root", str(tmp_path)]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["result"]["ok"] is False
+    assert payload["result"]["verified"] is False
+
+
+def test_cli_codegraph_index(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from omg_cli.main import main
+
+    (tmp_path / "a.py").write_text("def indexed():\n    return 1\n", encoding="utf-8")
+    assert main(
+        ["tools", "codegraph", "index", "--mode", "local", "--root", str(tmp_path)]
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["result"]["index_present"] is True
+    assert payload["result"]["verified"] is False
+    assert payload["result"]["not_scip"] is True

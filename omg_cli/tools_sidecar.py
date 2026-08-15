@@ -15,8 +15,10 @@ Honesty:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -36,6 +38,47 @@ ALLOWED_MEDIA_MIMES = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/gif"}
 )
 CODEGRAPH_MODES = ("off", "auto", "shared", "local")
+CODEGRAPH_INDEX_SCHEMA = "omg-tools-codegraph/v1"
+CODEGRAPH_INDEXER = "import_symbol_scan"
+MAX_INDEX_FILES = 400
+MAX_INDEX_FILE_BYTES = 200_000
+MAX_SYMBOLS_PER_FILE = 80
+MAX_CODEGRAPH_HITS = 80
+INDEX_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".omg",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "site-packages",
+    }
+)
+INDEX_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".pyi",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rs",
+        ".java",
+    }
+)
 READ_WRITE = "read-write"
 READ_ONLY = "read-only"
 MUTATING_OPS = frozenset(
@@ -83,6 +126,7 @@ SIDECAR_TOOL_NAMES: tuple[str, ...] = (
     "omg.tools.ast.replace",
     "omg.tools.codegraph.status",
     "omg.tools.codegraph.query",
+    "omg.tools.codegraph.index",
     "omg.tools.research.status",
     "omg.tools.research.search",
 )
@@ -318,7 +362,12 @@ class FakeLspTransport:
             return []
         if method == "codeAction/resolve":
             return body
-        if method in {"shutdown", "initialized", "textDocument/didOpen"}:
+        if method in {
+            "shutdown",
+            "initialized",
+            "textDocument/didOpen",
+            "textDocument/didChange",
+        }:
             return None
         raise ToolsError("E_LSP_METHOD", f"unsupported LSP method {method}")
 
@@ -493,6 +542,31 @@ _LSP_METHODS = {
 }
 
 
+def lsp_range(
+    line: Any,
+    character: Any,
+    end_line: Any = None,
+    end_character: Any = None,
+    range_arg: Any = None,
+) -> dict[str, dict[str, int]]:
+    """Build the LSP Range required by textDocument/codeAction."""
+    if isinstance(range_arg, Mapping):
+        start_raw = range_arg.get("start") or {}
+        end_raw = range_arg.get("end") or {}
+        if isinstance(start_raw, Mapping) and isinstance(end_raw, Mapping):
+            return {
+                "start": lsp_position(start_raw.get("line"), start_raw.get("character")),
+                "end": lsp_position(end_raw.get("line"), end_raw.get("character")),
+            }
+        raise ToolsError("E_LSP_RANGE", "range must have start and end positions")
+    start = lsp_position(line, character)
+    if end_line is None:
+        end_line = start["line"]
+    if end_character is None:
+        end_character = start["character"]
+    return {"start": start, "end": lsp_position(end_line, end_character)}
+
+
 def _language_id_for(path: Path) -> str:
     return {
         ".py": "python",
@@ -522,10 +596,41 @@ def _lsp_notify_or_request(
             raise
 
 
+def _read_text_bounded(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    return raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
+
+
+def _file_fingerprint(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        raw = path.read_bytes()[:MAX_RESULT_BYTES]
+    except OSError:
+        return ""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _lsp_docs(transport: LspTransport) -> dict[str, dict[str, Any]]:
+    docs = getattr(transport, "_omg_lsp_docs", None)
+    if not isinstance(docs, dict):
+        docs = {}
+        try:
+            setattr(transport, "_omg_lsp_docs", docs)
+        except (AttributeError, TypeError):
+            pass
+    return docs
+
+
 def ensure_lsp_session(
     transport: LspTransport, *, root: Path, path: str | None
 ) -> None:
-    """Initialize once; send didOpen once per requested URI."""
+    """Initialize once; didOpen once per URI; didChange when disk text changes."""
     if not getattr(transport, "_omg_lsp_initialized", False):
         root_uri = Path(root).resolve().as_uri()
         transport.request(
@@ -554,28 +659,48 @@ def ensure_lsp_session(
             setattr(transport, "_omg_lsp_opened", opened)
         except (AttributeError, TypeError):
             pass
-    if uri in opened:
+    docs = _lsp_docs(transport)
+    fingerprint = _file_fingerprint(confined)
+    text = _read_text_bounded(confined)
+    current = docs.get(uri)
+    if current is None or uri not in opened:
+        _lsp_notify_or_request(
+            transport,
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": _language_id_for(confined),
+                    "version": 1,
+                    "text": text,
+                }
+            },
+        )
+        docs[uri] = {"version": 1, "fingerprint": fingerprint}
+        opened.add(uri)
         return
-    text = ""
-    if confined.is_file():
-        try:
-            raw = confined.read_bytes()
-        except OSError:
-            raw = b""
-        text = raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
+    if current.get("fingerprint") == fingerprint:
+        return
+    version = int(current.get("version") or 1) + 1
     _lsp_notify_or_request(
         transport,
-        "textDocument/didOpen",
+        "textDocument/didChange",
         {
-            "textDocument": {
-                "uri": uri,
-                "languageId": _language_id_for(confined),
-                "version": 1,
-                "text": text,
-            }
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"text": text}],
         },
     )
-    opened.add(uri)
+    current["version"] = version
+    current["fingerprint"] = fingerprint
+
+
+def _lsp_doc_version(transport: LspTransport, uri: str) -> int:
+    docs = getattr(transport, "_omg_lsp_docs", None)
+    if isinstance(docs, dict):
+        row = docs.get(uri)
+        if isinstance(row, dict) and isinstance(row.get("version"), int):
+            return row["version"]
+    return 1
 
 
 def lsp_operation(
@@ -590,6 +715,9 @@ def lsp_operation(
     new_name: str | None = None,
     line: Any = None,
     character: Any = None,
+    end_line: Any = None,
+    end_character: Any = None,
+    range_arg: Any = None,
 ) -> dict[str, Any]:
     if operation == "servers":
         return {
@@ -629,18 +757,26 @@ def lsp_operation(
             raise ToolsError("E_PATH", "path is required")
         confined = confine_path(root, path)
         uri = confined.as_uri()
-        params = {
-            "textDocument": {"uri": uri, "version": 1},
-            "position": lsp_position(line, character),
-        }
-        if operation == "rename":
-            params["newName"] = new_name or "Renamed"
-        if operation == "references":
-            params["context"] = {"includeDeclaration": True}
+        version = _lsp_doc_version(transport, uri)
         if operation == "code_action":
-            params["context"] = {"diagnostics": []}
-        if operation == "diagnostics":
+            params = {
+                "textDocument": {"uri": uri},
+                "range": lsp_range(
+                    line, character, end_line, end_character, range_arg
+                ),
+                "context": {"diagnostics": []},
+            }
+        elif operation == "diagnostics":
             params = {"textDocument": {"uri": uri}}
+        else:
+            params = {
+                "textDocument": {"uri": uri, "version": version},
+                "position": lsp_position(line, character),
+            }
+            if operation == "rename":
+                params["newName"] = new_name or "Renamed"
+            if operation == "references":
+                params["context"] = {"includeDeclaration": True}
     result = transport.request(_LSP_METHODS[operation], params)
     return _bounded(
         {
@@ -649,6 +785,7 @@ def lsp_operation(
             "operation": operation,
             "apply": bool(apply) if operation in {"rename", "code_action"} else False,
             "capability_mode": mode,
+            "session_ready": bool(getattr(transport, "_omg_lsp_ready", False)),
             "result": result,
             "note": "sidecar protocol result; not Grok-native; not live AG evidence",
         }
@@ -671,10 +808,54 @@ def _astgrep_identity_ok(path: str) -> bool:
     return "ast-grep" in blob or "--pattern" in blob
 
 
+def _astgrep_candidates() -> list[str]:
+    """Prefer ``ast-grep`` (PATH then cargo bin) over identity-checked ``sg``."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path: str | None) -> None:
+        if not path:
+            return
+        key = os.path.normcase(os.path.normpath(path))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    _add(shutil.which("ast-grep"))
+    cargo_roots: list[Path] = []
+    cargo_home = os.environ.get("CARGO_HOME")
+    if cargo_home:
+        cargo_roots.append(Path(cargo_home))
+    cargo_roots.append(Path.home() / ".cargo")
+    ast_names = ["ast-grep", "ast-grep.exe"]
+    sg_names = ["sg", "sg.exe"]
+    if os.name == "nt":
+        ast_names.extend(["ast-grep.cmd", "ast-grep.bat"])
+        sg_names.extend(["sg.cmd", "sg.bat"])
+    for root in cargo_roots:
+        for name in ast_names:
+            candidate = root / "bin" / name
+            try:
+                if candidate.is_file():
+                    _add(str(candidate))
+            except OSError:
+                continue
+    _add(shutil.which("sg"))
+    for root in cargo_roots:
+        for name in sg_names:
+            candidate = root / "bin" / name
+            try:
+                if candidate.is_file():
+                    _add(str(candidate))
+            except OSError:
+                continue
+    return found
+
+
 def _astgrep_bin() -> str | None:
-    for name in ("ast-grep", "sg"):
-        path = shutil.which(name)
-        if path and _astgrep_identity_ok(path):
+    for path in _astgrep_candidates():
+        if _astgrep_identity_ok(path):
             return path
     return None
 
@@ -795,26 +976,242 @@ def _git_dirty(root: Path) -> bool | None:
     return bool(proc.stdout.strip())
 
 
-def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
+def _git_head(root: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(root),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _effective_codegraph_mode(mode: str, dirty: bool | None) -> str:
     if mode not in CODEGRAPH_MODES:
         raise ToolsError("E_CODEGRAPH_MODE", f"mode must be one of {CODEGRAPH_MODES}")
-    dirty = _git_dirty(root)
     if mode == "off":
-        effective = "off"
-    elif mode == "auto":
-        effective = "local" if dirty else "shared"
-        if dirty is None:
-            effective = "shared"
-    else:
-        effective = mode
-    branch_accurate = effective == "local"
+        return "off"
+    if mode == "auto":
+        if dirty:
+            return "local"
+        return "shared"
+    return mode
+
+
+def _codegraph_index_path(root: Path, kind: str) -> Path:
+    return Path(root).resolve() / ".omg" / "artifacts" / "codegraph" / f"{kind}-index.json"
+
+
+def _load_codegraph_index(root: Path, kind: str) -> dict[str, Any] | None:
+    path = _codegraph_index_path(root, kind)
+    try:
+        confined = confine_path(root, path)
+    except ToolsError:
+        return None
+    if not confined.is_file():
+        return None
+    try:
+        payload = json.loads(confined.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != CODEGRAPH_INDEX_SCHEMA:
+        return None
+    if payload.get("kind") != kind:
+        return None
+    if payload.get("indexer") != CODEGRAPH_INDEXER:
+        return None
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return None
+    return payload
+
+
+_PY_IMPORT = re.compile(
+    r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))",
+    re.MULTILINE,
+)
+_PY_DEF = re.compile(r"^(?:async\s+)?def\s+(\w+)", re.MULTILINE)
+_PY_CLASS = re.compile(r"^class\s+(\w+)", re.MULTILINE)
+_JS_IMPORT = re.compile(
+    r"(?:from\s+['\"]([^'\"]+)['\"]|import\s+['\"]([^'\"]+)['\"]|require\(\s*['\"]([^'\"]+)['\"])"
+)
+_JS_SYM = re.compile(
+    r"^(?:export\s+)?(?:async\s+)?function\s+(\w+)|^(?:export\s+)?class\s+(\w+)",
+    re.MULTILINE,
+)
+_GO_FN = re.compile(r"^func\s+(?:\([^)]+\)\s+)?(\w+)", re.MULTILINE)
+_RS_FN = re.compile(r"^(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+(\w+)", re.MULTILINE)
+_JAVA_SYM = re.compile(
+    r"^(?:public|protected|private|static|\s)+(?:class|interface|enum)\s+(\w+)",
+    re.MULTILINE,
+)
+
+
+def _extract_import_symbols(path: Path, text: str) -> tuple[list[str], list[dict[str, Any]]]:
+    suffix = path.suffix.lower()
+    imports: list[str] = []
+    symbols: list[dict[str, Any]] = []
+
+    def _add_imp(name: str | None) -> None:
+        if name and name not in imports:
+            imports.append(name)
+
+    def _add_sym(name: str | None, kind: str, match: re.Match[str]) -> None:
+        if not name or len(symbols) >= MAX_SYMBOLS_PER_FILE:
+            return
+        line = text[: match.start()].count("\n")
+        symbols.append({"name": name, "kind": kind, "line": line})
+
+    if suffix in {".py", ".pyi"}:
+        for match in _PY_IMPORT.finditer(text):
+            _add_imp(match.group(1) or match.group(2))
+        for match in _PY_DEF.finditer(text):
+            _add_sym(match.group(1), "function", match)
+        for match in _PY_CLASS.finditer(text):
+            _add_sym(match.group(1), "class", match)
+        return imports, symbols
+    if suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+        for match in _JS_IMPORT.finditer(text):
+            _add_imp(next((g for g in match.groups() if g), None))
+        for match in _JS_SYM.finditer(text):
+            _add_sym(match.group(1), "function", match)
+            _add_sym(match.group(2), "class", match)
+        return imports, symbols
+    if suffix == ".go":
+        for match in re.finditer(r'"([^"]+)"', text.split(")", 1)[0] if "import" in text else ""):
+            _add_imp(match.group(1))
+        for match in _GO_FN.finditer(text):
+            _add_sym(match.group(1), "function", match)
+        return imports, symbols
+    if suffix == ".rs":
+        for match in re.finditer(r"^use\s+([\w:]+)", text, re.MULTILINE):
+            _add_imp(match.group(1))
+        for match in _RS_FN.finditer(text):
+            _add_sym(match.group(1), "function", match)
+        return imports, symbols
+    if suffix == ".java":
+        for match in re.finditer(r"^import\s+([\w.]+)", text, re.MULTILINE):
+            _add_imp(match.group(1))
+        for match in _JAVA_SYM.finditer(text):
+            _add_sym(match.group(1), "type", match)
+        return imports, symbols
+    return imports, symbols
+
+
+def _iter_index_files(root: Path) -> tuple[list[Path], bool]:
+    base = Path(root).resolve()
+    files: list[Path] = []
+    truncated = False
+    stack = [base]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if len(files) >= MAX_INDEX_FILES:
+                truncated = True
+                return files, truncated
+            name = entry.name
+            try:
+                if entry.is_symlink():
+                    continue
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if name in INDEX_SKIP_DIRS or name.startswith("."):
+                    continue
+                stack.append(entry)
+                continue
+            if entry.suffix.lower() not in INDEX_SUFFIXES:
+                continue
+            try:
+                confined = confine_path(base, entry)
+            except ToolsError:
+                continue
+            files.append(confined)
+    return files, truncated
+
+
+def _scan_workspace(root: Path) -> tuple[list[dict[str, Any]], bool]:
+    files, truncated = _iter_index_files(root)
+    rows: list[dict[str, Any]] = []
+    base = Path(root).resolve()
+    for path in files:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > MAX_INDEX_FILE_BYTES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(text.encode("utf-8")) > MAX_INDEX_FILE_BYTES:
+            text = text[:MAX_INDEX_FILE_BYTES]
+        imports, symbols = _extract_import_symbols(path, text)
+        try:
+            rel = path.relative_to(base).as_posix()
+        except ValueError:
+            continue
+        rows.append({"path": rel, "imports": imports, "symbols": symbols})
+    return rows, truncated
+
+
+def _codegraph_notes(effective: str, dirty: bool | None) -> str:
     note = {
         "off": "CodeGraph disabled",
-        "shared": "shared/baseline index; does not include uncommitted worktree changes",
-        "local": "worktree-local index (branch-accurate when built from this tree)",
+        "shared": (
+            "shared/baseline import/symbol index; not SCIP; "
+            "does not include uncommitted worktree changes"
+        ),
+        "local": (
+            "worktree-local import/symbol index (not SCIP); "
+            "branch-accurate only when built from this tree and not stale"
+        ),
     }[effective]
     if effective == "shared" and dirty:
         note += "; worktree is dirty — do not treat shared hits as this branch"
+    return note
+
+
+def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
+    dirty = _git_dirty(root)
+    head = _git_head(root)
+    effective = _effective_codegraph_mode(mode, dirty)
+    index = None if effective == "off" else _load_codegraph_index(root, effective)
+    present = index is not None
+    stale = False
+    if present and index is not None:
+        stale = index.get("head_sha") != head or index.get("worktree_dirty") != dirty
+    branch_accurate = (
+        effective == "local"
+        and present
+        and not stale
+        and (index or {}).get("kind") == "local"
+    )
+    if effective == "shared":
+        branch_accurate = False
+    note = _codegraph_notes(effective, dirty)
+    if effective == "off":
+        pass
+    elif not present:
+        note += ". No index on disk; run omg tools codegraph index."
+    elif stale:
+        note += ". Index is stale relative to HEAD/dirty; re-run index."
     return {
         "ok": True,
         "verified": False,
@@ -822,21 +1219,127 @@ def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
         "healthy": False,
         "requested_mode": mode,
         "effective_mode": effective,
+        "index_kind": None if not present else effective,
+        "indexer": CODEGRAPH_INDEXER,
+        "not_scip": True,
         "branch_accurate": branch_accurate,
         "worktree_dirty": dirty,
-        "index_present": False,
-        "note": note + ". First cut has no indexer; queries stay blocked.",
+        "head_sha": head,
+        "index_present": present,
+        "index_stale": stale if present else False,
+        "file_count": (index or {}).get("file_count") if present else 0,
+        "note": note,
     }
+
+
+def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
+    dirty = _git_dirty(root)
+    effective = _effective_codegraph_mode(mode, dirty)
+    if effective == "off":
+        raise ToolsError("E_CODEGRAPH_OFF", "CodeGraph mode is off")
+    rows, truncated = _scan_workspace(root)
+    head = _git_head(root)
+    payload = {
+        "schema": CODEGRAPH_INDEX_SCHEMA,
+        "kind": effective,
+        "indexer": CODEGRAPH_INDEXER,
+        "not_scip": True,
+        "verified": False,
+        "head_sha": head,
+        "worktree_dirty": dirty,
+        "file_count": len(rows),
+        "truncated": truncated,
+        "files": rows,
+        "note": (
+            "toy import/symbol scan; not SCIP; not a shared branch-accurate graph"
+            if effective == "shared"
+            else "toy import/symbol scan; not SCIP; local to this worktree"
+        ),
+    }
+    dest = _codegraph_index_path(root, effective)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    confined = confine_path(root, dest)
+    tmp = confined.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, confined)
+    status = codegraph_status(root=root, mode=effective)
+    status["built"] = True
+    status["truncated"] = truncated
+    status["path"] = ".omg/artifacts/codegraph/" + f"{effective}-index.json"
+    return _bounded(status)
 
 
 def codegraph_query(*, root: Path, mode: str = "auto", query: str = "") -> dict[str, Any]:
     status = codegraph_status(root=root, mode=mode)
     if status["effective_mode"] == "off":
         raise ToolsError("E_CODEGRAPH_OFF", "CodeGraph mode is off", details=status)
-    raise ToolsError(
-        "E_CODEGRAPH_NO_INDEX",
-        "no branch-accurate index in this first cut",
-        details=status,
+    if not status["index_present"]:
+        raise ToolsError(
+            "E_CODEGRAPH_NO_INDEX",
+            "no import/symbol index; run omg tools codegraph index",
+            details=status,
+        )
+    kind = str(status["effective_mode"])
+    index = _load_codegraph_index(root, kind)
+    if index is None:
+        raise ToolsError(
+            "E_CODEGRAPH_NO_INDEX",
+            "index missing after status check",
+            details=status,
+        )
+    needle = query.strip().lower()
+    hits: list[dict[str, Any]] = []
+    for row in index.get("files") or []:
+        if not isinstance(row, dict) or len(hits) >= MAX_CODEGRAPH_HITS:
+            break
+        rel = str(row.get("path") or "")
+        try:
+            confine_path(root, rel)
+        except ToolsError:
+            continue
+        for sym in row.get("symbols") or []:
+            if len(hits) >= MAX_CODEGRAPH_HITS:
+                break
+            if not isinstance(sym, dict):
+                continue
+            name = str(sym.get("name") or "")
+            if needle and needle not in name.lower() and needle not in rel.lower():
+                continue
+            if not needle and not name:
+                continue
+            hits.append(
+                {
+                    "path": rel,
+                    "kind": "symbol",
+                    "name": name,
+                    "symbol_kind": sym.get("kind"),
+                    "line": sym.get("line"),
+                }
+            )
+        for imp in row.get("imports") or []:
+            if len(hits) >= MAX_CODEGRAPH_HITS:
+                break
+            name = str(imp)
+            if needle and needle not in name.lower() and needle not in rel.lower():
+                continue
+            if not needle:
+                continue
+            hits.append({"path": rel, "kind": "import", "name": name})
+    return _bounded(
+        {
+            "ok": True,
+            "verified": False,
+            "answered_by": kind,
+            "effective_mode": kind,
+            "branch_accurate": bool(status["branch_accurate"]),
+            "index_stale": bool(status.get("index_stale")),
+            "indexer": CODEGRAPH_INDEXER,
+            "not_scip": True,
+            "query": query,
+            "count": len(hits),
+            "hits": hits,
+            "note": status["note"],
+        }
     )
 
 
@@ -901,7 +1404,10 @@ def doctor_payload(
                 "present": ast_bin is not None,
                 "path": ast_bin,
                 "required": False,
-                "remediation": "install ast-grep (sg) on PATH for structural search",
+                "remediation": (
+                    "install ast-grep on PATH (cargo install ast-grep or npm); "
+                    "do not use shadow-utils /usr/bin/sg"
+                ),
             },
             "lsp_servers": inventory_lsp_servers(),
             "codegraph": codegraph_status(root=root, mode="auto"),
@@ -909,8 +1415,9 @@ def doctor_payload(
         },
         "tool_names": list(SIDECAR_TOOL_NAMES),
         "note": (
-            "OMG tools sidecar first cut. Not Grok-native LSP. "
-            "Not live Antigravity evidence. omg lsp remains host-owned."
+            "OMG tools sidecar. Not Grok-native LSP. Not live Antigravity evidence. "
+            "omg lsp remains host-owned. CodeGraph is a toy import/symbol index, not SCIP. "
+            "Detected language servers are not ready until explicitly started."
         ),
     }
     errors: list[str] = []
@@ -959,6 +1466,9 @@ def dispatch_sidecar_tool(
             new_name=args.get("new_name"),
             line=args.get("line"),
             character=args.get("character"),
+            end_line=args.get("end_line"),
+            end_character=args.get("end_character"),
+            range_arg=args.get("range"),
         )
     if name == "omg.tools.ast.search":
         return ast_search(
@@ -985,6 +1495,8 @@ def dispatch_sidecar_tool(
             mode=str(args.get("mode") or "auto"),
             query=str(args.get("query") or ""),
         )
+    if name == "omg.tools.codegraph.index":
+        return codegraph_index(root=root, mode=str(args.get("mode") or "local"))
     if name == "omg.tools.research.status":
         return research_status(env)
     if name == "omg.tools.research.search":
@@ -1115,6 +1627,7 @@ __all__ = [
     "ToolsError",
     "ast_replace",
     "ast_search",
+    "codegraph_index",
     "codegraph_query",
     "codegraph_status",
     "confine_path",
@@ -1125,6 +1638,7 @@ __all__ = [
     "inventory_lsp_servers",
     "list_mcp_tools",
     "lsp_operation",
+    "lsp_range",
     "media_descriptor",
     "research_search",
     "research_status",

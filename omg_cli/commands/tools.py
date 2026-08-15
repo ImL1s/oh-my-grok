@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from omg_cli.cli_envelope import emit_json, failure, success
@@ -19,6 +20,7 @@ from omg_cli.tools_sidecar import (
     ToolsError,
     ast_replace,
     ast_search,
+    codegraph_index,
     codegraph_query,
     codegraph_status,
     doctor_payload,
@@ -27,6 +29,41 @@ from omg_cli.tools_sidecar import (
     research_status,
     run_tools_stdio,
 )
+
+
+def normalize_tools_argv(argv: Sequence[str]) -> list[str]:
+    """Rewrite ``omg tools … -- <server-flags>`` into ``--lsp-extra=<flag>``.
+
+    argparse ``--lsp-command nargs=+`` cannot take server flags such as
+    ``--stdio``: on ``serve`` that token is the sidecar flag, and on ``lsp``
+    it is an unrecognized option. Tokens after ``--`` are packed as
+    ``--lsp-extra=<token>`` so they reach the language server.
+    """
+    raw = list(argv)
+    i = 0
+    tools_at: int | None = None
+    value_opts = {"--project-root", "--root"}
+    while i < len(raw):
+        tok = raw[i]
+        if tok == "--":
+            break
+        if tok.startswith("-"):
+            name = tok.split("=", 1)[0]
+            if name in value_opts and "=" not in tok:
+                i += 2
+                continue
+            i += 1
+            continue
+        tools_at = i if tok == "tools" else None
+        break
+    if tools_at is None:
+        return raw
+    try:
+        dash = raw.index("--", tools_at + 1)
+    except ValueError:
+        return raw
+    extras = raw[dash + 1 :]
+    return raw[:dash] + [f"--lsp-extra={token}" for token in extras]
 
 
 def _fail(command: str, exc: ToolsError) -> int:
@@ -44,11 +81,12 @@ def _fail(command: str, exc: ToolsError) -> int:
 
 def _transport_from_args(args: argparse.Namespace, root: Path):
     fake = bool(getattr(args, "fake_lsp", False))
-    command = getattr(args, "lsp_command", None)
+    command = list(getattr(args, "lsp_command", None) or [])
+    extra = list(getattr(args, "lsp_extra", None) or [])
+    argv = command + extra
     if fake:
         return FakeLspTransport()
-    if command:
-        argv = list(command)
+    if argv:
         return StdioLspTransport(argv, cwd=root)
     return None
 
@@ -105,6 +143,8 @@ def cmd_tools(args: argparse.Namespace) -> int:
                     new_name=getattr(args, "new_name", None),
                     line=getattr(args, "line", None),
                     character=getattr(args, "character", None),
+                    end_line=getattr(args, "end_line", None),
+                    end_character=getattr(args, "end_character", None),
                 )
             finally:
                 if transport is not None:
@@ -141,6 +181,8 @@ def cmd_tools(args: argparse.Namespace) -> int:
                     mode=cg_mode,
                     query=str(getattr(args, "query", "") or ""),
                 )
+            elif cg_op == "index":
+                result = codegraph_index(root=root, mode=cg_mode)
             else:
                 result = codegraph_status(root=root, mode=cg_mode)
             emit_json(success(f"tools.codegraph.{cg_op}", result=result))
@@ -209,7 +251,16 @@ def register_tools_parsers(
         "--lsp-command",
         nargs="+",
         default=None,
-        help="language server argv wired into MCP omg.tools.lsp.* tools",
+        help=(
+            "language server argv wired into MCP omg.tools.lsp.* tools; "
+            "put server flags after -- (e.g. -- --stdio)"
+        ),
+    )
+    p_serve.add_argument(
+        "--lsp-extra",
+        action="append",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     p_serve.set_defaults(func=cmd_tools, tools_action="serve")
 
@@ -239,6 +290,8 @@ def register_tools_parsers(
     p_lsp.add_argument("--path", default=None)
     p_lsp.add_argument("--line", type=int, default=None)
     p_lsp.add_argument("--character", type=int, default=None)
+    p_lsp.add_argument("--end-line", dest="end_line", type=int, default=None)
+    p_lsp.add_argument("--end-character", dest="end_character", type=int, default=None)
     p_lsp.add_argument("--query", default=None)
     p_lsp.add_argument("--new-name", dest="new_name", default=None)
     p_lsp.add_argument("--apply", action="store_true")
@@ -247,7 +300,16 @@ def register_tools_parsers(
         "--lsp-command",
         nargs="+",
         default=None,
-        help="language server argv (not auto-installed)",
+        help=(
+            "language server argv (not auto-installed); "
+            "put server flags after -- (e.g. -- --stdio)"
+        ),
+    )
+    p_lsp.add_argument(
+        "--lsp-extra",
+        action="append",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     p_lsp.add_argument(
         "--capability-mode",
@@ -284,7 +346,7 @@ def register_tools_parsers(
         help="CodeGraph status/query (off|auto|shared|local)",
     )
     p_cg.add_argument(
-        "codegraph_op", nargs="?", default="status", choices=("status", "query")
+        "codegraph_op", nargs="?", default="status", choices=("status", "query", "index")
     )
     p_cg.add_argument(
         "--mode",
@@ -309,4 +371,4 @@ def register_tools_parsers(
     p_tools.set_defaults(func=cmd_tools)
 
 
-__all__ = ["cmd_tools", "register_tools_parsers"]
+__all__ = ["cmd_tools", "normalize_tools_argv", "register_tools_parsers"]
