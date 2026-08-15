@@ -4,13 +4,18 @@ English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 
 English: [`skills.md`](./skills.md)
 
-**16 個 in-session skills**，路徑：[`skills/omg-*/SKILL.md`](../skills/)。  
+**45 個 in-session skills**，路徑：[`skills/omg-*/SKILL.md`](../skills/)
+（原 16 + Wave B 13 + Wave C 16）。  
 概念類似 OMC skill zoo，執行面是 **Grok-native**：playbook + `omg` CLI 蓋章。
+**不是** live-verified。Antigravity 檔案仍是**投影**。
 
 機器目錄（別名、分類、pipeline、續跑策略）：[`skills/catalog.json`](../skills/catalog.json) ·
-生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md)。
+生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md) ·
+[简体](./parity/skills-catalog.zh.md) ·
+[繁體](./parity/skills-catalog.zh-TW.md)。
 檢視：`omg skill list|show|resolve|resources`（永不寫 `verified`）。
-僅目錄列已分類。Antigravity 投影**不是**已安裝 AG 外掛。
+Grok `<workflow_routing>` 由此 catalog 生成（無 UserPromptSubmit 注入）。
+Antigravity 投影**不是**已安裝 AG 外掛。
 
 > **兩種表面（類似 OMC 的 CLI vs `/skill`）**  
 > - **終端機 CLI：** shell 裡跑 `omg …`（狀態、accept、modes）。  
@@ -60,8 +65,44 @@ English: [`skills.md`](./skills.md)
 | hud、statusline | `omg-hud` | `omg hud` | 一行狀態 |
 | lsp、symbols | `omg-lsp` | `omg lsp *` | 檢查 host-owned `.lsp.json`；無語意 proxy |
 
-**多關鍵字同時出現時的優先序**（見 `omg-using`）：  
-`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`。
+**多關鍵字同時出現時的優先序**（catalog 驅動；與 Grok 規則相同）：  
+`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`，然後其餘 continuation owner，然後其它。
+
+### Wave B/C 選擇器（configured playbook — 非 live-verified）
+
+| 何時 | Skill | 誠實 CLI |
+|------|-------|----------|
+| 規劃前最佳實踐簡報 | `omg-best-practice-research` | `omg ask`（顧問） |
+| 追蹤 / lifecycle 投影 | `omg-trace` | `omg tracker status\|project\|reconcile` |
+| Deep-dive 調研 | `omg-deep-dive` | 僅製品 |
+| 吸入外部事實 | `omg-external-context` | `omg memory *` |
+| 紅綠一條切片 | `omg-tdd` | `omg qa *`（永不 verified） |
+| 修好損壞的 build | `omg-build-fix` | `omg qa *` |
+| 對 diff 做安全車道 | `omg-security-review` | `omg review` / `omg dual-review` |
+| 給 visual envelope 打分 | `omg-visual-verdict` | `omg visual compare`（僅 compare；無 capture/Ralph） |
+| 深度工作區 init | `omg-deepinit` | `omg setup`（`init-deep` 別名） |
+| 具名 session | `omg-project-session-manager` | `omg session allocate\|route`（`psm` 別名） |
+| MCP 註冊 | `omg-mcp-setup` | `omg mcp-install` |
+| 通知佇列 | `omg-configure-notifications` | `omg notify status\|send\|process` |
+| 檢視 skill 目錄 | `omg-skill` | `omg skill list\|show\|resolve\|resources` |
+| 更嚴的計畫閘 | `omg-prometheus-strict` | `omg ralplan` |
+| Team Hyperplan | `omg-hyperplan` | `omg team hyperplan`（Team #69；fixture execute） |
+| 有界調研循環 | `omg-autoresearch` | 製品；可選 `omg ask` |
+| 對著 goal ledger 調研 | `omg-autoresearch-goal` | `omg goal *` |
+| 平行調研扇出 | `omg-parallel-research` | 可選 `omg ask`（`sciomc` 別名） |
+| 改進寫下來 | `omg-self-improve` | 僅製品 — **沒有** learning loop |
+| 寫作者筆記 | `omg-writer-memory` | `omg memory *` / `omg note` |
+| 問 visual 持久循環 | `omg-visual-ralph` | 僅 `omg visual compare`；循環仍是 `omg ralph` |
+| 清 AI slop | `omg-ai-slop-cleaner` | 製品報告；改檔用 `omg edit plan\|apply`（無 `comments` 子命令） |
+| 註解稽核 | `omg-comment-checker` | 製品報告（`omg edit` 無 comments 子命令） |
+| Team security-research | `omg-security-research` | `omg team security-research`（Team #69） |
+| UI 切片 | `omg-design` | `omg-designer` spawn；無額外 CLI |
+| 發布檢查單 | `omg-release` | `omg parity *`（本 skill 永不 verified） |
+| Git 衛生 | `omg-git-master` | 宿主 git；無 `omg git` 孿生 |
+| 搭 ralph PRD | `omg-ralph-init` | 然後 `omg ralph` |
+| 低 token 姿態 | `omg-ecomode` | 無 CLI 孿生；`capability_mode` none |
+
+Host-native 名字（`plan`、`goal`、`loop`、`compact`、`help`、`agents`、`mcp`、`skills`、`plugin`）保持別名/宿主所有 — 永不做成外掛目錄。`ulw-loop` 仍是別名。
 
 ---
 
@@ -510,7 +551,7 @@ Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subag
 （loader `omg_cli/skills_catalog.py`；`omg skill list|show|resolve|resources` 或
 `omg capabilities` 的 `skills_catalog`）。
 [`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
-下的 Antigravity `SKILL.md` **只是投影**。Grok 仍只有 16 個 in-session playbook。
+下的 Antigravity `SKILL.md` **只是投影**。Grok 現有 45 個 in-session playbook（**不是** live-verified）。
 
 機器可讀外掛 agent 目錄：[`agents/catalog.json`](../agents/catalog.json)
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 檢視）。
@@ -542,6 +583,12 @@ Grok 內建（`explore`、`plan`、`general-purpose`）是政策 profiles，不�
 | omg-ask | `ask` | 否 |
 | omg-cancel | `cancel` | 否 |
 | omg-wiki / hud / lsp | wiki / hud / lsp | 否 |
+| omg-skill | `skill list\|show\|resolve\|resources` | **永不** |
+| omg-visual-verdict / visual-ralph | `visual compare` | **永不** |
+| omg-hyperplan / security-research | `team hyperplan` / `team security-research` | **永不** |
+| omg-mcp-setup | `mcp-install` | **永不** |
+| omg-configure-notifications | `notify *` | **永不** |
+| omg-writer-memory | `memory *` / `note` | **永不** |
 | *（MCP 表面）* | `mcp-server` / `mcp-install` | **永不**（結構性拒絕） |
 
 ---

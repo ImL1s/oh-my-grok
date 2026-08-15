@@ -2,15 +2,19 @@
 
 English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 
-**16 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/).  
+**45 in-session skills** under [`skills/omg-*/SKILL.md`](../skills/)
+(16 original + 13 Wave B + 16 Wave C).  
 Same *idea* as OMC’s skill zoo, **Grok-native** runtime: playbooks + `omg` CLI stamps.
+Not a live smoke. Antigravity files remain **projections**.
 
 Machine catalog (aliases, classifications, pipeline metadata, continuation
-policy): [`skills/catalog.json`](../skills/catalog.json) · generated table
-[`docs/parity/skills-catalog.md`](./parity/skills-catalog.md). Inspect with
-`omg skill list|show|resolve|resources` (never sets `verified`). Catalog-only
-rows are classified only. Antigravity projections are **not** an
-installed AG plugin.
+policy): [`skills/catalog.json`](../skills/catalog.json) · generated tables
+[`docs/parity/skills-catalog.md`](./parity/skills-catalog.md) ·
+[zh](./parity/skills-catalog.zh.md) ·
+[zh-TW](./parity/skills-catalog.zh-TW.md). Inspect with
+`omg skill list|show|resolve|resources` (never sets `verified`).
+Grok `<workflow_routing>` is generated from this catalog (no UserPromptSubmit
+injector). Antigravity projections are **not** an installed AG plugin.
 
 > **Two surfaces (like OMC CLI vs `/skill`)**  
 > - **Terminal CLI:** `omg …` in your shell (state, accept, modes).  
@@ -60,8 +64,44 @@ installed AG plugin.
 | `hud`, statusline | `omg-hud` | `omg hud` | One-line run status |
 | `lsp`, symbols | `omg-lsp` | `omg lsp *` | Inspect host-owned `.lsp.json`; no semantic proxy |
 
-**Priority when several keywords match** (from `omg-using`):  
-`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`.
+**Priority when several keywords match** (catalog-driven; same order in Grok rules):  
+`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`, then remaining continuation owners, then others.
+
+### Wave B/C chooser (configured playbooks — not a live smoke)
+
+| When | Skill | Honest CLI |
+|------|-------|------------|
+| Best-practice brief before plan | `omg-best-practice-research` | `omg ask` (advisory) |
+| Trace / lifecycle projection | `omg-trace` | `omg tracker status\|project\|reconcile` |
+| Deep-dive research | `omg-deep-dive` | artifacts only |
+| Ingest external facts | `omg-external-context` | `omg memory *` |
+| Red-green one slice | `omg-tdd` | `omg qa *` (never verified) |
+| Restore a broken build | `omg-build-fix` | `omg qa *` |
+| Security lane on a diff | `omg-security-review` | `omg review` / `omg dual-review` |
+| Score a visual envelope | `omg-visual-verdict` | `omg visual compare` (compare-only; no capture/Ralph) |
+| Deep workspace init | `omg-deepinit` | `omg setup` (`init-deep` alias) |
+| Named sessions | `omg-project-session-manager` | `omg session allocate\|route` (`psm` alias) |
+| MCP registration | `omg-mcp-setup` | `omg mcp-install` |
+| Notify queue | `omg-configure-notifications` | `omg notify status\|send\|process` |
+| Inspect the skill catalog | `omg-skill` | `omg skill list\|show\|resolve\|resources` |
+| Stricter plan gate | `omg-prometheus-strict` | `omg ralplan` |
+| Team Hyperplan composition | `omg-hyperplan` | `omg team hyperplan` (Team #69; fixture execute) |
+| Bounded research loop | `omg-autoresearch` | artifacts; optional `omg ask` |
+| Research vs a goal ledger | `omg-autoresearch-goal` | `omg goal *` |
+| Parallel research fan-out | `omg-parallel-research` | optional `omg ask` (`sciomc` alias) |
+| Improvement write-up | `omg-self-improve` | artifacts only — **no** learning loop |
+| Writer notes | `omg-writer-memory` | `omg memory *` / `omg note` |
+| Visual persistence ask | `omg-visual-ralph` | `omg visual compare` only; loop stays `omg ralph` |
+| AI-slop cleanup | `omg-ai-slop-cleaner` | artifact report; `omg edit plan\|apply` if replacing files (no `comments` subcommand) |
+| Comment audit | `omg-comment-checker` | artifact report (no comments subcommand on `omg edit`) |
+| Team security-research | `omg-security-research` | `omg team security-research` (Team #69) |
+| UI slice | `omg-design` | `omg-designer` spawn; no extra CLI |
+| Release checklist | `omg-release` | `omg parity *` (never verified from this skill) |
+| Git hygiene | `omg-git-master` | host git tools; no `omg git` twin |
+| Scaffold ralph PRD | `omg-ralph-init` | then `omg ralph` |
+| Low-token posture | `omg-ecomode` | no CLI twin; `capability_mode` none |
+
+Host-native names (`plan`, `goal`, `loop`, `compact`, `help`, `agents`, `mcp`, `skills`, `plugin`) stay aliases/host-owned — never plugin directories. `ulw-loop` remains an alias.
 
 ---
 
@@ -628,8 +668,8 @@ Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog
 (loader `omg_cli/skills_catalog.py`; `omg skill list|show|resolve|resources` or
 `omg capabilities` → `skills_catalog`). Antigravity `SKILL.md` files under
 [`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
-are **projections only**. The 16 Grok plugin playbooks remain the in-session
-surface.
+are **projections only**. The 45 Grok plugin playbooks are the in-session
+surface (Wave B/C included). They are **not** a live smoke.
 
 Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
 (loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
@@ -667,6 +707,12 @@ profiles, not a second registry.
 | omg-ask | `ask` | no |
 | omg-cancel | `cancel` | no |
 | omg-wiki / hud / lsp | wiki / hud / lsp | no |
+| omg-skill | `skill list\|show\|resolve\|resources` | **never** |
+| omg-visual-verdict / visual-ralph | `visual compare` | **never** |
+| omg-hyperplan / security-research | `team hyperplan` / `team security-research` | **never** |
+| omg-mcp-setup | `mcp-install` | **never** |
+| omg-configure-notifications | `notify *` | **never** |
+| omg-writer-memory | `memory *` / `note` | **never** |
 | *(MCP surface)* | `mcp-server` / `mcp-install` | **never** (structurally refused) |
 
 ---

@@ -74,6 +74,21 @@ def render_managed_block(version: str | None = None) -> str:
         raise GuidanceError(f"template missing: {path}")
     text = path.read_text(encoding="utf-8")
     text = text.replace("{{VERSION}}", version)
+    if "{{WORKFLOW_ROUTING}}" in text:
+        from omg_cli.skills_catalog import (
+            SkillsCatalogError,
+            load_skills_catalog,
+            render_workflow_routing,
+        )
+
+        try:
+            catalog = load_skills_catalog(plugin_root(), require_projections=False)
+            routing = render_workflow_routing(catalog).rstrip()
+        except SkillsCatalogError as exc:
+            raise GuidanceError(
+                f"cannot render workflow_routing from skill catalog: {exc}"
+            ) from exc
+        text = text.replace("{{WORKFLOW_ROUTING}}", routing)
     for_hash = _blank_source_hash_line(text)
     digest = hashlib.sha256(for_hash.encode()).hexdigest()
     text = text.replace("{{SOURCE_HASH}}", digest)

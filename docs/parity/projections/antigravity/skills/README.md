@@ -11,8 +11,12 @@ These files are **not**:
 - a Grok UserPromptSubmit injector
 
 They are generated from `skills/catalog.json` plus `skills/omg-*/SKILL.md` by
-`scripts/generate_antigravity_skill_projections.py`. Only the 16 Grok plugin
-skills are projected. Catalog-only / alias / deferred workflows have no AG file.
+`scripts/generate_antigravity_skill_projections.py`. Dual-host **routing**
+consumes the same catalog: Grok global rules fill `<workflow_routing>` from
+triggers/aliases; these AG files are projections of the playbook body only.
+
+Catalog-only / alias / excluded rows have no AG file. Playbooks without live
+smoke stay `configured`, not `verified`.
 
 Regenerate:
 

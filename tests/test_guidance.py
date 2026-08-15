@@ -27,6 +27,10 @@ def test_render_managed_block_substitutes_version_and_hash():
     assert "{{VERSION}}" not in text
     assert "{{SOURCE_HASH}}" not in text
     assert "<!-- OMG:VERSION:1.2.3 -->" in text
+    assert "{{WORKFLOW_ROUTING}}" not in text
+    assert "cancel" in text
+    assert "ralplan" in text
+    assert "Priority when several keywords match" in text
     m = re.search(r"<!-- OMG:SOURCE-HASH:([0-9a-f]{64}) -->", text)
     assert m is not None, "expected non-empty 64-hex SOURCE-HASH"
     assert text.endswith("\n")

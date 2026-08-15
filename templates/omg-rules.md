@@ -35,6 +35,7 @@ Durable tmux team panes (user says `team`, `team N`, `/oh-my-grok:omg-team`, or
 asks for tmux workers): run canonical `omg team [N[:role]] "<goal>"`
 (default on; `OMG_DISABLE_TMUX_TEAM=1` to kill). Do **not** substitute `spawn_subagent` /
 `omg ulw` for that request. Isolation remains integration-only (not an execution sandbox).
+{{WORKFLOW_ROUTING}}
 **HARD RULE — autopilot mid-phase:** Inside ralplan / implement / review / qa /
 rework / acceptance: **do not ask the user**. Record uncertainty under
 `.omg/artifacts/` and keep working, or `omg autopilot transition --phase blocked`.
