@@ -187,6 +187,16 @@ def test_mcp_cannot_escalate_server_capability_mode(tmp_path: Path) -> None:
         )
 
 
+def test_codegraph_index_requires_read_write(tmp_path: Path) -> None:
+    with pytest.raises(ToolsError, match="E_READ_ONLY"):
+        dispatch_sidecar_tool(
+            "omg.tools.codegraph.index",
+            {"mode": "local"},
+            root=tmp_path,
+            capability_mode="read-only",
+        )
+
+
 def test_ast_missing_is_blocked_not_fake(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("omg_cli.tools_sidecar.shutil.which", lambda _name: None)
     monkeypatch.setattr("omg_cli.tools_sidecar.Path.home", lambda: tmp_path)

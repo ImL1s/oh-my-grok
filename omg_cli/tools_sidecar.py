@@ -1551,6 +1551,7 @@ def dispatch_sidecar_tool(
             query=str(args.get("query") or ""),
         )
     if name == "omg.tools.codegraph.index":
+        require_read_write(mode, "codegraph.index")
         return codegraph_index(root=root, mode=str(args.get("mode") or "local"))
     if name == "omg.tools.research.status":
         return research_status(env)
