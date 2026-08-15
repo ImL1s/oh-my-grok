@@ -86,14 +86,25 @@ KNOWN_HANDLERS = frozenset(
     }
 )
 # Required security ids must stay enabled on their canonical event/projection.
-# id -> (handler, event, runtime_projection)
-SECURITY_ACTIVE_BINDINGS: dict[str, tuple[str, str, str]] = {
-    "omg.pretool.deny": ("deny.decide_pre_tool_use", "tool.pre", "grok"),
-    "omg.stop.gate": ("stop_gate.decide_stop", "stop.request", "grok"),
+# id -> (handler, event, runtime_projection, fail_policy)
+SECURITY_ACTIVE_BINDINGS: dict[str, tuple[str, str, str, str]] = {
+    "omg.pretool.deny": (
+        "deny.decide_pre_tool_use",
+        "tool.pre",
+        "grok",
+        "fail-open",
+    ),
+    "omg.stop.gate": (
+        "stop_gate.decide_stop",
+        "stop.request",
+        "grok",
+        "fail-open",
+    ),
     "omg.continuation.guard": (
         "continuation_guard",
         "workflow.transition",
         "omg-cli",
+        "fail-closed",
     ),
 }
 SECURITY_HANDLER_BINDINGS = {
@@ -380,7 +391,7 @@ def load_hooks_registry(
                 "missing required security hook ids: " + ", ".join(missing)
             )
         by_id = {record.id: record for record in records}
-        for hook_id, (handler, event, projection) in SECURITY_ACTIVE_BINDINGS.items():
+        for hook_id, (handler, event, projection, policy) in SECURITY_ACTIVE_BINDINGS.items():
             record = by_id[hook_id]
             if not record.enabled:
                 raise HooksRegistryError(
@@ -394,6 +405,10 @@ def load_hooks_registry(
                 raise HooksRegistryError(
                     f"{hook_id}: required security hook runtime_projection "
                     f"must be {projection!r}"
+                )
+            if record.fail_policy != policy:
+                raise HooksRegistryError(
+                    f"{hook_id}: required security hook fail_policy must be {policy!r}"
                 )
             if record.handler != handler:
                 raise HooksRegistryError(

@@ -389,6 +389,16 @@ def test_disabled_security_hook_fails_closed(tmp_path: Path) -> None:
     assert stub.by_id()["omg.pretool.deny"].enabled is False
 
 
+def test_continuation_fail_policy_pin_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.continuation.guard":
+            hook["fail_policy"] = "fail-open"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="fail_policy must be"):
+        load_hooks_registry(tmp_path)
+
+
 def test_rebound_security_hook_event_fails_closed(tmp_path: Path) -> None:
     raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
     for hook in raw["hooks"]:
