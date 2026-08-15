@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from omg_cli.main import build_parser, main
 
 ROOT = Path(__file__).resolve().parents[1]
+_SKIP_CATALOG_PIN = pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_NOFOLLOW"),
+    reason="agent catalog pin requires POSIX O_NOFOLLOW/dir_fd",
+)
 
 
 def test_parser_registers_agents_list_explain() -> None:
@@ -20,6 +27,7 @@ def test_parser_registers_agents_list_explain() -> None:
     assert ns.agent_or_profile == "omg-verifier"
 
 
+@_SKIP_CATALOG_PIN
 def test_agents_list_json_stock_grok(capsys, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".omg").mkdir()
@@ -46,6 +54,7 @@ def test_agents_list_json_stock_grok(capsys, monkeypatch, tmp_path: Path) -> Non
         assert needle not in blob
 
 
+@_SKIP_CATALOG_PIN
 def test_agents_explain_human_and_json(capsys, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".omg").mkdir()
@@ -68,6 +77,7 @@ def test_agents_explain_human_and_json(capsys, monkeypatch, tmp_path: Path) -> N
     assert "unavailable" in human
 
 
+@_SKIP_CATALOG_PIN
 def test_agents_explain_unknown_is_usage(capsys, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".omg").mkdir()
@@ -80,6 +90,7 @@ def test_agents_explain_unknown_is_usage(capsys, monkeypatch, tmp_path: Path) ->
     assert payload["error_code"] == "E_AGENT_NOT_FOUND"
 
 
+@_SKIP_CATALOG_PIN
 def test_agents_list_human_has_non_color_status(capsys, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".omg").mkdir()

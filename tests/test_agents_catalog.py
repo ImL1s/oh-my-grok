@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,25 @@ from omg_cli.agents_catalog import (
     plugin_root,
     render_antigravity_projections,
     write_antigravity_projections,
+    _read_plugin_regular_text,
 )
 from omg_cli.team.roles import role_posture
 
 ROOT = Path(__file__).resolve().parents[1]
+_PIN_READY = (
+    os.name == "posix"
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
+@pytest.fixture(autouse=True)
+def _skip_without_agent_pin(request: pytest.FixtureRequest) -> None:
+    if request.node.name.startswith("test_catalog_pin_unavailable"):
+        return
+    if not _PIN_READY:
+        pytest.skip("agent file pin requires POSIX O_NOFOLLOW/dir_fd")
+
 
 _READ_ONLY_EXPLORE_LIKE = frozenset(
     {
@@ -302,6 +318,28 @@ def test_frontmatter_snake_permission_mode_alias_fails_closed(tmp_path: Path) ->
     _write_catalog(tmp_path, [entry])
     with pytest.raises(AgentsCatalogError, match="must use permissionMode"):
         load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_catalog_pin_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "omg_cli.agents_catalog._posix_nofollow_ready", lambda: False
+    )
+    with pytest.raises(AgentsCatalogError, match="O_NOFOLLOW"):
+        load_agents_catalog(ROOT, require_projections=False)
+
+
+def test_read_plugin_regular_text_rejects_symlink(tmp_path: Path) -> None:
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text(
+        "---\nname: omg-executor\ncapabilityMode: read-write\n"
+        "permissionMode: default\n---\n# leaked\n",
+        encoding="utf-8",
+    )
+    (agents / "omg-executor.md").symlink_to(outside)
+    with pytest.raises(AgentsCatalogError, match="missing agent"):
+        _read_plugin_regular_text(tmp_path, "agents/omg-executor.md")
 
 
 def test_frontmatter_omitted_capability_mode_fails_closed(tmp_path: Path) -> None:

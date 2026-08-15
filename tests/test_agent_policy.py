@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,10 @@ from omg_cli.host_capabilities import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_NOFOLLOW"),
+    reason="agent catalog pin requires POSIX O_NOFOLLOW/dir_fd",
+)
 _SECRET_NEEDLES = (
     "api_key",
     "sk-",

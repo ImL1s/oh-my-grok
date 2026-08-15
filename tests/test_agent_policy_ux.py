@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from omg_cli.agent_policy import PolicyReason, resolve_agent_policy
 from omg_cli.agent_policy_ux import (
@@ -26,7 +29,6 @@ from omg_cli.agent_policy_ux import (
 from omg_cli.host_capabilities import stock_grok_snapshot
 from omg_cli.main import main
 from omg_cli.team.plane import format_status_table
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,6 +210,10 @@ def test_terminal_width_override_and_columns(monkeypatch) -> None:
     assert terminal_width(override=120) == 120
 
 
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_NOFOLLOW"),
+    reason="agent catalog pin requires POSIX O_NOFOLLOW/dir_fd",
+)
 def test_cli_width_snapshots(capsys, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".omg").mkdir()

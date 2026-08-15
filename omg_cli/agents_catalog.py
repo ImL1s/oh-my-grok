@@ -8,8 +8,10 @@ Fail-closed: missing catalog, missing agent file, extra uncatalogued
 ``{read-only, read-write}``, or agent frontmatter that omits, aliases, or
 disagrees with catalog ``capabilityMode`` / ``permissionMode``. Grok agent
 files must use those camelCase keys; snake_case aliases are rejected so a
-read-only/plan agent cannot silently fall back to host defaults. Never
-``execute`` / ``all``.
+read-only/plan agent cannot silently fall back to host defaults. Agent
+markdown is opened with ``O_NOFOLLOW`` and read through that pinned
+descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
+``all``.
 
 Not a routing runtime. Antigravity ``agent.md`` files are static projections
 only — not an installed AG plugin and not live AG evidence.
@@ -17,7 +19,10 @@ only — not an installed AG plugin and not live AG evidence.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -38,6 +43,8 @@ READ_ONLY_TIERS = frozenset({"reviewer", "verifier", "planner"})
 READ_WRITE_TIERS = frozenset({"orchestrator", "implementer"})
 GROK_PROJECTION_KIND = "plugin_agent"
 ANTIGRAVITY_PROJECTION_KIND = "agent_md_projection"
+MAX_AGENT_FILE_BYTES = 1 * 1024 * 1024
+_NOFOLLOW_ERRNOS = {errno.ELOOP, getattr(errno, "EMLINK", -1), errno.EINVAL}
 PROJECTION_BANNER_TITLE = "PROJECTION — not an installed Antigravity plugin"
 PROJECTION_BANNER_NEEDLES = (
     "not an installed",
@@ -279,6 +286,98 @@ def _load_json(path: Path) -> Any:
         raise AgentsCatalogError(f"catalog is not valid JSON: {path}: {exc}") from exc
 
 
+def _posix_nofollow_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
+def _read_plugin_regular_text(root: Path, relative: str) -> str:
+    """Read a plugin-relative regular file without following a swapped symlink."""
+
+    rel = _posix_relative(relative, label="agent file")
+    if not _posix_nofollow_ready():
+        raise AgentsCatalogError(
+            "agent catalog load requires POSIX O_NOFOLLOW/dir_fd"
+        )
+    parts = rel.split("/")
+    if not parts or any(not part for part in parts):
+        raise AgentsCatalogError(f"missing agent: {relative}")
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise AgentsCatalogError("cannot open plugin root") from exc
+    current: int | None = None
+    descriptor: int | None = None
+    try:
+        current = os.dup(root_fd)
+        for component in parts[:-1]:
+            try:
+                nxt = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+            except OSError as exc:
+                if exc.errno in _NOFOLLOW_ERRNOS or exc.errno == errno.ELOOP:
+                    raise AgentsCatalogError(f"missing agent: {relative}") from exc
+                raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+            os.close(current)
+            current = nxt
+        try:
+            descriptor = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=current,
+            )
+        except OSError as exc:
+            if (
+                exc.errno in _NOFOLLOW_ERRNOS
+                or exc.errno in {errno.ELOOP, errno.ENOENT}
+            ):
+                raise AgentsCatalogError(f"missing agent: {relative}") from exc
+            raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise AgentsCatalogError(f"missing agent: {relative}")
+        if before.st_size > MAX_AGENT_FILE_BYTES:
+            raise AgentsCatalogError(f"agent file exceeds size bound: {relative}")
+        remaining = min(int(before.st_size) + 1, MAX_AGENT_FILE_BYTES + 1)
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        body = b"".join(chunks)
+        if len(body) > MAX_AGENT_FILE_BYTES:
+            raise AgentsCatalogError(f"agent file exceeds size bound: {relative}")
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ) or after.st_size != len(body):
+            raise AgentsCatalogError(f"agent file changed while reading: {relative}")
+        try:
+            return body.decode("utf-8")
+        except UnicodeError as exc:
+            raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if current is not None:
+            os.close(current)
+        os.close(root_fd)
+
+
 def load_agents_catalog(
     root: Path | None = None,
     *,
@@ -325,13 +424,7 @@ def load_agents_catalog(
             "uncatalogued agents/omg-*.md on disk: " + ", ".join(extra)
         )
     for record in records:
-        agent_path = base / record.file
-        if not agent_path.is_file() or agent_path.is_symlink():
-            raise AgentsCatalogError(f"missing agent: {record.file}")
-        try:
-            text = agent_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise AgentsCatalogError(f"cannot read agent: {record.file}") from exc
+        text = _read_plugin_regular_text(base, record.file)
         _require_frontmatter_matches_catalog(text, record)
         if require_projections:
             rel = record.projections["antigravity"].path

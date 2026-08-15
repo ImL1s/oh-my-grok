@@ -113,6 +113,8 @@ UTF-8 and NUL bytes are rejected.
    sidecar is created in the project tree.
 3. `lstat` then `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`. Rejects symlink
    ancestor/leaf, FIFO, device, socket, multi-link, and non-regular files.
+   The pinned descriptor is read until the expected size or EOF (`os.read`
+   may return short of the request).
 4. Re-reads and re-plans under the lock. A digest change is concurrent
    failure, not a new unique_shift.
 5. Writes with `atomic_write_bytes_at` (fsync) and read-back of bytes
