@@ -18,8 +18,10 @@ from typing import Any, Mapping
 from omg_cli.host_capabilities import (
     ADVERTISED_MISSING,
     ADVERTISED_UNKNOWN,
+    ADVERTISED_UNSUPPORTED,
     CURRENT_VERSION,
     HOST_TIER_MEDLEY,
+    KNOWN_VERSIONS,
     STATES,
     HostCapabilitySnapshot,
     negotiate,
@@ -142,7 +144,7 @@ def load_inspect_document(
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
     version = payload.get("schemaVersion", payload.get("schema_version", 1))
-    if not isinstance(version, int) or version != 1:
+    if type(version) is not int or version != 1:
         raise MedleyInspectError(
             f"incompatible inspect schema_version {version!r}",
             code="E_MEDLEY_INSPECT_SCHEMA",
@@ -175,6 +177,14 @@ def load_inspect_document(
                 f"unrecognized capability state {state!r}",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
+        if state == "supported":
+            version = item.get("version")
+            ver = str(version).strip() if isinstance(version, str) else ""
+            if ver and ver not in KNOWN_VERSIONS:
+                raise MedleyInspectError(
+                    f"unrecognized capability version {ver!r}",
+                    code="E_MEDLEY_INSPECT_SCHEMA",
+                )
         if cap_id in seen_caps:
             raise MedleyInspectError(
                 f"duplicate capability_id {cap_id!r}",
@@ -229,7 +239,8 @@ def advertised_from_inspect(doc: MedleyInspectDocument) -> dict[str, str]:
             advertised[cap_id] = _ADVERTISED_INCOMPATIBLE
         elif state == "unknown":
             advertised[cap_id] = ADVERTISED_UNKNOWN
-        # unsupported: omit so negotiate reports unsupported
+        elif state == "unsupported":
+            advertised[cap_id] = ADVERTISED_UNSUPPORTED
     if advertised.get(EXACT_MEDLEY_CAP) in {CURRENT_VERSION, "v1", "1"}:
         advertised.setdefault(EXACT_HOST_CAP, "v1")
     return advertised

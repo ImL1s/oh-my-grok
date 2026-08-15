@@ -373,3 +373,48 @@ def test_receipt_for_policy_skips_tied_attempts(tmp_path: Path) -> None:
     )
     _snap, doc = resolve_host_snapshot(inspect_path=inspect)
     assert receipt_for_policy(doc, policy_id="verifier.default") is None
+
+
+def test_boolean_schema_version_is_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(tmp_path / "bool.json", schemaVersion=True)
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_claimed_sentinel_is_not_a_supported_version(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "claimed.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+                "version": "claimed",
+            }
+        ],
+        receipts=[],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_explicit_unsupported_baseline_is_not_restored(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "baseline.json",
+        capabilities=[
+            {
+                "capability_id": "host.native-agent.v1",
+                "state": "unsupported",
+            },
+            {
+                "capability_id": "medley.native-exact-model.v1",
+                "state": "supported",
+                "version": "v1",
+            },
+        ],
+        receipts=[],
+    )
+    snap, _doc = resolve_host_snapshot(inspect_path=inspect)
+    assert snap.state_of("host.native-agent.v1") == "unsupported"
+    assert not snap.is_supported("host.native-agent.v1")
