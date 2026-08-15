@@ -4,9 +4,12 @@ Precedence (highest first):
 
 1. explicit ``--project-root PATH`` (or API ``explicit=``)
 2. ``OMG_PROJECT_ROOT`` environment variable
-3. nearest ancestor containing a real ``.omg/`` control-plane directory
-4. ``git rev-parse --show-toplevel`` for the starting directory
-5. the starting directory (normally ``cwd``)
+3. owning project of ``<root>/.omg/worktrees/…`` when cwd is inside that tree
+4. nearest ancestor containing a real ``.omg/`` control-plane directory
+   that is **inside** the git toplevel (when git exists); unrelated ancestors
+   (especially shared temp like ``/tmp/.omg``) are ignored
+5. ``git rev-parse --show-toplevel`` for the starting directory
+6. the starting directory (normally ``cwd``)
 
 ``here=True`` (``omg setup --here``) forces the starting directory and skips
 discovery. Install/global hooks are not project-scoped and must not call this
@@ -75,12 +78,77 @@ def _omg_control_plane_dir(candidate: Path) -> bool:
         return False
 
 
+def path_is_under(path: Path, parent: Path) -> bool:
+    """True when *path* is *parent* or a descendant (after resolve)."""
+    try:
+        return path.resolve() == parent.resolve() or path.resolve().is_relative_to(
+            parent.resolve()
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _inside_omg_tree(path: Path) -> bool:
+    """True when *path* lives inside a ``.omg/`` directory (nested worktree, prompts)."""
+    return any(part == ".omg" for part in path.parts)
+
+
+def owning_project_from_omg_worktree(start: Path) -> Path | None:
+    """If *start* is under ``<project>/.omg/worktrees/…``, return ``<project>``."""
+    cur = start.resolve()
+    while True:
+        if cur.name == "worktrees" and cur.parent.name == ".omg":
+            owner = cur.parent.parent
+            if owner != cur.parent:
+                return owner
+            return None
+        parent = cur.parent
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def is_shared_temp_root(
+    path: Path, *, env: Mapping[str, str] | None = None
+) -> bool:
+    """True for well-known shared temp directories (never implicit project roots).
+
+    Temp-directory environment keys (``TMPDIR`` / ``TMP`` / ``TEMP``) are
+    read from *env* when provided so injected resolution stays deterministic.
+    ``env is None`` falls back to the process environment (CLI default).
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    env_map: Mapping[str, str] = os.environ if env is None else env
+    known: list[Path] = []
+    for raw in ("/tmp", "/var/tmp", "/private/tmp"):
+        try:
+            known.append(Path(raw).resolve())
+        except OSError:
+            known.append(Path(raw))
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        val = (env_map.get(key) or "").strip()
+        if not val:
+            continue
+        try:
+            known.append(Path(val).expanduser().resolve())
+        except OSError:
+            continue
+    return resolved in known
+
+
 def list_omg_ancestors(start: Path) -> list[Path]:
-    """Return project roots (parents of ``.omg``) from nearest to farthest."""
+    """Return project roots (parents of ``.omg``) from nearest to farthest.
+
+    Directories *inside* an existing ``.omg/`` tree (team worktree prompts,
+    ``.omg/worktrees/…``) are not control-plane roots.
+    """
     found: list[Path] = []
     cur = start.resolve()
     while True:
-        if _omg_control_plane_dir(cur):
+        if _omg_control_plane_dir(cur) and not _inside_omg_tree(cur):
             found.append(cur)
         parent = cur.parent
         if parent == cur:
@@ -155,17 +223,40 @@ def resolve_project_root(
             note=f"from {env_var}",
         )
 
+    worktree_owner = owning_project_from_omg_worktree(start)
+    if worktree_owner is not None and _omg_control_plane_dir(worktree_owner):
+        omg_roots = list_omg_ancestors(start)
+        shadowed = tuple(p for p in omg_roots if p != worktree_owner)
+        return ProjectRootResolution(
+            root=worktree_owner,
+            source="omg",
+            cwd=start,
+            shadowed_omg_ancestors=shadowed,
+            note="resolved owning project from .omg/worktrees path",
+        )
+
     omg_roots = list_omg_ancestors(start)
-    if omg_roots:
-        nearest = omg_roots[0]
-        shadowed = tuple(omg_roots[1:])
+    git_root = git_toplevel(start)
+
+    def _omg_resolution(
+        nearest: Path, *, ignored: tuple[Path, ...] = ()
+    ) -> ProjectRootResolution:
+        shadowed = tuple(p for p in omg_roots if p != nearest)
         note = None
+        bits: list[str] = []
         if shadowed:
-            note = (
+            bits.append(
                 f"nearest .omg at {nearest} shadows ancestor control plane(s): "
                 + ", ".join(str(p) for p in shadowed)
                 + "; not auto-merged (see docs/project-root.md)"
             )
+        if ignored:
+            bits.append(
+                "ignored unrelated ancestor .omg: "
+                + ", ".join(str(p) for p in ignored)
+            )
+        if bits:
+            note = "; ".join(bits)
         return ProjectRootResolution(
             root=nearest,
             source="omg",
@@ -174,7 +265,32 @@ def resolve_project_root(
             note=note,
         )
 
-    git_root = git_toplevel(start)
+    if omg_roots and git_root is not None:
+        inside = [p for p in omg_roots if path_is_under(p, git_root)]
+        ignored = tuple(p for p in omg_roots if p not in inside)
+        if inside:
+            return _omg_resolution(inside[0], ignored=ignored)
+        return ProjectRootResolution(
+            root=git_root,
+            source="git",
+            cwd=start,
+            note=(
+                "ignored unrelated ancestor .omg outside git toplevel: "
+                + ", ".join(str(p) for p in ignored)
+            ),
+        )
+
+    if omg_roots:
+        usable: list[Path] = []
+        ignored_temp: list[Path] = []
+        for candidate in omg_roots:
+            if is_shared_temp_root(candidate, env=env_map) and candidate != start:
+                ignored_temp.append(candidate)
+                continue
+            usable.append(candidate)
+        if usable:
+            return _omg_resolution(usable[0], ignored=tuple(ignored_temp))
+
     if git_root is not None:
         return ProjectRootResolution(
             root=git_root,

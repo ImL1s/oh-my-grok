@@ -46,8 +46,10 @@ need_grok() {
 }
 
 mkproj() {
-  local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/omg-live-$1.XXXXXX")"
+  local parent d
+  parent="${OMG_LIVE_PROJECT_PARENT:-$HOME/omg-live-projects}"
+  mkdir -p "$parent"
+  d="$(mktemp -d "$parent/omg-live-$1.XXXXXX")"
   git -C "$d" init -q
   git -C "$d" config user.email "live@omg.test"
   git -C "$d" config user.name "omg-live"
@@ -56,7 +58,12 @@ mkproj() {
   printf '.omg/\n' >"$d/.gitignore"
   git -C "$d" add README.md .gitignore
   git -C "$d" commit -qm init
-  (cd "$d" && "${OMG[@]}" setup >/dev/null)
+  # Pin the project: leftover /tmp/.omg must not steal this tree.
+  (
+    cd "$d"
+    export OMG_PROJECT_ROOT="$d"
+    "${OMG[@]}" setup --here --no-global-rules --no-global-hook >/dev/null
+  )
   echo "$d"
 }
 
@@ -129,6 +136,7 @@ if [[ "$MODE" == "quick" || "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; th
   GOAL="$(cat "$ROOT/scripts/fixtures/live/ulw_goal.txt")"
   (
     cd "$ULW"
+    export OMG_PROJECT_ROOT="$ULW"
     "${OMG[@]}" ulw "$GOAL" --max-iter 1 --timeout "${OMG_LIVE_TIMEOUT_ULW:-600}" \
       --no-require-acceptance --yolo
   ) || true
@@ -141,6 +149,7 @@ if [[ "$MODE" == "quick" || "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; th
   GOAL="$(cat "$ROOT/scripts/fixtures/live/ralph_goal.txt")"
   (
     cd "$RALPH"
+    export OMG_PROJECT_ROOT="$RALPH"
     "${OMG[@]}" ralph "$GOAL" --max-iter 1 --timeout "${OMG_LIVE_TIMEOUT_RALPH:-600}" \
       --no-require-acceptance --yolo
   ) || true
@@ -151,6 +160,7 @@ if [[ "$MODE" == "quick" || "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; th
   echo "== L-ACCEPT-1 =="
   (
     cd "$RALPH"
+    export OMG_PROJECT_ROOT="$RALPH"
     python3 - <<'PY'
 import json
 from pathlib import Path
@@ -201,6 +211,7 @@ if [[ "$MODE" == "full" || "$MODE" == "quota-heavy" ]]; then
   set +e
   (
     cd "$DUAL"
+    export OMG_PROJECT_ROOT="$DUAL"
     "${OMG[@]}" dual-review "$GOAL" --timeout "${OMG_LIVE_TIMEOUT_DUAL:-600}" --yolo
   )
   dual_rc=$?
@@ -260,6 +271,7 @@ if [[ "$MODE" == "quota-heavy" ]]; then
   GOAL="$(cat "$ROOT/scripts/fixtures/live/cap_spawn_goal.txt")"
   (
     cd "$CAP"
+    export OMG_PROJECT_ROOT="$CAP"
     "${OMG[@]}" ulw "$GOAL" --max-iter 1 --timeout "${OMG_LIVE_TIMEOUT_ULW:-900}" \
       --no-require-acceptance --yolo || true
   )
@@ -279,6 +291,7 @@ if [[ "$MODE" == "quota-heavy" ]]; then
   CANC="$(mkproj canc)"; cleanup_list+=("$CANC")
   (
     cd "$CANC"
+    export OMG_PROJECT_ROOT="$CANC"
     "${OMG[@]}" ralph "Sleep-like long task: do nothing useful for a long time; only read files." \
       --max-iter 1 --timeout 120 --no-require-acceptance --yolo &
     echo $! >"$CANC/suite_parent.pid"

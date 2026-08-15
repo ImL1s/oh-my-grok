@@ -243,6 +243,23 @@ def _sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def is_posix_launcher_path(relative: str) -> bool:
+    """True for shipping paths that must remain LF (shebang / bash)."""
+    rel = relative.replace("\\", "/")
+    if rel == "bin/omg":
+        return True
+    return rel.startswith("scripts/") and rel.endswith(".sh")
+
+
+def posix_launcher_bytes(relative: str, body: bytes) -> bytes:
+    """Strip CR so Windows autocrlf cannot turn ``python3`` into ``python3\\r``."""
+    if not is_posix_launcher_path(relative):
+        return body
+    if b"\r" not in body:
+        return body
+    return body.replace(b"\r\n", b"\n").replace(b"\r", b"")
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -305,12 +322,18 @@ def compute_package_identity(
     root: Path | str,
     *,
     tolerate_missing_roots: frozenset[str] | set[str] | None = None,
+    canonicalize_posix_launchers: bool = True,
 ) -> dict[str, Any]:
     """Hash deterministic shipping bytes and their executable-mode contract.
 
     ``tolerate_missing_roots`` is for reading older managed installs that
     predate newly required shipping roots. Packages being installed must pass
     with the default (strict) root set.
+
+    ``canonicalize_posix_launchers`` (default True) strips CR on ``bin/omg``
+    and ``scripts/*.sh`` so a Windows autocrlf checkout hashes as LF.
+    Staged/installed verification must pass ``False`` so a CRLF-tampered
+    launcher cannot share the LF digest.
     """
 
     package_root = Path(root).resolve()
@@ -333,6 +356,8 @@ def compute_package_identity(
         package_root, tolerate_missing=tolerate_missing_roots
     ):
         body = path.read_bytes()
+        if canonicalize_posix_launchers:
+            body = posix_launcher_bytes(relative, body)
         executable = bool(path.stat().st_mode & 0o111)
         inventory.append(
             {
@@ -499,10 +524,12 @@ def _copy_package_to_stage(
             src = source.joinpath(*PurePosixPath(relative).parts)
             dst = temporary.joinpath(*PurePosixPath(relative).parts)
             dst.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-            dst.write_bytes(src.read_bytes())
+            dst.write_bytes(posix_launcher_bytes(relative, src.read_bytes()))
             dst.chmod(0o755 if row["executable"] else 0o644)
         staged = compute_package_identity(
-            temporary, tolerate_missing_roots=tolerate_missing_roots
+            temporary,
+            tolerate_missing_roots=tolerate_missing_roots,
+            canonicalize_posix_launchers=False,
         )
         if staged["digest"] != identity["digest"] or staged["version"] != identity["version"]:
             raise InstallError("staged package identity differs from source")
@@ -521,7 +548,9 @@ def _copy_package_to_stage(
         except OSError as exc:
             if destination.exists():
                 existing = compute_package_identity(
-                    destination, tolerate_missing_roots=tolerate_missing_roots
+                    destination,
+                    tolerate_missing_roots=tolerate_missing_roots,
+                    canonicalize_posix_launchers=False,
                 )
                 if existing["digest"] == identity["digest"]:
                     shutil.rmtree(temporary, ignore_errors=True)
@@ -547,7 +576,9 @@ def _verify_immutable_stage(
     """Reread staged bytes/type/mode inventory exactly before any switch."""
 
     actual = compute_package_identity(
-        stage, tolerate_missing_roots=tolerate_missing_roots
+        stage,
+        tolerate_missing_roots=tolerate_missing_roots,
+        canonicalize_posix_launchers=False,
     )
     if actual["digest"] != identity["digest"] or actual["inventory"] != identity["inventory"]:
         raise InstallError("immutable stage inventory readback differs from source")
@@ -578,7 +609,9 @@ def stage_immutable_package(
         if destination.is_symlink() or not destination.is_dir():
             raise InstallError("immutable stage path is not a regular directory")
         installed = compute_package_identity(
-            destination, tolerate_missing_roots=tolerate_missing_roots
+            destination,
+            tolerate_missing_roots=tolerate_missing_roots,
+            canonicalize_posix_launchers=False,
         )
         if installed["digest"] != identity["digest"]:
             raise InstallError("immutable stage path already contains different bytes")
@@ -1377,7 +1410,9 @@ def verified_current_install(store: Path, cli_pointer: Path) -> VerifiedCurrentI
         stage_info = stage.lstat()
         if not stat.S_ISDIR(stage_info.st_mode) or stat.S_ISLNK(stage_info.st_mode):
             raise InstallError("current receipt stage is not a regular release directory")
-        identity = compute_package_identity(stage)
+        identity = compute_package_identity(
+            stage, canonicalize_posix_launchers=False
+        )
         digest = installed.get("package_digest")
         if not isinstance(digest, str) or identity["digest"] != digest:
             raise InstallError("immutable stage package digest differs from receipt")
@@ -1395,7 +1430,9 @@ def verified_current_install(store: Path, cli_pointer: Path) -> VerifiedCurrentI
         if plugin_path != raw_plugin:
             raise InstallError("current receipt host plugin path is not canonical")
         _verify_host_plugin_path(plugin_path, stage=stage, grok_home=store.parent)
-        plugin_identity = compute_package_identity(plugin_path)
+        plugin_identity = compute_package_identity(
+            plugin_path, canonicalize_posix_launchers=False
+        )
         if (
             plugin_identity["digest"] != digest
             or plugin_identity["version"] != identity["version"]

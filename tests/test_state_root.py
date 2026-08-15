@@ -578,6 +578,41 @@ def test_existing_project_root_resolver_unchanged(tmp_path: Path) -> None:
     assert state.project_root == legacy.root
 
 
+def test_state_root_ignores_unrelated_ancestor_omg(tmp_path: Path) -> None:
+    """Leftover parent/.omg must not become state identity for a git child."""
+    parent = tmp_path / "tmp"
+    parent.mkdir()
+    (parent / ".omg").mkdir()
+    repo = parent / "omg-live-xxx"
+    _init_git(repo)
+    res = resolve_state_root(cwd=repo, env={}, home=_home(tmp_path))
+    assert res.project_root == repo.resolve()
+    assert res.diagnostics["project_root_source"] == "git"
+
+
+def test_state_root_shared_temp_uses_injected_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected TMPDIR must ignore ancestor .omg even when process TMPDIR differs."""
+    fake_tmp = tmp_path / "custom-tmp"
+    fake_tmp.mkdir()
+    (fake_tmp / ".omg").mkdir()
+    child = fake_tmp / "child"
+    child.mkdir()
+    other = tmp_path / "other-tmp"
+    other.mkdir()
+    monkeypatch.setenv("TMPDIR", str(other))
+    home = _home(tmp_path)
+    res = resolve_state_root(
+        cwd=child, env={"TMPDIR": str(fake_tmp)}, home=home
+    )
+    assert res.project_root == child.resolve()
+    assert res.diagnostics["project_root_source"] == "cwd"
+    leaked = resolve_state_root(cwd=child, env={}, home=home)
+    assert leaked.project_root == fake_tmp.resolve()
+    assert leaked.diagnostics["project_root_source"] == "omg"
+
+
 def test_here_uses_cwd_and_does_not_write(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_git(repo)

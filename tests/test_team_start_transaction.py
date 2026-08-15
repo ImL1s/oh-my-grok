@@ -241,7 +241,7 @@ def test_seed_failure_surfaces_incomplete_compensating_stop(
     def boom_seed(*_a, **_k):
         raise RuntimeError("board seed boom")
 
-    monkeypatch.setattr(runtime, "_seed_api_board", boom_seed)
+    monkeypatch.setattr(runtime, "_stamp_worker_bindings", boom_seed)
 
     def incomplete_stop(*_a, **_k):
         return {
@@ -296,7 +296,7 @@ def test_launch_seed_failure_removes_team_ref(
     )
     monkeypatch.setattr(
         runtime,
-        "_seed_api_board",
+        "_stamp_worker_bindings",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
     )
     removed: list[str] = []
@@ -344,7 +344,7 @@ def test_launch_annotation_failure_compensates(
     )
     monkeypatch.setattr(runtime, "write_team_ref", lambda *a, **k: None)
     monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
-    monkeypatch.setattr(runtime, "_seed_api_board", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_stamp_worker_bindings", lambda *a, **k: None)
     monkeypatch.setattr(
         runtime,
         "decompose_goal",
@@ -429,7 +429,7 @@ def test_dry_run_reuse_run_compensate_preserves_active(
     )
     monkeypatch.setattr(
         runtime,
-        "_seed_api_board",
+        "_stamp_worker_bindings",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
     )
 
@@ -924,3 +924,56 @@ def test_reuse_rollback_exact_retry_after_second_forced_failure(
         force=True,
     )
     assert retry["run_id"] == rid
+
+
+def test_reuse_rollback_unlinks_only_this_launch_board_tasks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rollback unlinks this launch's board ids, not a concurrent leader's task."""
+    from omg_cli.team.api import _tasks_dir
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed board",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        topology="windows",
+        team_id="team",
+    )
+    rid = str(first["run_id"])
+    tasks_dir = _tasks_dir(tmp_path, rid, "team")
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    keep = tasks_dir / "task-1.json"
+    keep.write_text('{"id":"1","keep":true}\n', encoding="utf-8")
+    prior_keep = keep.read_bytes()
+    ours = tasks_dir / "task-99.json"
+    concurrent = tasks_dir / "task-50.json"
+    assert not ours.exists()
+    assert not concurrent.exists()
+
+    def seed_then_later_fail(_rid: str) -> dict[str, str]:
+        ours.write_text('{"id":"99","ours":true}\n', encoding="utf-8")
+        concurrent.write_text('{"id":"50","other-leader":true}\n', encoding="utf-8")
+        return {"t2": "99"}
+
+    _force_tmux_boom(monkeypatch, "forced tmux failure after seed")
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
+        start_team(
+            "reuse seed then fail",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=False,
+            topology="windows",
+            team_id="team",
+            force=True,
+            before_spawn=seed_then_later_fail,
+        )
+
+    assert keep.is_file()
+    assert keep.read_bytes() == prior_keep
+    assert not ours.exists(), "this launch's board task survived rollback"
+    assert concurrent.is_file(), "concurrent leader task was deleted by rollback"

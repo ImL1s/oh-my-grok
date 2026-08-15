@@ -227,6 +227,69 @@ def test_cli_bad_project_root_exit_2(
     assert code == 2
 
 
+def test_unrelated_ancestor_omg_does_not_steal_git_child(tmp_path: Path) -> None:
+    """Leftover parent/.omg must not become project_root for a git child (live /tmp poison)."""
+    clear_resolved_project_root()
+    parent = tmp_path / "tmp"
+    parent.mkdir()
+    (parent / ".omg").mkdir()
+    repo = parent / "omg-live-xxx"
+    _init_git(repo)
+    res = resolve_project_root(cwd=repo, env={})
+    assert res.root == repo.resolve()
+    assert res.source == "git"
+    assert "unrelated ancestor" in (res.note or "")
+
+
+def test_nested_worktree_omg_is_not_control_plane(tmp_path: Path) -> None:
+    """w1/.omg/team-prompt must not win over the owning project."""
+    clear_resolved_project_root()
+    repo = tmp_path / "repo"
+    _init_git(repo)
+    (repo / ".omg").mkdir()
+    wt = repo / ".omg" / "worktrees" / "run-1" / "w1"
+    (wt / ".omg" / "team-prompt").mkdir(parents=True)
+    res = resolve_project_root(cwd=wt, env={})
+    assert res.root == repo.resolve()
+    assert res.source == "omg"
+
+
+def test_shared_temp_omg_ignored_for_non_git_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clear_resolved_project_root()
+    fake_tmp = tmp_path / "tmp"
+    fake_tmp.mkdir()
+    (fake_tmp / ".omg").mkdir()
+    child = fake_tmp / "plain"
+    child.mkdir()
+    res = resolve_project_root(cwd=child, env={"TMPDIR": str(fake_tmp)})
+    assert res.root == child.resolve()
+    assert res.source == "cwd"
+
+
+def test_shared_temp_uses_injected_env_not_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected TMPDIR must classify shared temp even when process env differs."""
+    clear_resolved_project_root()
+    fake_tmp = tmp_path / "custom-tmp"
+    fake_tmp.mkdir()
+    (fake_tmp / ".omg").mkdir()
+    child = fake_tmp / "child"
+    child.mkdir()
+    other = tmp_path / "other-tmp"
+    other.mkdir()
+    monkeypatch.setenv("TMPDIR", str(other))
+    res = resolve_project_root(cwd=child, env={"TMPDIR": str(fake_tmp)})
+    assert res.root == child.resolve()
+    assert res.source == "cwd"
+    # Empty injected env must not leak process TMPDIR.
+    leaked = resolve_project_root(cwd=child, env={})
+    assert leaked.root == fake_tmp.resolve()
+    assert leaked.source == "omg"
+
+
 def test_install_scoped_ignores_stale_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

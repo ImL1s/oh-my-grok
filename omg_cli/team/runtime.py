@@ -21,7 +21,7 @@ from omg_cli.contracts.path_keys import (
 )
 from omg_cli.contracts.state_schemas import require_safe_id
 from omg_cli.evidence import CLI_WRITER
-from omg_cli.team.api import execute_team_api
+from omg_cli.team.api import TeamApiError, _op_create_task, execute_team_api
 from omg_cli.team.decomposition import decompose_goal
 from omg_cli.team.mailbox import MailboxError, list_messages, read_message
 from omg_cli.team.plane import (
@@ -29,11 +29,13 @@ from omg_cli.team.plane import (
     SCHEMA_VERSION,
     TeamError,
     TeamGateError,
+    experimental_enabled,
     load_team_meta,
     mutate_team_meta,
     start_team,
     team_status,
 )
+from omg_cli.team.worker_protocol import team_worker_protocol_lines
 from omg_cli.team.roles import normalize_role, role_meta
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -1113,46 +1115,60 @@ def apply_start_readiness(
     return out
 
 
-def _seed_api_board(
+def _create_api_tasks_and_inboxes(
     root: Path,
     *,
     run_id: str,
     team_id: str,
     tasks: Sequence[Mapping[str, Any]],
     env: Mapping[str, str],
-) -> None:
-    from omg_cli.team.plane import mutate_team_meta
-    from omg_cli.team.replacement import seed_worker_binding
+) -> dict[str, str]:
+    """Seed board tasks + worker inboxes. Safe before pane spawn / team.json.
 
-    worker_names = [str(t["task_id"]) for t in tasks]
-    # Register workers via first create-task workers= list, then one task each.
-    seeded: list[tuple[str, str]] = []  # (logical_worker_id, api_task_id)
-    for index, task in enumerate(tasks):
-        subject = str(task.get("subject") or task.get("description") or task["task_id"])
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "team_id": team_id,
-            "subject": subject,
-            "description": subject,
-            "workers": worker_names if index == 0 else [str(task["task_id"])],
-        }
-        code, envelope = execute_team_api(
-            "create-task", payload, root=root, env=env
+    Public ``execute_team_api`` requires a published control plane, so the
+    leader seed calls ``_op_create_task`` directly. Workers still claim only
+    through the gated API after ``team.json`` exists.
+    """
+    if not experimental_enabled(env):
+        raise TeamGateError(
+            f"team api seed refused ({EXPERIMENTAL_ENV}=0 or kill switch)"
         )
-        if code != 0 or not envelope.get("ok"):
-            raise TeamError(
-                f"failed to seed team api task for {task['task_id']}: {envelope}"
+    worker_names = [str(t["task_id"]) for t in tasks]
+    seeded: dict[str, str] = {}
+    created_paths: list[Path] = []
+    try:
+        for index, task in enumerate(tasks):
+            subject = str(
+                task.get("subject") or task.get("description") or task["task_id"]
             )
-        api_task = (envelope.get("data") or {}).get("task") or {}
-        api_task_id = str(api_task.get("id") or "")
-        logical = str(task["task_id"])
-        if api_task_id:
-            seeded.append((logical, api_task_id))
-            # Stamp binding onto the API task (attempt/generation fences).
+            logical = str(task["task_id"])
+            payload: dict[str, Any] = {
+                "run_id": run_id,
+                "team_id": team_id,
+                "subject": subject,
+                "description": subject,
+                "workers": worker_names if index == 0 else [logical],
+            }
+            try:
+                envelope = _op_create_task(root, payload)
+            except TeamApiError as exc:
+                raise TeamError(
+                    f"failed to seed team api task for {logical}: {exc.message}"
+                ) from exc
+            if not envelope.get("ok"):
+                raise TeamError(
+                    f"failed to seed team api task for {logical}: {envelope}"
+                )
+            api_task = (envelope.get("data") or {}).get("task") or {}
+            api_task_id = str(api_task.get("id") or "")
+            if not api_task_id:
+                raise TeamError(f"create-task returned no id for {logical}")
+            seeded[logical] = api_task_id
             from omg_cli.contracts.path_keys import exclusive_lock
             from omg_cli.team import api as team_api
 
             path = team_api._task_path(root, run_id, team_id, api_task_id)
+            created_paths.append(path)
             with exclusive_lock(path.with_suffix(".lock")):
                 current = team_api._read_task(root, run_id, team_id, api_task_id)
                 if current is not None:
@@ -1172,68 +1188,103 @@ def _seed_api_board(
                             "version": int(current["version"]) + 1,
                         },
                     )
-        # Write inbox for this worker
-        from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
+            from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
 
-        inbox = _worker_dir(root, run_id, team_id, str(task["task_id"])) / "inbox.md"
-        ensure_managed_dir(inbox.parent)
-        inbox.write_text(
-            "\n".join(
-                [
-                    f"# Worker inbox — {task['task_id']}",
-                    "",
-                    f"Team: {team_id}",
-                    f"Run: {run_id}",
-                    f"Role: {task.get('role')}",
-                    "",
-                    "## Assignment",
-                    subject,
-                    "",
-                    "## Protocol",
-                    "1. ACK leader via `omg team api send-message` "
-                    f"(from_worker={task['task_id']}, to_worker=leader-fixed, body=ACK).",
-                    "2. Claim your task with `omg team api claim-task`.",
-                    "3. Work only in your worktree / owned paths; commit when done.",
-                    "4. Transition task to completed; never set verified.",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
+            inbox = _worker_dir(root, run_id, team_id, logical) / "inbox.md"
+            created_paths.append(inbox)
+            ensure_managed_dir(inbox.parent)
+            inbox.write_text(
+                "\n".join(
+                    [
+                        f"# Worker inbox — {logical}",
+                        "",
+                        f"Team: {team_id}",
+                        f"Run: {run_id}",
+                        f"Role: {task.get('role')}",
+                        f"Board task id: {api_task_id}",
+                        "",
+                        "## Assignment",
+                        subject,
+                        "",
+                        *team_worker_protocol_lines(
+                            run_id=run_id,
+                            team_id=team_id,
+                            worker_id=logical,
+                            api_task_id=api_task_id,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        return seeded
+    except Exception:
+        for path in reversed(created_paths):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
 
-    if seeded:
-        by_id = {logical: api_id for logical, api_id in seeded}
 
-        def _mutator(meta: dict[str, Any]) -> dict[str, Any]:
-            rows = []
-            for raw in meta.get("tasks") or []:
-                if not isinstance(raw, Mapping):
-                    continue
-                row = dict(raw)
-                tid = str(row.get("task_id") or "")
-                if tid in by_id:
-                    gen = 1
-                    execution = row.get("execution")
-                    if isinstance(execution, Mapping) and execution.get(
-                        "launch_generation"
-                    ):
-                        try:
-                            gen = int(execution["launch_generation"])
-                        except (TypeError, ValueError):
-                            gen = 1
-                    seed_worker_binding(
-                        row,
-                        run_id=run_id,
-                        team_id=team_id,
-                        api_task_id=by_id[tid],
-                        attempt=int(row.get("attempt") or 1),
-                        launch_generation=max(gen, 1),
-                    )
-                rows.append(row)
-            meta["tasks"] = rows
-            return meta
+def _stamp_worker_bindings(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    seeded: Mapping[str, str],
+) -> None:
+    """Stamp logical→board task ids onto team.json after it exists."""
+    if not seeded:
+        return
+    from omg_cli.team.replacement import seed_worker_binding
 
-        mutate_team_meta(root, run_id, _mutator)
+    def _mutator(meta: dict[str, Any]) -> dict[str, Any]:
+        rows = []
+        for raw in meta.get("tasks") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            tid = str(row.get("task_id") or "")
+            if tid in seeded:
+                gen = 1
+                execution = row.get("execution")
+                if isinstance(execution, Mapping) and execution.get(
+                    "launch_generation"
+                ):
+                    try:
+                        gen = int(execution["launch_generation"])
+                    except (TypeError, ValueError):
+                        gen = 1
+                seed_worker_binding(
+                    row,
+                    run_id=run_id,
+                    team_id=team_id,
+                    api_task_id=seeded[tid],
+                    attempt=int(row.get("attempt") or 1),
+                    launch_generation=max(gen, 1),
+                )
+            rows.append(row)
+        meta["tasks"] = rows
+        return meta
+
+    mutate_team_meta(root, run_id, _mutator)
+
+
+def _seed_api_board(
+    root: Path,
+    *,
+    run_id: str,
+    team_id: str,
+    tasks: Sequence[Mapping[str, Any]],
+    env: Mapping[str, str],
+) -> dict[str, str]:
+    """Create API tasks + inboxes and stamp team.json bindings when present."""
+    seeded = _create_api_tasks_and_inboxes(
+        root, run_id=run_id, team_id=team_id, tasks=tasks, env=env
+    )
+    _stamp_worker_bindings(root, run_id=run_id, team_id=team_id, seeded=seeded)
+    return seeded
 
 
 def remove_team_ref(root: Path | str, team_name: str) -> None:
@@ -1335,10 +1386,12 @@ def launch_team(
     worker_topology: str | None = None,
     io_mode: str | None = None,
 ) -> dict[str, Any]:
-    """OMX-like shorthand launch: decompose → start_team(split) → seed api/ref.
+    """OMX-like shorthand launch: seed API board → start_team(split) → ref.
 
-    ``executor=\"fixture\"`` swaps pane commands for the hermetic ACK fixture
-    (transport smoke only — not Grok live parity).
+    The API board (numeric task ids + inbox + exact claim CLI) is seeded
+    **before** pane spawn so headless grok ``--prompt-file`` (single-turn)
+    can claim. ``executor=\"fixture\"`` swaps pane commands for the hermetic
+    ACK fixture (transport smoke only — not Grok live parity).
 
     Commit point (#17): ``start_team`` success is the control-plane commit
     (tmux identity + team.json). ACK readiness is post-commit health (#20).
@@ -1352,6 +1405,30 @@ def launch_team(
 
     tasks = decompose_goal(goal, workers=workers, role=role_n)
     _ensure_lane_dirs(root_path, tasks)
+
+    api_env = dict(env or {})
+    api_env.setdefault(EXPERIMENTAL_ENV, "1")
+    # Leader seeds the board — strip worker markers for this process.
+    for key in (
+        "OMG_TEAM_WORKER",
+        "OMG_PROCESS_FANOUT_WORKER",
+        "OMG_SPAWNED_WORKER",
+    ):
+        api_env.pop(key, None)
+
+    seeded: dict[str, str] = {}
+
+    def _before_spawn(rid: str) -> dict[str, str]:
+        seeded.update(
+            _create_api_tasks_and_inboxes(
+                root_path,
+                run_id=rid,
+                team_id=team_id,
+                tasks=tasks,
+                env=api_env,
+            )
+        )
+        return seeded
 
     meta = start_team(
         goal,
@@ -1372,6 +1449,7 @@ def launch_team(
         view_mode=view_mode,
         worker_topology=worker_topology,
         io_mode=io_mode,
+        before_spawn=_before_spawn,
     )
     rid = str(meta["run_id"])
     # start_team creates a new run unless --run was supplied.
@@ -1399,23 +1477,9 @@ def launch_team(
         write_team_ref(root_path, team_name=name, run_id=rid, team_id=team_id)
         ref_written = True
 
-        api_env = dict(env or {})
-        api_env.setdefault(EXPERIMENTAL_ENV, "1")
-        # Leader seeds the board — strip worker markers for this process.
-        for key in (
-            "OMG_TEAM_WORKER",
-            "OMG_PROCESS_FANOUT_WORKER",
-            "OMG_SPAWNED_WORKER",
-        ):
-            api_env.pop(key, None)
-
         phase = "api_board_seed"
-        _seed_api_board(
-            root_path,
-            run_id=rid,
-            team_id=team_id,
-            tasks=tasks,
-            env=api_env,
+        _stamp_worker_bindings(
+            root_path, run_id=rid, team_id=team_id, seeded=seeded
         )
 
         meta = dict(meta)

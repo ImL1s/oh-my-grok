@@ -303,7 +303,9 @@ def run_uninstall(
             plugin_path = verified_stage
             if plugin_path is None:  # pragma: no cover - guarded by receipt
                 raise ValueError("verified receipt has no stage")
-            if compute_package_identity(plugin_path)["digest"] != expected:
+            if compute_package_identity(
+                plugin_path, canonicalize_posix_launchers=False
+            )["digest"] != expected:
                 print("omg uninstall: host plugin bytes drifted; preserved", file=sys.stderr)
                 return 1
             owned_hooks = {

@@ -357,8 +357,14 @@ def test_parity_run_delegates_the_frozen_manifest_engine():
     assert "--ownership-manifest-hash" in delegated.stdout
 
 
-def test_unknown_command_fails():
-    r = _run_omg("not-a-real-command")
+def test_unknown_command_fails(tmp_path: Path) -> None:
+    """Unknown tokens host-launch grok; isolate from a real authenticated grok."""
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    grok = stub_dir / "grok"
+    grok.write_text("#!/bin/sh\necho stub-grok\nexit 2\n", encoding="utf-8")
+    grok.chmod(grok.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    r = _run_omg("not-a-real-command", env={"PATH": str(stub_dir)})
     assert r.returncode != 0
 
 

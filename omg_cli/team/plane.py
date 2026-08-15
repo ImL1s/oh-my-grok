@@ -68,6 +68,7 @@ from omg_cli.team.providers import (
     PromptDelivery,
     build_executor_argv,
 )
+from omg_cli.team.worker_protocol import team_worker_protocol_lines
 from omg_cli.team.roles import normalize_role
 from omg_cli.team.routing import (
     ResolvedRouting,
@@ -880,6 +881,8 @@ def build_team_task_prompt(
     provider: str = "grok",
     role: str = "executor",
     posture: str | None = None,
+    team_id: str = "team",
+    api_task_id: str | None = None,
 ) -> str:
     """Task-scoped prompt for a team pane (grok or multi-CLI)."""
     from omg_cli.modes import load_skill_body
@@ -891,14 +894,23 @@ def build_team_task_prompt(
         if provider == "grok"
         else "experimental multi-CLI tmux team plane"
     )
+    board_id = str(api_task_id).strip() if api_task_id else ""
     lines = [
+        *team_worker_protocol_lines(
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=task_id,
+            api_task_id=board_id or None,
+        ),
         skill,
         "",
         HARD_RULES_REMINDER,
         "",
         f"## Active mode: team ({mode_label})",
         f"## Run id: {run_id}",
+        f"## Team id: {team_id}",
         f"## Task: {task_id} ({task_index}/{task_count})",
+        f"## Board task id: {board_id or '(list-tasks)'}",
         f"## Role: {role}",
         f"## Provider: {provider}",
         f"## Worktree: {worktree}",
@@ -925,15 +937,8 @@ def build_team_task_prompt(
             "phases through `provider_ready` / `task_dispatched` with live "
             "provider identity — not a pre-provider helper receipt.",
             "- Read your inbox under the team api worker dir when present.",
-            "- If your tools allow shell, optionally enrich with a mailbox "
-            "ACK (never required for launch success; cannot override failed "
-            "provider evidence):",
-            "  `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
-            f'\'{{"run_id":"{run_id}","team_id":"team","from_worker":"{task_id}",'
-            '"to_worker":"leader-fixed","body":"ACK"}\'`',
-            "- Then `claim-task` for your board task, work, commit, and "
-            "`transition-task-status` (include `worker` matching your id + "
-            "claim_token) to completed.",
+            "- Follow **First actions** at the top of this prompt "
+            "(ACK, claim-task, work, transition-task-status).",
             "- Do **not** forge another worker's identity; the CLI binds "
             "`from_worker` / claim owner / transition worker to your env identity.",
             "",
@@ -1062,6 +1067,8 @@ def _build_task_grok_argv(
     yolo: bool = False,
     safe: bool = False,
     extra: Sequence[str] | None = None,
+    team_id: str = "team",
+    api_task_id: str | None = None,
 ) -> list[str]:
     prompt = build_team_task_prompt(
         goal,
@@ -1071,6 +1078,8 @@ def _build_task_grok_argv(
         task_count=task_count,
         owned_files=owned_files,
         worktree=worktree,
+        team_id=team_id,
+        api_task_id=api_task_id,
     )
     argv = build_grok_argv(
         mode="ulw",
@@ -1113,6 +1122,8 @@ def _materialize_task_prompt(
     provider: str,
     role: str,
     posture: str | None,
+    team_id: str = "team",
+    api_task_id: str | None = None,
 ) -> Path:
     """Write prompt under worktree and return its path."""
     prompt = build_team_task_prompt(
@@ -1126,6 +1137,8 @@ def _materialize_task_prompt(
         provider=provider,
         role=role,
         posture=posture,
+        team_id=team_id,
+        api_task_id=api_task_id,
     )
     task_prompt_dir = worktree / ".omg" / "team-prompt"
     task_prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -3111,6 +3124,7 @@ def start_team(
     view_mode: str | None = None,
     worker_topology: str | None = None,
     io_mode: str | None = None,
+    before_spawn: Callable[[str], Mapping[str, str] | None] | None = None,
 ) -> dict[str, Any]:
     """Create ownership + worktrees + team.json (+ live tmux unless dry_run).
 
@@ -3145,6 +3159,11 @@ def start_team(
     io_mode:
         ``headless`` / ``auto`` (default — supervisor path) or ``interactive``
         (direct-exec provider TTY; fail-closed; never silently downgrades).
+    before_spawn:
+        Optional hook after run/worktree prep and **before** prompt materialize
+        / pane spawn. Shorthand launch uses this to seed the API board so
+        headless grok's single-turn prompt includes claim-task ids. Return
+        mapping ``logical_worker_id → api_task_id``.
 
     Returns the written team.json payload.
     """
@@ -3420,6 +3439,54 @@ def start_team(
                 if tid0:
                     tasks_by_id[tid0] = t
 
+            api_task_ids: dict[str, str] = {}
+            if before_spawn is not None and not created_team_dir:
+                from omg_cli.team.api import (
+                    _api_config_path,
+                    _worker_dir,
+                )
+
+                _note_start_file_backup(
+                    file_backups, _api_config_path(root_path, rid, tid_plane)
+                )
+                for src in tasks:
+                    logical = str(src.get("task_id") or src.get("id") or "")
+                    if logical:
+                        _note_start_file_backup(
+                            file_backups,
+                            _worker_dir(root_path, rid, tid_plane, logical)
+                            / "inbox.md",
+                        )
+            if before_spawn is not None:
+                try:
+                    seeded = before_spawn(rid)
+                    if isinstance(seeded, Mapping):
+                        for key, value in seeded.items():
+                            kid = str(key or "").strip()
+                            vid = str(value or "").strip()
+                            if not kid or not vid:
+                                continue
+                            api_task_ids[kid] = vid
+                            src = tasks_by_id.get(kid)
+                            if isinstance(src, dict):
+                                src["api_task_id"] = vid
+                finally:
+                    # Register only IDs this launch returned. Do not scan
+                    # task-* (a concurrent leader's new task is not ours).
+                    if not created_team_dir:
+                        from omg_cli.team.api import _task_path, _worker_dir
+
+                        for kid, vid in api_task_ids.items():
+                            tpath = _task_path(root_path, rid, tid_plane, vid)
+                            if tpath not in file_backups:
+                                file_backups[tpath] = (None, None)
+                            inbox = (
+                                _worker_dir(root_path, rid, tid_plane, kid)
+                                / "inbox.md"
+                            )
+                            if inbox not in file_backups:
+                                file_backups[inbox] = (None, None)
+
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])
             from omg_cli.team.supervisor import supervisor_prepublish_path
@@ -3433,6 +3500,9 @@ def start_team(
                 owned = list(mtask.get("owned_files") or [])
                 src_task = tasks_by_id.get(tid) or mtask
                 role = _task_role(src_task)
+                board_task_id = str(
+                    src_task.get("api_task_id") or api_task_ids.get(tid) or ""
+                ).strip() or None
                 desc_path = tdir / f"{tid}.provider.json"
                 # Snapshot before any materialize/publish so --run reuse can
                 # restore exact prior descriptor/authority bytes+mode.
@@ -3457,6 +3527,8 @@ def start_team(
                         provider=route.provider,
                         role=route.role,
                         posture=route.posture,
+                        team_id=tid_plane,
+                        api_task_id=board_task_id,
                     )
                     inv = build_executor_argv(
                         route.provider,
@@ -3504,6 +3576,8 @@ def start_team(
                         yolo=yolo,
                         safe=safe,
                         extra=extra,
+                        team_id=tid_plane,
+                        api_task_id=board_task_id,
                     )
                     needs_pty = False
                     provider = "grok"

@@ -423,6 +423,24 @@ def main() -> int:
             check=True,
             capture_output=True,
         )
+        env["OMG_PROJECT_ROOT"] = str(cwd)
+        setup = _run(
+            [
+                sys.executable,
+                "-m",
+                "omg_cli.main",
+                "setup",
+                "--here",
+                "--no-global-rules",
+                "--no-global-hook",
+            ],
+            cwd=cwd,
+            env=env,
+        )
+        if setup.returncode != 0:
+            sys.stderr.write(setup.stdout)
+            sys.stderr.write(setup.stderr)
+            return _fail(f"omg setup --here failed: {setup.returncode}")
 
         if args.interactive_ux:
             if shutil.which("tmux") is None:
