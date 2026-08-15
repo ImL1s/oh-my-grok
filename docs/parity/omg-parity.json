@@ -336,8 +336,10 @@
       },
       "omg_paths": [
         "agents/",
+        "agents/catalog.yaml",
         "agents/catalog.json",
         "omg_cli/agents_catalog.py",
+        "scripts/generate_agents_catalog.py",
         "docs/parity/projections/antigravity/agents/"
       ],
       "runtime_owner": "omg",
@@ -358,7 +360,7 @@
         "#71",
         "#79"
       ],
-      "gap": "Machine catalog of 13 omg-* agents landed (#71: tiers, spawn policy, Grok+AG projection targets). OMC-style dynamic tier routing runtime is not mirrored (#131/#79)."
+      "gap": "YAML catalog + 23 omg-* agents, category routing (quick/deep/ultrabrain/visual-engineering/research/review), and static AG projections landed (#71). Live AG smoke / installed AG plugin remain unclaimed. Dual-host consume stays #131 overlay on this catalog."
     },
     {
       "id": "omc.skills.catalog_aliases",
@@ -1164,6 +1166,7 @@
       },
       "omg_paths": [
         "agents/",
+        "agents/catalog.yaml",
         "agents/catalog.json",
         "omg_cli/agents_catalog.py",
         "plugin.json"
@@ -1186,7 +1189,7 @@
         "#71",
         "#79"
       ],
-      "gap": "Machine catalog of 13 omg-* agents landed (#71). OmO discipline/category routing engine is not mirrored (#131)."
+      "gap": "YAML catalog + 23 omg-* agents with OmO-style category routing landed (#71). Live AG smoke is not claimed. Dual-host model policy remains the #131 overlay on this catalog (not a second registry)."
     },
     {
       "id": "omo.rules.intent_gate",

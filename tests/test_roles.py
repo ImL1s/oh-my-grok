@@ -17,9 +17,22 @@ from omg_cli.team.roles import (
 
 # --- expected taxonomy (brief) ------------------------------------------------
 
-_READ_ONLY_REVIEWER = frozenset({"code-reviewer", "critic", "security-reviewer"})
+_READ_ONLY_REVIEWER = frozenset(
+    {"code-reviewer", "critic", "security-reviewer", "vision"}
+)
 _READ_ONLY_VERIFIER = frozenset({"verifier"})
-_READ_ONLY_PLANNER = frozenset({"analyst", "architect", "planner"})
+_READ_ONLY_PLANNER = frozenset(
+    {
+        "analyst",
+        "architect",
+        "planner",
+        "explore",
+        "tracer",
+        "document-specialist",
+        "scientist",
+        "product-manager",
+    }
+)
 _READ_WRITE_EXECUTOR = frozenset(
     {
         "executor",
@@ -28,31 +41,23 @@ _READ_WRITE_EXECUTOR = frozenset(
         "writer",
         "test-engineer",
         "qa-tester",
+        "build-fixer",
+        "git-master",
+        "code-simplifier",
     }
 )
 _ORCHESTRATOR = frozenset({"orchestrator"})
 
 
 def test_canonical_roles_cover_existing_plus_five_new() -> None:
-    existing = {
-        "analyst",
-        "architect",
-        "code-reviewer",
-        "critic",
-        "executor",
-        "orchestrator",
-        "qa-tester",
-        "verifier",
-    }
-    new_five = {
-        "debugger",
-        "designer",
-        "writer",
-        "security-reviewer",
-        "test-engineer",
-    }
-    # planner is taxonomy-only (no agent md required) but must be registered
-    assert existing | new_five | {"planner"} == CANONICAL_ROLES
+    assert (
+        _READ_ONLY_REVIEWER
+        | _READ_ONLY_VERIFIER
+        | _READ_ONLY_PLANNER
+        | _READ_WRITE_EXECUTOR
+        | _ORCHESTRATOR
+        == CANONICAL_ROLES
+    )
 
 
 @pytest.mark.parametrize("role", sorted(_READ_ONLY_REVIEWER))
@@ -121,7 +126,7 @@ def test_normalize_role(raw: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     "unknown",
-    ["", "not-a-role", "cursor", "general-purpose", "explore", "omg-unknown"],
+    ["", "not-a-role", "cursor", "general-purpose", "omg-unknown"],
 )
 def test_unknown_roles_fail_closed(unknown: str) -> None:
     with pytest.raises(UnknownRoleError) as ei:

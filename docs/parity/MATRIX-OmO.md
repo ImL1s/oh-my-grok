@@ -7,7 +7,7 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | Machine catalog of 13 omg-* agents landed (#71). OmO discipline/category routing engine is not mirrored (#131). |
+| `omo.agents.discipline_routing` | agents_routing | omg_native | grok=catalogued | catalogued | YAML catalog + 23 omg-* agents with OmO-style category routing landed (#71). Live AG smoke is not claimed. Dual-host model policy remains the #131 overlay on this catalog (not a second registry). |
 | `omo.rules.intent_gate` | hooks | omg_native | grok=catalogued | catalogued | Rules-file + PreToolUse soft-gate substitute IntentGate; Grok cannot inject via UserPromptSubmit (#72). |
 | `omo.agents.background` | jobs | optional_unclaimed | grok=catalogued | optional_unclaimed | No OmO-style background agents. Durable jobs plane landed under closed #68 (jobs.durable_background); remaining job-backed/live Team evidence is owned by #69. |
 | `omo.team.hyperplan_security` | team | omg_native | grok=catalogued | catalogued | Hyperplan V1 hermetic result production + Security Research V1 hermetic result production + catalog v4 atomic task-batch DAG admission + shared composition task driver (admit/collect) + composition lane worker protocol (claim-lane/submit-lane-result) + fixture-backed composition execution (omg.team.composition_execution_v1; compile/produce stay execution_supported=false; partial catalog, not full OMX) landed (#69 PR7–PR14). Live grok/agy/antigravity/cursor auto-workers, job-backed live workers, live Antigravity, and full OMX remain open under Team v3 (#69). |
