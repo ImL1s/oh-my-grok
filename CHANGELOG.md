@@ -130,7 +130,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   missing executable. `python3_executable()` prefers a durable system
   interpreter (`/usr/bin/python3`, Homebrew/local `bin/python3`) over the
   caller's venv `PATH`, and does not `Path.resolve()` through Cellar
-  inodes. Isolation tests hash wrapper bytes before authorizing execvp.
+  inodes. Staging smoke uses that same interpreter (not a bare `python3`
+  on PATH). Isolation tests hash wrapper bytes before authorizing execvp.
   Refs #79 (does not close).
 - **Live WSL evidence (2026-08-15):** PATH `omg` shebang stays LF across
   Windows autocrlf (`bin/omg` / `scripts/*.sh` `eol=lf` plus installer CR

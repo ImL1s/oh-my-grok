@@ -837,3 +837,34 @@ def test_python3_executable_prefers_durable_system_path(monkeypatch, tmp_path):
     monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(durable),))
     monkeypatch.setattr(hi.shutil, "which", lambda name, *a, **k: str(venv_py) if name == "python3" else None)
     assert hi.python3_executable() == str(durable)
+
+
+def test_smoke_uses_selected_wrapper_interpreter(tmp_path, monkeypatch):
+    """Staging smoke must invoke the same interpreter the wrapper will execvp."""
+    from omg_cli import hook_install as hi
+
+    durable = tmp_path / "opt" / "python3"
+    durable.parent.mkdir(parents=True)
+    durable.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    durable.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(durable),))
+    seen: list[list[str]] = []
+    real_run = hi.subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and len(argv) >= 3 and list(argv[1:3]) == ["-I", "-S"]:
+            seen.append([str(x) for x in argv])
+            payload = str(kwargs.get("input") or "")
+            decision = "deny" if ("claude" in payload or "spawn_subagent" in payload) else "allow"
+            return subprocess.CompletedProcess(
+                list(argv), 0, stdout=json.dumps({"decision": decision}) + "\n", stderr=""
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(hi.subprocess, "run", fake_run)
+    gh = tmp_path / ".grok"
+    _path, action = hi.install_global_hook(home=gh)
+    assert action == "created", action
+    assert seen and all(row[0] == str(durable) for row in seen)
+    wrapper = (gh / "hooks" / hi.WRAPPER_BASENAME).read_text(encoding="utf-8")
+    assert str(durable) in wrapper

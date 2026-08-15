@@ -253,15 +253,17 @@ def _stage_file(final: Path, data: str | bytes, *, mode: int) -> Path:
     return Path(tmp)
 
 
-def _smoke(py: Path) -> None:
-    """Prove *py* runs and fails-open, exactly as grok will: python3 -I -S, neutral cwd.
+def _smoke(py: Path, *, python3: str | None = None) -> None:
+    """Prove *py* runs with the wrapper's interpreter: ``<python3> -I -S``, neutral cwd.
 
     BOTH probes must exit 0 (a nonzero exit, esp. 2, is grok's explicit-deny) and
     return the right JSON decision. Run against the STAGING copy before publishing.
     """
+    interpreter = python3 or python3_executable()
+
     def run(payload: str) -> tuple[int, str]:
         proc = subprocess.run(
-            ["python3", "-I", "-S", str(py)],
+            [interpreter, "-I", "-S", str(py)],
             input=payload,
             capture_output=True,
             text=True,
@@ -357,8 +359,9 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
     if not installed_py.is_absolute():  # canonical grok_home is absolute; guard anyway
         return json_path, "failed:NonAbsolutePath"
 
+    py3 = python3_executable()
     canonical_json = render_hook_json(installed_py)
-    canonical_wrapper = render_wrapper(installed_py)
+    canonical_wrapper = render_wrapper(installed_py, python3=py3)
     prior_json = _safe_read_text(json_path)
     prior_py = _safe_read_bytes(installed_py)
     prior_wrapper = _safe_read_bytes(installed_wrapper)
@@ -387,7 +390,7 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         # candidate (deny JSON at rc 0, which || true cannot neutralize) never goes live.
         staged = _stage_file(installed_py, raw, mode=0o755)
         try:
-            _smoke(staged)
+            _smoke(staged, python3=py3)
         except Exception:
             try:
                 os.unlink(staged)
