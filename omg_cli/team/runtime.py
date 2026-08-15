@@ -1135,82 +1135,96 @@ def _create_api_tasks_and_inboxes(
         )
     worker_names = [str(t["task_id"]) for t in tasks]
     seeded: dict[str, str] = {}
-    for index, task in enumerate(tasks):
-        subject = str(task.get("subject") or task.get("description") or task["task_id"])
-        logical = str(task["task_id"])
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "team_id": team_id,
-            "subject": subject,
-            "description": subject,
-            "workers": worker_names if index == 0 else [logical],
-        }
-        try:
-            envelope = _op_create_task(root, payload)
-        except TeamApiError as exc:
-            raise TeamError(
-                f"failed to seed team api task for {logical}: {exc.message}"
-            ) from exc
-        if not envelope.get("ok"):
-            raise TeamError(
-                f"failed to seed team api task for {logical}: {envelope}"
+    created_paths: list[Path] = []
+    try:
+        for index, task in enumerate(tasks):
+            subject = str(
+                task.get("subject") or task.get("description") or task["task_id"]
             )
-        api_task = (envelope.get("data") or {}).get("task") or {}
-        api_task_id = str(api_task.get("id") or "")
-        if not api_task_id:
-            raise TeamError(f"create-task returned no id for {logical}")
-        seeded[logical] = api_task_id
-        from omg_cli.contracts.path_keys import exclusive_lock
-        from omg_cli.team import api as team_api
-
-        path = team_api._task_path(root, run_id, team_id, api_task_id)
-        with exclusive_lock(path.with_suffix(".lock")):
-            current = team_api._read_task(root, run_id, team_id, api_task_id)
-            if current is not None:
-                team_api._write_task(
-                    root,
-                    run_id,
-                    team_id,
-                    {
-                        **current,
-                        "binding": {
-                            "schema": 1,
-                            "logical_worker_id": logical,
-                            "api_task_id": api_task_id,
-                            "attempt": 1,
-                            "launch_generation": 1,
-                        },
-                        "version": int(current["version"]) + 1,
-                    },
+            logical = str(task["task_id"])
+            payload: dict[str, Any] = {
+                "run_id": run_id,
+                "team_id": team_id,
+                "subject": subject,
+                "description": subject,
+                "workers": worker_names if index == 0 else [logical],
+            }
+            try:
+                envelope = _op_create_task(root, payload)
+            except TeamApiError as exc:
+                raise TeamError(
+                    f"failed to seed team api task for {logical}: {exc.message}"
+                ) from exc
+            if not envelope.get("ok"):
+                raise TeamError(
+                    f"failed to seed team api task for {logical}: {envelope}"
                 )
-        from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
+            api_task = (envelope.get("data") or {}).get("task") or {}
+            api_task_id = str(api_task.get("id") or "")
+            if not api_task_id:
+                raise TeamError(f"create-task returned no id for {logical}")
+            seeded[logical] = api_task_id
+            from omg_cli.contracts.path_keys import exclusive_lock
+            from omg_cli.team import api as team_api
 
-        inbox = _worker_dir(root, run_id, team_id, logical) / "inbox.md"
-        ensure_managed_dir(inbox.parent)
-        inbox.write_text(
-            "\n".join(
-                [
-                    f"# Worker inbox — {logical}",
-                    "",
-                    f"Team: {team_id}",
-                    f"Run: {run_id}",
-                    f"Role: {task.get('role')}",
-                    f"Board task id: {api_task_id}",
-                    "",
-                    "## Assignment",
-                    subject,
-                    "",
-                    *team_worker_protocol_lines(
-                        run_id=run_id,
-                        team_id=team_id,
-                        worker_id=logical,
-                        api_task_id=api_task_id,
-                    ),
-                ]
-            ),
-            encoding="utf-8",
-        )
-    return seeded
+            path = team_api._task_path(root, run_id, team_id, api_task_id)
+            created_paths.append(path)
+            with exclusive_lock(path.with_suffix(".lock")):
+                current = team_api._read_task(root, run_id, team_id, api_task_id)
+                if current is not None:
+                    team_api._write_task(
+                        root,
+                        run_id,
+                        team_id,
+                        {
+                            **current,
+                            "binding": {
+                                "schema": 1,
+                                "logical_worker_id": logical,
+                                "api_task_id": api_task_id,
+                                "attempt": 1,
+                                "launch_generation": 1,
+                            },
+                            "version": int(current["version"]) + 1,
+                        },
+                    )
+            from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
+
+            inbox = _worker_dir(root, run_id, team_id, logical) / "inbox.md"
+            created_paths.append(inbox)
+            ensure_managed_dir(inbox.parent)
+            inbox.write_text(
+                "\n".join(
+                    [
+                        f"# Worker inbox — {logical}",
+                        "",
+                        f"Team: {team_id}",
+                        f"Run: {run_id}",
+                        f"Role: {task.get('role')}",
+                        f"Board task id: {api_task_id}",
+                        "",
+                        "## Assignment",
+                        subject,
+                        "",
+                        *team_worker_protocol_lines(
+                            run_id=run_id,
+                            team_id=team_id,
+                            worker_id=logical,
+                            api_task_id=api_task_id,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        return seeded
+    except Exception:
+        for path in reversed(created_paths):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _stamp_worker_bindings(

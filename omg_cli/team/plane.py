@@ -3477,22 +3477,15 @@ def start_team(
                             if isinstance(src, dict):
                                 src["api_task_id"] = vid
                 finally:
-                    # Register board files created mid-callback even if
-                    # before_spawn raised after a partial seed (Codex P2).
+                    # Register only IDs this launch returned. Do not scan
+                    # task-* (a concurrent leader's new task is not ours).
                     if not created_team_dir:
-                        from omg_cli.team.api import _tasks_dir, _worker_dir
+                        from omg_cli.team.api import _task_path, _worker_dir
 
-                        tasks_dir = _tasks_dir(root_path, rid, tid_plane)
-                        if tasks_dir.is_dir() and not tasks_dir.is_symlink():
-                            for child in tasks_dir.iterdir():
-                                if (
-                                    child.is_file()
-                                    and not child.is_symlink()
-                                    and child.name.startswith("task-")
-                                    and child not in file_backups
-                                ):
-                                    file_backups[child] = (None, None)
                         for kid, vid in api_task_ids.items():
+                            tpath = _task_path(root_path, rid, tid_plane, vid)
+                            if tpath not in file_backups:
+                                file_backups[tpath] = (None, None)
                             inbox = (
                                 _worker_dir(root_path, rid, tid_plane, kid)
                                 / "inbox.md"

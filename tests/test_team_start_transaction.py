@@ -926,10 +926,10 @@ def test_reuse_rollback_exact_retry_after_second_forced_failure(
     assert retry["run_id"] == rid
 
 
-def test_reuse_rollback_unlinks_partial_before_spawn_tasks(
+def test_reuse_rollback_unlinks_only_this_launch_board_tasks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A board task created before before_spawn raises must not survive reuse rollback."""
+    """Rollback unlinks this launch's board ids, not a concurrent leader's task."""
     from omg_cli.team.api import _tasks_dir
 
     _init_repo(tmp_path)
@@ -949,26 +949,31 @@ def test_reuse_rollback_unlinks_partial_before_spawn_tasks(
     keep = tasks_dir / "task-1.json"
     keep.write_text('{"id":"1","keep":true}\n', encoding="utf-8")
     prior_keep = keep.read_bytes()
-    orphan = tasks_dir / "task-99.json"
-    assert not orphan.exists()
+    ours = tasks_dir / "task-99.json"
+    concurrent = tasks_dir / "task-50.json"
+    assert not ours.exists()
+    assert not concurrent.exists()
 
-    def partial_seed(_rid: str) -> dict[str, str]:
-        orphan.write_text('{"id":"99","orphan":true}\n', encoding="utf-8")
-        raise plane.TeamError("forced mid-seed failure")
+    def seed_then_later_fail(_rid: str) -> dict[str, str]:
+        ours.write_text('{"id":"99","ours":true}\n', encoding="utf-8")
+        concurrent.write_text('{"id":"50","other-leader":true}\n', encoding="utf-8")
+        return {"t2": "99"}
 
-    with pytest.raises(TeamError, match="transaction failed|forced mid-seed"):
+    _force_tmux_boom(monkeypatch, "forced tmux failure after seed")
+    with pytest.raises(TeamError, match="transaction failed|forced tmux"):
         start_team(
-            "reuse partial seed",
+            "reuse seed then fail",
             TASKS,
             root=tmp_path,
             run_id=rid,
-            dry_run=True,
+            dry_run=False,
             topology="windows",
             team_id="team",
             force=True,
-            before_spawn=partial_seed,
+            before_spawn=seed_then_later_fail,
         )
 
     assert keep.is_file()
     assert keep.read_bytes() == prior_keep
-    assert not orphan.exists(), "partial before_spawn task survived rollback"
+    assert not ours.exists(), "this launch's board task survived rollback"
+    assert concurrent.is_file(), "concurrent leader task was deleted by rollback"
