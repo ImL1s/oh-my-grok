@@ -924,3 +924,51 @@ def test_reuse_rollback_exact_retry_after_second_forced_failure(
         force=True,
     )
     assert retry["run_id"] == rid
+
+
+def test_reuse_rollback_unlinks_partial_before_spawn_tasks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A board task created before before_spawn raises must not survive reuse rollback."""
+    from omg_cli.team.api import _tasks_dir
+
+    _init_repo(tmp_path)
+    _enable_team(monkeypatch)
+
+    first = start_team(
+        "seed board",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        topology="windows",
+        team_id="team",
+    )
+    rid = str(first["run_id"])
+    tasks_dir = _tasks_dir(tmp_path, rid, "team")
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    keep = tasks_dir / "task-1.json"
+    keep.write_text('{"id":"1","keep":true}\n', encoding="utf-8")
+    prior_keep = keep.read_bytes()
+    orphan = tasks_dir / "task-99.json"
+    assert not orphan.exists()
+
+    def partial_seed(_rid: str) -> dict[str, str]:
+        orphan.write_text('{"id":"99","orphan":true}\n', encoding="utf-8")
+        raise plane.TeamError("forced mid-seed failure")
+
+    with pytest.raises(TeamError, match="transaction failed|forced mid-seed"):
+        start_team(
+            "reuse partial seed",
+            TASKS,
+            root=tmp_path,
+            run_id=rid,
+            dry_run=True,
+            topology="windows",
+            team_id="team",
+            force=True,
+            before_spawn=partial_seed,
+        )
+
+    assert keep.is_file()
+    assert keep.read_bytes() == prior_keep
+    assert not orphan.exists(), "partial before_spawn task survived rollback"

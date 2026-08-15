@@ -186,7 +186,8 @@ Same order as [project-root.md](./project-root.md):
 1. API `explicit_project_root` (CLI twin: `--project-root`)
 2. `OMG_PROJECT_ROOT`
 3. owning project of `.omg/worktrees/…` when cwd is inside that tree
-4. nearest in-repo `.omg/` (unrelated ancestors such as `/tmp/.omg` ignored)
+4. nearest in-repo `.omg/` (unrelated ancestors such as `/tmp/.omg` ignored;
+   shared temp from injected `TMPDIR`/`TMP`/`TEMP` is not an implicit root)
 5. filesystem git worktree root
 6. cwd
 

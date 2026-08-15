@@ -108,12 +108,20 @@ def owning_project_from_omg_worktree(start: Path) -> Path | None:
         cur = parent
 
 
-def is_shared_temp_root(path: Path) -> bool:
-    """True for well-known shared temp directories (never implicit project roots)."""
+def is_shared_temp_root(
+    path: Path, *, env: Mapping[str, str] | None = None
+) -> bool:
+    """True for well-known shared temp directories (never implicit project roots).
+
+    Temp-directory environment keys (``TMPDIR`` / ``TMP`` / ``TEMP``) are
+    read from *env* when provided so injected resolution stays deterministic.
+    ``env is None`` falls back to the process environment (CLI default).
+    """
     try:
         resolved = path.resolve()
     except OSError:
         return False
+    env_map: Mapping[str, str] = os.environ if env is None else env
     known: list[Path] = []
     for raw in ("/tmp", "/var/tmp", "/private/tmp"):
         try:
@@ -121,7 +129,7 @@ def is_shared_temp_root(path: Path) -> bool:
         except OSError:
             known.append(Path(raw))
     for key in ("TMPDIR", "TMP", "TEMP"):
-        val = (os.environ.get(key) or "").strip()
+        val = (env_map.get(key) or "").strip()
         if not val:
             continue
         try:
@@ -276,7 +284,7 @@ def resolve_project_root(
         usable: list[Path] = []
         ignored_temp: list[Path] = []
         for candidate in omg_roots:
-            if is_shared_temp_root(candidate) and candidate != start:
+            if is_shared_temp_root(candidate, env=env_map) and candidate != start:
                 ignored_temp.append(candidate)
                 continue
             usable.append(candidate)

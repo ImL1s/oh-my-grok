@@ -3464,29 +3464,41 @@ def start_team(
                             / "inbox.md",
                         )
             if before_spawn is not None:
-                seeded = before_spawn(rid)
-                if isinstance(seeded, Mapping):
-                    for key, value in seeded.items():
-                        kid = str(key or "").strip()
-                        vid = str(value or "").strip()
-                        if not kid or not vid:
-                            continue
-                        api_task_ids[kid] = vid
-                        src = tasks_by_id.get(kid)
-                        if isinstance(src, dict):
-                            src["api_task_id"] = vid
-                if not created_team_dir:
-                    from omg_cli.team.api import _task_path, _worker_dir
+                try:
+                    seeded = before_spawn(rid)
+                    if isinstance(seeded, Mapping):
+                        for key, value in seeded.items():
+                            kid = str(key or "").strip()
+                            vid = str(value or "").strip()
+                            if not kid or not vid:
+                                continue
+                            api_task_ids[kid] = vid
+                            src = tasks_by_id.get(kid)
+                            if isinstance(src, dict):
+                                src["api_task_id"] = vid
+                finally:
+                    # Register board files created mid-callback even if
+                    # before_spawn raised after a partial seed (Codex P2).
+                    if not created_team_dir:
+                        from omg_cli.team.api import _tasks_dir, _worker_dir
 
-                    for kid, vid in api_task_ids.items():
-                        tpath = _task_path(root_path, rid, tid_plane, vid)
-                        if tpath not in file_backups:
-                            file_backups[tpath] = (None, None)
-                        inbox = (
-                            _worker_dir(root_path, rid, tid_plane, kid) / "inbox.md"
-                        )
-                        if inbox not in file_backups:
-                            file_backups[inbox] = (None, None)
+                        tasks_dir = _tasks_dir(root_path, rid, tid_plane)
+                        if tasks_dir.is_dir() and not tasks_dir.is_symlink():
+                            for child in tasks_dir.iterdir():
+                                if (
+                                    child.is_file()
+                                    and not child.is_symlink()
+                                    and child.name.startswith("task-")
+                                    and child not in file_backups
+                                ):
+                                    file_backups[child] = (None, None)
+                        for kid, vid in api_task_ids.items():
+                            inbox = (
+                                _worker_dir(root_path, rid, tid_plane, kid)
+                                / "inbox.md"
+                            )
+                            if inbox not in file_backups:
+                                file_backups[inbox] = (None, None)
 
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])

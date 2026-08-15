@@ -398,7 +398,7 @@ def _discover_project(
         usable = [
             p
             for p in omg_roots
-            if not (is_shared_temp_root(p) and p.resolve() != start)
+            if not (is_shared_temp_root(p, env=env) and p.resolve() != start)
         ]
         if usable:
             return usable[0].resolve(), "omg", git_ids

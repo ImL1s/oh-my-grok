@@ -263,10 +263,31 @@ def test_shared_temp_omg_ignored_for_non_git_child(
     (fake_tmp / ".omg").mkdir()
     child = fake_tmp / "plain"
     child.mkdir()
-    monkeypatch.setenv("TMPDIR", str(fake_tmp))
-    res = resolve_project_root(cwd=child, env={})
+    res = resolve_project_root(cwd=child, env={"TMPDIR": str(fake_tmp)})
     assert res.root == child.resolve()
     assert res.source == "cwd"
+
+
+def test_shared_temp_uses_injected_env_not_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected TMPDIR must classify shared temp even when process env differs."""
+    clear_resolved_project_root()
+    fake_tmp = tmp_path / "custom-tmp"
+    fake_tmp.mkdir()
+    (fake_tmp / ".omg").mkdir()
+    child = fake_tmp / "child"
+    child.mkdir()
+    other = tmp_path / "other-tmp"
+    other.mkdir()
+    monkeypatch.setenv("TMPDIR", str(other))
+    res = resolve_project_root(cwd=child, env={"TMPDIR": str(fake_tmp)})
+    assert res.root == child.resolve()
+    assert res.source == "cwd"
+    # Empty injected env must not leak process TMPDIR.
+    leaked = resolve_project_root(cwd=child, env={})
+    assert leaked.root == fake_tmp.resolve()
+    assert leaked.source == "omg"
 
 
 def test_install_scoped_ignores_stale_env(

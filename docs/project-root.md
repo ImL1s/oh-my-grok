@@ -10,7 +10,7 @@ state. Nested working directories no longer invent a second tree by default.
 | 1 | `--project-root PATH` | Must exist and be a directory. Exit **2** if invalid. |
 | 2 | `OMG_PROJECT_ROOT` | Same validation as explicit flag. |
 | 3 | `.omg/worktrees/…` owner | Cwd under `<project>/.omg/worktrees/` resolves to `<project>`, not the nested worktree `.omg`. |
-| 4 | Nearest ancestor with a real `.omg/` directory | Symlinked `.omg` is ignored. `.omg` **outside** the git toplevel is ignored (fail-closed: leftover `/tmp/.omg` must not steal `/tmp/omg-live-*`). Shared temp roots (`/tmp`, `$TMPDIR`) are not implicit project roots unless cwd is exactly that directory. Nested `.omg` inside another `.omg/` tree (team-prompt) is not a control plane. |
+| 4 | Nearest ancestor with a real `.omg/` directory | Symlinked `.omg` is ignored. `.omg` **outside** the git toplevel is ignored (fail-closed: leftover `/tmp/.omg` must not steal `/tmp/omg-live-*`). Shared temp roots (`/tmp`, `$TMPDIR`/`$TMP`/`$TEMP` from the resolver's injected env) are not implicit project roots unless cwd is exactly that directory. Nested `.omg` inside another `.omg/` tree (team-prompt) is not a control plane. |
 | 5 | `git rev-parse --show-toplevel` | Linked worktrees use the worktree root **unless** rule 3 applied. |
 | 6 | Current working directory | Only when none of the above apply. |
 
