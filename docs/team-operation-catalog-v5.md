@@ -26,7 +26,7 @@ Schema v4 remains frozen at `tests/golden/team_operation_catalog_v4.json`
 | New op | `list-host-prompt-queue` (`domain=queue`, implemented, worker-allowed, read-only) |
 | New op | `reorder-host-prompt-queue` (`domain=queue`, implemented, leader-only, mutating) |
 
-Counts: **42 named / 32 implemented**. v1–v4 goldens are unchanged.
+Counts: **42 named / 32 dispatched**. v1–v4 goldens are unchanged.
 
 Host prompt-queue consume is an OMG-owned durable file
 (`.omg/state/runs/<run>/team/<team>/host_prompt_queue.json`). It is **not**

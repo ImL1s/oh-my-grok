@@ -100,7 +100,7 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
         path = Path(override).expanduser()
         if path.is_file() and os.access(path, os.X_OK):
             _require_grok_basename(path, source=f"{ENV_BIN_OVERRIDE}={override!r}")
-            return str(path.resolve())
+            return str(path)
         raise ProviderBinaryMissing(
             f"OMG_GROK_BIN={override!r} is not an executable file"
         )
@@ -109,9 +109,15 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
         raise ProviderBinaryMissing(
             f"{BINARY_NAME!r} not found on PATH (set {ENV_BIN_OVERRIDE} to override)"
         )
-    resolved = Path(path_str).resolve()
-    _require_grok_basename(resolved, source="PATH")
-    return str(resolved)
+    found = Path(path_str)
+    _require_grok_basename(found, source="PATH")
+    resolved = found.resolve()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ProviderBinaryMissing(
+            f"{BINARY_NAME!r} on PATH is not an executable file after resolve"
+        )
+    # Keep the PATH entry name (`grok`); exec follows a symlink target.
+    return str(found)
 
 
 def probe_version(binary: str | None = None) -> VersionInfo:

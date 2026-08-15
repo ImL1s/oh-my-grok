@@ -108,3 +108,54 @@ def test_broadcast_sends_n_dms_and_is_leader_only(
     )
     assert code == 2
     assert denied["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_broadcast_omitted_dedupe_key_is_retry_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = start_team(
+        "broadcast seed",
+        SEED_TASKS,
+        root=tmp_path,
+        dry_run=True,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+    )
+    run_id = str(meta["run_id"])
+    for worker in ("t-a", "t-b"):
+        code, created = execute_team_api(
+            "create-task",
+            {
+                "run_id": run_id,
+                "team_id": TEAM,
+                "subject": f"seed-{worker}",
+                "description": f"seed-{worker}",
+                "workers": [worker],
+            },
+            root=tmp_path,
+        )
+        assert code == 0, created
+    payload = {
+        "run_id": run_id,
+        "team_id": TEAM,
+        "from_worker": "leader",
+        "body": "hello-retry",
+    }
+    code1, env1 = execute_team_api("broadcast", payload, root=tmp_path)
+    assert code1 == 0
+    assert env1["data"]["count"] == 2
+    first_ids = {msg["message_id"] for msg in env1["data"]["messages"]}
+    code2, env2 = execute_team_api("broadcast", payload, root=tmp_path)
+    assert code2 == 0
+    second_ids = {msg["message_id"] for msg in env2["data"]["messages"]}
+    assert first_ids == second_ids
+    for worker in ("t-a", "t-b"):
+        code, listing = execute_team_api(
+            "mailbox-list",
+            {"run_id": run_id, "team_id": TEAM, "worker": worker},
+            root=tmp_path,
+        )
+        assert code == 0
+        assert listing["data"]["count"] == 1

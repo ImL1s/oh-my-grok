@@ -11,7 +11,7 @@ Launch **real tmux worker panes** coordinated by the `omg` CLI. This is **not**
 **Default on.** Kill switch: `OMG_DISABLE_TMUX_TEAM=1` (legacy
 `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables). Isolation remains **integration**
 only (worktree + seal) — not an execution sandbox. Do not claim full OMX
-`$team` catalog parity (v5: 42 named / 32 implemented; `omg team api catalog`).
+`$team` catalog parity (v5: 42 named / 32 dispatched; `omg team api catalog`).
 
 Launch readiness is **provider-aware** (#99): the pane supervisor spawns the
 provider child, records exact provider PID/PGID/start identity, and advances

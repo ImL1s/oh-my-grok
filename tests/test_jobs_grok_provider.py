@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from omg_cli.jobs.providers import (
     resolve_job_provider,
 )
 from omg_cli.jobs.runtime import start_job, wait_job
-from omg_cli.jobs.store import read_job_record
+from omg_cli.jobs.store import job_dir, read_job_record
 from omg_cli.team.launch import launch_worker
 
 pytest_plugins = ["tests.jobs_grok_testutil"]
@@ -103,3 +104,56 @@ def test_preflight_pins_binary(fake_grok_path: Path) -> None:
     assert snap.provider_compat == "compatible"
     assert snap.output_format == "text"
     assert snap.provider_pin_revision == "unpinned"
+
+
+def test_team_job_stamps_worktree_cwd(
+    fake_grok_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del fake_grok_path
+    monkeypatch.setenv("FAKE_GROK_ECHO_CWD", "1")
+    (tmp_path / ".omg").mkdir()
+    wt = tmp_path / "wt-w1"
+    wt.mkdir()
+    handle = launch_worker(
+        tmp_path,
+        worker_id="w1",
+        topology="job",
+        provider="grok",
+        role="executor",
+        prompt_text="team grok job",
+        dry_run=False,
+        cwd=wt,
+    )
+    rec = read_job_record(tmp_path, handle.job_id)
+    assert rec.request["cwd"] == str(wt.resolve())
+    wait_job(tmp_path, handle.job_id, timeout_s=30.0)
+    done = read_job_record(tmp_path, handle.job_id)
+    assert done.state == JobState.SUCCEEDED
+    result = (job_dir(tmp_path, handle.job_id) / "artifacts" / "result.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"cwd={wt.resolve()}" in result
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink basename probe is POSIX")
+def test_discover_binary_accepts_grok_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os as os_mod
+
+    from omg_cli.jobs.grok import discover_binary
+    from tests.jobs_grok_testutil import install_fake_grok
+
+    real = install_fake_grok(tmp_path / "lib", name="grok-build-1.0")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    link = bin_dir / "grok"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.delenv("OMG_GROK_BIN", raising=False)
+    found = discover_binary(env=os_mod.environ)
+    assert Path(found).name == "grok"
+    assert Path(found).resolve() == real.resolve()

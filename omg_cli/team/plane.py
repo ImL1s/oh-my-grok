@@ -3824,6 +3824,7 @@ def start_team(
                             launch_generation=1,
                             dry_run=True,
                             executor=executor_norm,
+                            cwd=rec.get("worktree"),
                         )
                         stamp_execution_on_task(rec, handle)
                     except WorkerLaunchError as exc:
@@ -3902,6 +3903,7 @@ def start_team(
                                 f"Team worker {rec['task_id']} "
                                 f"run={rid} team={tid_plane} goal={goal}"
                             ),
+                            cwd=rec.get("worktree"),
                         )
                         stamp_execution_on_task(rec, handle)
                         if handle.job_id:

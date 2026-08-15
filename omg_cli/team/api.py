@@ -15,6 +15,7 @@ not claimed — see ``omg team api catalog`` /
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -1124,7 +1125,10 @@ def _op_broadcast(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     require_safe_id(kind, label="kind")
     dedupe_key = _optional_str(payload, "dedupe_key")
     if not dedupe_key:
-        dedupe_key = f"auto-{secrets.token_hex(8)}"
+        body_text = body.strip() if isinstance(body, str) else json.dumps(body, sort_keys=True, default=str)
+        material = "\0".join((run_id, team_id, sender, kind, body_text, str(generation)))
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        dedupe_key = f"bcast-{digest}"
     require_safe_id(dedupe_key, label="dedupe_key")
     config = _load_config(root, run_id, team_id)
     if config is None:

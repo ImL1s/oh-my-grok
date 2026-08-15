@@ -1082,6 +1082,7 @@ def _execute_replacement_from_wal(
                     attempt=new_attempt,
                     launch_generation=new_generation,
                     dry_run=True,
+                    cwd=task.get("worktree"),
                 )
                 # Dry-run must not materialize pane/job or mutate live handles.
                 wal["new_execution"] = handle.to_execution_record()
@@ -1166,6 +1167,7 @@ def _execute_replacement_from_wal(
                         if topology == WORKER_TOPOLOGY_JOB
                         else None
                     ),
+                    cwd=task.get("worktree"),
                 )
             # Readback already enforced inside launch_worker for jobs; panes
             # require a non-empty pane_id from launcher.

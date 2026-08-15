@@ -215,7 +215,7 @@ omg accept --yes
 | **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
 | **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch; `--io-mode auto\|interactive\|headless`); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v5 has 42 named ops / 32 implemented — not full OMX catalog parity; see `docs/team-operation-catalog-v5.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v5 has 42 named ops / 32 dispatched — not full OMX catalog parity; see `docs/team-operation-catalog-v5.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
 goal and normalizes to `launch` (not a separate argparse choice named `3`).
@@ -353,7 +353,7 @@ omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE --
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
 omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
-# P0′ ops + replace-worker + read-presentation-state + bulk-create-tasks + broadcast + host prompt-queue; catalog v5 = 42 named / 32 implemented (see docs/team-operation-catalog-v5.md; v1–v4 goldens unchanged)
+# P0′ ops + replace-worker + read-presentation-state + bulk-create-tasks + broadcast + host prompt-queue; catalog v5 = 42 named / 32 dispatched (see docs/team-operation-catalog-v5.md); v1–v4 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
