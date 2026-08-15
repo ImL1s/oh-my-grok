@@ -82,7 +82,7 @@ def _tmux_capture(session: str, pane_id: str) -> str:
 def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
     """One grok interactive pane. Claim LIVE_TEAM_INTERACTIVE_TTY_OK only on proof."""
     sys.path.insert(0, str(ROOT))
-    from omg_cli.team.interactive import capture_contains_tui_ready, tui_ready_marker
+    from omg_cli.team.interactive import capture_contains_tui_ready
     from omg_cli.team.operator import input_worker
     from omg_cli.team.plane import stop_team
     from omg_cli.team.runtime import launch_team
@@ -136,7 +136,6 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             evidence["reason"] = "missing pane_id or interactive_nonce"
             _write_evidence(evidence)
             return _fail(evidence["reason"])
-        marker = tui_ready_marker(nonce)
         capture = _tmux_capture(session, pane_id) if session else ""
         if not capture:
             cap_proc = _tmux("capture-pane", "-p", "-t", pane_id)

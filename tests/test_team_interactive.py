@@ -753,7 +753,7 @@ def test_scale_up_refuses_interactive_team(
 
 
 def test_wrapper_refuses_without_tty() -> None:
-    from omg_cli.team.interactive_wrapper import E_WRAPPER_NO_TTY, main as wrap_main
+    from omg_cli.team.interactive_wrapper import main as wrap_main
 
     rc = wrap_main(["--", sys.executable, "-c", "print('no')"])
     assert rc == 2
@@ -891,6 +891,234 @@ def test_wrapper_no_tui_ready_when_child_never_reads(
                 **os.environ,
                 "OMG_TEAM_INTERACTIVE_NONCE": "deadbeef",
                 "OMG_TEAM_WRAPPER_READY_TIMEOUT_MS": "400",
+            },
+            close_fds=True,
+        )
+        os.close(slave)
+        slave_open = False
+        deadline = time.monotonic() + 3.0
+        buf = b""
+        while time.monotonic() < deadline and proc.poll() is None:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        proc.wait(timeout=5)
+        assert b"TUI_READY:" not in buf, buf
+        assert proc.returncode != 0
+    finally:
+        if slave_open:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def test_process_is_live_false_for_zombie_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    monkeypatch.setattr(wrap, "_proc_state", lambda _pid: "Z")
+    monkeypatch.setattr(os, "kill", lambda *_a, **_k: None)
+    assert wrap._process_is_live(4242) is False
+    monkeypatch.setattr(wrap, "_proc_state", lambda _pid: "S")
+    assert wrap._process_is_live(4242) is True
+
+
+def test_child_alive_false_after_waitpid_reaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    if not hasattr(os, "WNOHANG"):
+        pytest.skip("WNOHANG is POSIX")
+    monkeypatch.setattr(os, "waitpid", lambda _pid, _flags: (99, 0))
+    monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: True)
+    assert wrap._child_alive(99) is False
+
+
+def test_child_waiting_on_stdin_poll_sleep_requires_raw_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    syscall = tmp_path / "syscall"
+    syscall.write_text(
+        "7 0x7fff0000 1 0xffffffff 0 0 0 0x7fff1000 0x401000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: True)
+    monkeypatch.setattr(wrap, "_proc_fd0_target", lambda _pid: "/dev/pts/3")
+    monkeypatch.setattr(wrap, "_iter_task_syscall_paths", lambda _pid: [syscall])
+    monkeypatch.setattr(wrap, "_proc_state_sleeping", lambda _pid: True)
+    monkeypatch.setattr(wrap, "_machine", lambda: "x86_64")
+    monkeypatch.setattr(wrap, "_tty_in_raw_or_noncanonical", lambda: False)
+    assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is False
+    monkeypatch.setattr(wrap, "_tty_in_raw_or_noncanonical", lambda: True)
+    assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is True
+
+
+def test_child_waiting_on_stdin_read_fd0_does_not_need_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    syscall = tmp_path / "syscall"
+    syscall.write_text(
+        "0 0x0 0x7fff0000 0x400 0 0 0 0x7fff1000 0x401000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: True)
+    monkeypatch.setattr(wrap, "_proc_fd0_target", lambda _pid: "/dev/pts/3")
+    monkeypatch.setattr(wrap, "_iter_task_syscall_paths", lambda _pid: [syscall])
+    monkeypatch.setattr(wrap, "_machine", lambda: "x86_64")
+    monkeypatch.setattr(wrap, "_tty_in_raw_or_noncanonical", lambda: False)
+    assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is True
+
+
+def test_child_waiting_on_stdin_zombie_ignores_leftover_raw_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import interactive_wrapper as wrap
+
+    monkeypatch.setattr(wrap, "_process_is_live", lambda _pid: False)
+    monkeypatch.setattr(wrap, "_proc_fd0_target", lambda _pid: None)
+    monkeypatch.setattr(wrap, "_tty_in_raw_or_noncanonical", lambda: True)
+    assert wrap.child_waiting_on_stdin(99, "/dev/pts/3") is False
+
+
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
+def test_wrapper_no_tui_ready_when_child_polls_non_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import select
+    import subprocess
+    import time
+
+    pty = pytest.importorskip("pty")
+    child_py = tmp_path / "child_poll_pipe.py"
+    child_py.write_text(
+        "import os, select\n"
+        "r, w = os.pipe()\n"
+        "select.select([r], [], [], 8)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OMG_TEAM_INTERACTIVE_NONCE", "deadbeef")
+    master, slave = pty.openpty()
+    slave_open = True
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "omg_cli.team.interactive_wrapper",
+                "--timeout-ms",
+                "400",
+                "--",
+                sys.executable,
+                "-u",
+                str(child_py),
+            ],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env={
+                **os.environ,
+                "OMG_TEAM_INTERACTIVE_NONCE": "deadbeef",
+                "OMG_TEAM_WRAPPER_READY_TIMEOUT_MS": "400",
+            },
+            close_fds=True,
+        )
+        os.close(slave)
+        slave_open = False
+        deadline = time.monotonic() + 3.0
+        buf = b""
+        while time.monotonic() < deadline and proc.poll() is None:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        proc.wait(timeout=5)
+        assert b"TUI_READY:" not in buf, buf
+        assert proc.returncode != 0
+    finally:
+        if slave_open:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
+def test_wrapper_no_tui_ready_when_child_sets_raw_then_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import select
+    import subprocess
+    import time
+
+    pty = pytest.importorskip("pty")
+    child_py = tmp_path / "child_raw_exit.py"
+    child_py.write_text(
+        "import sys, termios, os, time\n"
+        "fd = sys.stdin.fileno()\n"
+        "attrs = termios.tcgetattr(fd)\n"
+        "attrs[3] &= ~termios.ICANON\n"
+        "termios.tcsetattr(fd, termios.TCSANOW, attrs)\n"
+        "time.sleep(0.05)\n"
+        "os._exit(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OMG_TEAM_INTERACTIVE_NONCE", "deadbeef")
+    master, slave = pty.openpty()
+    slave_open = True
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "omg_cli.team.interactive_wrapper",
+                "--timeout-ms",
+                "800",
+                "--",
+                sys.executable,
+                "-u",
+                str(child_py),
+            ],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env={
+                **os.environ,
+                "OMG_TEAM_INTERACTIVE_NONCE": "deadbeef",
+                "OMG_TEAM_WRAPPER_READY_TIMEOUT_MS": "800",
             },
             close_fds=True,
         )

@@ -9,8 +9,11 @@ TTY (not a PTY proxy, not the Team supervisor) and prints
 1. stdin is a real TTY;
 2. the child is alive;
 3. the child's fd 0 is that TTY;
-4. the child has started waiting on stdin (blocking read/poll/select on
-   fd 0, or the TTY is in raw/non-canonical mode after the child started).
+4. the child has started waiting on stdin (blocking read on fd 0, or
+   poll/select/epoll while sleeping **and** the shared TTY is already
+   raw/non-canonical). A poll sleep on some other fd is not enough.
+   Zombies are not live: ``kill(pid, 0)`` success plus leftover raw TTY
+   must not emit TUI_READY.
 
 It never prints TUI_READY because the child merely spawned. It never
 echoes operator bytes (PROVIDER_ECHO must come from the child). If the
@@ -155,15 +158,16 @@ def child_waiting_on_stdin(pid: int, expected_tty: str) -> bool:
 
     Never returns True solely because the process exists. Missing ``/proc``
     falls back to TTY raw/non-canonical mode (the child put the shared TTY
-    into TUI input mode).
+    into TUI input mode) **only** when the child is still live (not a zombie).
+    poll/select/epoll sleeps are not stdin-wait unless that TTY is already
+    raw/non-canonical — syscall args for those calls are userspace pointers,
+    so a network/timer poll must not promote the pane.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if not expected_tty:
         return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
+    if not _process_is_live(pid):
         return False
     fd0 = _proc_fd0_target(pid)
     if fd0 is not None:
@@ -174,6 +178,7 @@ def child_waiting_on_stdin(pid: int, expected_tty: str) -> bool:
             return False
         wait_set = _stdin_wait_syscalls()
         read_set = _read_syscalls()
+        tty_raw = _tty_in_raw_or_noncanonical()
         for path in _iter_task_syscall_paths(pid):
             try:
                 raw = path.read_text(encoding="utf-8", errors="replace")
@@ -185,25 +190,44 @@ def child_waiting_on_stdin(pid: int, expected_tty: str) -> bool:
             if nr in read_set and arg0 == 0:
                 return True
             if nr in wait_set:
-                # poll/select/epoll: require S-state so we do not fire during
-                # a busy CPU loop that happens to mention poll.
-                if _proc_state_sleeping(pid):
+                # poll/select/epoll: require S-state AND TUI input mode.
+                # Arg0 is a pointer/epfd, not fd 0; sleeping in poll is not
+                # proof the child is waiting on stdin.
+                if _proc_state_sleeping(pid) and tty_raw:
                     return True
         return False
     return _tty_in_raw_or_noncanonical()
 
 
-def _proc_state_sleeping(pid: int) -> bool:
+def _proc_state(pid: int) -> str | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return None
     # comm can contain spaces/parens; state is the first char after the last ") ".
     rparen = stat.rfind(")")
     if rparen < 0 or rparen + 2 >= len(stat):
+        return None
+    return stat[rparen + 2 : rparen + 3]
+
+
+def _proc_state_sleeping(pid: int) -> bool:
+    return _proc_state(pid) == "S"
+
+
+def _process_is_live(pid: int) -> bool:
+    """False for dead pids and Linux zombies (``kill(pid, 0)`` still succeeds).
+
+    Missing ``/proc`` (macOS) is unknown, not dead — fall back to ``kill``.
+    """
+    state = _proc_state(pid)
+    if state in {"Z", "X"}:
         return False
-    state = stat[rparen + 2 : rparen + 3]
-    return state in {"S", "S\t"} or state == "S"
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _tty_in_raw_or_noncanonical() -> bool:
@@ -227,11 +251,17 @@ def _emit_tui_ready(nonce: str) -> None:
 
 
 def _child_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    """True only for a still-running child. Reaps zombies via WNOHANG."""
+    wnohang = getattr(os, "WNOHANG", None)
+    if wnohang is not None:
+        try:
+            waited, _status = os.waitpid(pid, wnohang)
+        except OSError:
+            waited = 0
+        else:
+            if waited == pid:
+                return False
+    return _process_is_live(pid)
 
 
 def _wait_for_stdin_ready(pid: int, tty: str, *, timeout_s: float | None) -> bool:
@@ -317,7 +347,7 @@ def run_wrapper(argv: list[str], *, nonce: str, timeout_s: float | None = None) 
             pass
 
     ready = _wait_for_stdin_ready(child, tty, timeout_s=timeout_s)
-    if not ready:
+    if not ready or not _process_is_live(child):
         if _child_alive(child):
             _forward_signal(child, signal.SIGTERM)
             try:
