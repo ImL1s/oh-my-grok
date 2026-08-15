@@ -126,7 +126,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `--run` rolls back board tasks created by a partial `before_spawn`.
   Staged/installed identity readback hashes launcher bytes raw (CRLF
   cannot share the LF digest). Fallback `list-tasks` includes `--input`
-  with run/team identity. Does not claim `LIVE_TEAM_SMOKE_OK` /
+  with run/team identity and does not require a claim when no board
+  task is bound. Does not claim `LIVE_TEAM_SMOKE_OK` /
   `LIVE_TEAM_INTERACTIVE_TTY_OK`.
   Refs #69 #147 #79 (does not close).
 - **Leftover Codex reviews (#177/#178/#179/#180):** project-local `.omg/state`

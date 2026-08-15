@@ -67,30 +67,22 @@ def team_worker_protocol_lines(
         )
     else:
         listing = {"run_id": run_id, "team_id": team_id}
-        claim = {"task_id": "BOARD_TASK_ID_FROM_LIST", "worker": worker_id}
-        complete = {
-            "task_id": "BOARD_TASK_ID_FROM_LIST",
-            "worker": worker_id,
-            "from": "in_progress",
-            "to": "completed",
-            "claim_token": "CLAIM_TOKEN_FROM_PREVIOUS_JSON",
-        }
         lines.extend(
             [
-                "2. List board tasks, then claim the **numeric** board task id",
-                f"(not `{worker_id}` — that is the worker id):",
+                "2. No board task was bound for this pane. Discover, do not block:",
                 "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api list-tasks --input "
                 f"'{_dumps(listing)}'`",
-                "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api claim-task --input "
-                f"'{_dumps(claim)}'`",
-                "Replace BOARD_TASK_ID_FROM_LIST with the id from list-tasks.",
                 "If list-tasks returns team control plane missing / team_not_found,",
                 "retry that exact command every 2s for up to 45s.",
-                "3. Do the assignment in this worktree. Then complete using the",
-                "`claimToken` string from step 2 stdout (replace the placeholder):",
-                "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api "
-                "transition-task-status --input "
-                f"'{_dumps(complete)}'`",
+                "If the list is empty or has no numeric board id for this worker,",
+                "**skip claim** and do the assignment in this worktree.",
+                "If a numeric board task id is present, claim it (not "
+                f"`{worker_id}`):",
+                "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api claim-task --input "
+                f"'{_dumps({'task_id': '<BOARD_ID>', 'worker': worker_id})}'`",
+                "then `transition-task-status` to `completed` with `claim_token`",
+                "from that claim response.",
+                "3. Do the assignment in this worktree.",
             ]
         )
     lines.extend(
