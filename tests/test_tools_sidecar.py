@@ -751,3 +751,42 @@ def test_cli_codegraph_index(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert payload["result"]["index_present"] is True
     assert payload["result"]["verified"] is False
     assert payload["result"]["not_scip"] is True
+
+
+def test_local_index_stale_after_second_edit(tmp_path: Path) -> None:
+    src = tmp_path / "a.py"
+    src.write_text("def hello():\n    return 0\n", encoding="utf-8")
+    first = codegraph_index(root=tmp_path, mode="local")
+    assert first["index_stale"] is False
+    src.write_text("def hello():\n    return 1\n def extra():\n    return 2\n", encoding="utf-8")
+    status = codegraph_status(root=tmp_path, mode="local")
+    assert status["index_stale"] is True
+
+
+def test_shared_index_refuses_dirty_git_worktree(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "a.py").write_text("def shared_sym():\n    return 0\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "base"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "a.py").write_text("def shared_sym():\n    return 1\n", encoding="utf-8")
+    with pytest.raises(ToolsError, match="E_CODEGRAPH_DIRTY"):
+        codegraph_index(root=tmp_path, mode="shared")

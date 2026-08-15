@@ -976,6 +976,50 @@ def _git_dirty(root: Path) -> bool | None:
     return bool(proc.stdout.strip())
 
 
+def _worktree_fingerprint(root: Path) -> str:
+    """Content-sensitive dirty fingerprint (HEAD + diff + untracked bytes)."""
+    digest = hashlib.sha256()
+    digest.update((_git_head(root) or "").encode("utf-8"))
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "HEAD"],
+            capture_output=True,
+            timeout=15,
+            cwd=str(root),
+            check=False,
+        )
+        if diff.returncode == 0:
+            digest.update(diff.stdout)
+        others = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=15,
+            cwd=str(root),
+            check=False,
+        )
+        if others.returncode == 0:
+            for rel in others.stdout.split(b"\0"):
+                if not rel:
+                    continue
+                digest.update(rel)
+                try:
+                    digest.update((Path(root) / rel.decode("utf-8", "surrogateescape")).read_bytes()[:65536])
+                except OSError:
+                    pass
+            return digest.hexdigest()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    files, _truncated = _iter_index_files(root)
+    base = Path(root).resolve()
+    for path in files:
+        try:
+            digest.update(path.relative_to(base).as_posix().encode("utf-8"))
+            digest.update(path.read_bytes()[:65536])
+        except (OSError, ValueError):
+            continue
+    return digest.hexdigest()
+
+
 def _git_head(root: Path) -> str | None:
     try:
         proc = subprocess.run(
@@ -1196,7 +1240,11 @@ def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
     present = index is not None
     stale = False
     if present and index is not None:
-        stale = index.get("head_sha") != head or index.get("worktree_dirty") != dirty
+        fingerprint = _worktree_fingerprint(root)
+        stale = (
+            index.get("head_sha") != head
+            or index.get("worktree_fingerprint") != fingerprint
+        )
     branch_accurate = (
         effective == "local"
         and present
@@ -1237,8 +1285,14 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
     effective = _effective_codegraph_mode(mode, dirty)
     if effective == "off":
         raise ToolsError("E_CODEGRAPH_OFF", "CodeGraph mode is off")
+    if effective == "shared" and dirty:
+        raise ToolsError(
+            "E_CODEGRAPH_DIRTY",
+            "shared index refuses dirty worktrees; commit or use --mode local",
+        )
     rows, truncated = _scan_workspace(root)
     head = _git_head(root)
+    fingerprint = _worktree_fingerprint(root)
     payload = {
         "schema": CODEGRAPH_INDEX_SCHEMA,
         "kind": effective,
@@ -1247,6 +1301,7 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
         "verified": False,
         "head_sha": head,
         "worktree_dirty": dirty,
+        "worktree_fingerprint": fingerprint,
         "file_count": len(rows),
         "truncated": truncated,
         "files": rows,
@@ -1257,8 +1312,8 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
         ),
     }
     dest = _codegraph_index_path(root, effective)
-    dest.parent.mkdir(parents=True, exist_ok=True)
     confined = confine_path(root, dest)
+    confined.parent.mkdir(parents=True, exist_ok=True)
     tmp = confined.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, confined)
