@@ -258,3 +258,31 @@ def test_ensure_omg_dirs_rejects_project_local_state_symlink_when_centralized(
     assert marker.read_bytes() == b"keep-me"
     assert not (outside / "runs").exists()
     assert not (outside / "prd.json").exists()
+
+
+@pytest.mark.skipif(not _POSIX, reason="ensure_managed_dir requires POSIX")
+def test_prd_scaffold_rejects_project_local_state_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leftover Ralph PRD writer must not follow a swapped .omg/state symlink."""
+
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.modes import _write_prd_scaffold
+
+    _clear_state_root_env(monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".omg").mkdir()
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    marker = outside / "payload"
+    marker.write_bytes(b"keep-prd")
+    (project / ".omg" / "state").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContractPathError, match="symlink"):
+        _write_prd_scaffold(project, "run-leftover-prd", "must not follow")
+
+    assert marker.read_bytes() == b"keep-prd"
+    assert not (outside / "runs").exists()
+    assert not (outside / "prd.json").exists()
+    assert not list(outside.rglob("prd.json"))

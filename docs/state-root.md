@@ -107,7 +107,7 @@ PR2 (overlap with other slices / agents):
 
 | Area | Examples |
 |------|----------|
-| Acceptance / modes | `acceptance.py`, `modes.py`, `pipeline.py`, `fanout.py`, `ralplan.py`, `dual_review.py`, `interview.py`, `evidence.py`, `ask/broker.py`, `contracts/run_manifest.py` |
+| Acceptance / modes | `acceptance.py`, `modes.py` (PRD / run-dir writes now use `ensure_managed_dir` + `atomic_write_bytes`; other leftover paths remain), `pipeline.py`, `fanout.py`, `ralplan.py`, `dual_review.py`, `interview.py`, `evidence.py`, `ask/broker.py`, `contracts/run_manifest.py` |
 | Integrate / ULW | `integrate.py`, `workers.py` |
 | Team | `omg_cli/team/*` (tmux, mailbox, bootstrap, scaling, plane, …) |
 | Wiki / HUD / jobs | `wiki.py`, MCP wiki tools, `jobs/store.py` |

@@ -116,8 +116,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   catalog `capabilityMode`/`permissionMode`; `omg edit plan` uses the apply
   `O_NOFOLLOW` walk (fail-closed without `dir_fd`) and a size bound before
   load; apply JSON omits local `--input` paths; missing `--input` emits
-  `E_HASH_EDIT_USAGE`; `omg visual compare` sanitizes contract errors and
-  bounds JSON load size. Refs #71 #74 #75 #76 (does not close).
+  `E_HASH_EDIT_USAGE`; leftover `modes.py` run-dir/PRD writers use
+  `ensure_managed_dir` / `atomic_write_bytes`; `omg visual compare`
+  sanitizes contract errors and bounds JSON load size. Refs #71 #74 #75
+  #76 (does not close).
 - **#77 Codex review:** mergeable `AGENTS.md` records a post-setup
   `content_hash` so inspect is not immediately stale; manifest writes
   replace (never follow) a symlink; a failed commit-marker rolls the

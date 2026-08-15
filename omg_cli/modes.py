@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Sequence
 
+from omg_cli.contracts.path_keys import atomic_write_bytes, ensure_managed_dir
 from omg_cli.host_session import (
     HostSessionError,
     allocate_host_session,
@@ -419,6 +420,14 @@ def _run_dir(root: Path, run_id: str) -> Path:
     return Path(root) / ".omg" / "state" / "runs" / _safe_run_id(run_id)
 
 
+def _write_managed_text(path: Path, text: str) -> None:
+    """Write UTF-8 text via no-follow managed-store primitives (leftover #74 writers)."""
+
+    path = Path(path)
+    ensure_managed_dir(path.parent)
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
 def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:
     """Write ralph PRD scaffold JSON under run dir and artifacts/."""
     root = Path(root)
@@ -433,19 +442,10 @@ def _write_prd_scaffold(root: Path, run_id: str, goal: str) -> Path:
         "status": "scaffold",
         "note": "proposal only — omg CLI owns verified; fill stories[].commands",
     }
-    run_dir = _run_dir(root, run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    prd_run = run_dir / "prd.json"
-    prd_run.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-
-    art_dir = root / ".omg" / "artifacts"
-    art_dir.mkdir(parents=True, exist_ok=True)
-    prd_art = art_dir / f"prd-{run_id}.json"
-    prd_art.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    body = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    prd_run = _run_dir(root, run_id) / "prd.json"
+    _write_managed_text(prd_run, body)
+    _write_managed_text(root / ".omg" / "artifacts" / f"prd-{run_id}.json", body)
     return prd_run
 
 
@@ -540,9 +540,8 @@ def _materialize_prompt_file(argv: list[str], run_dir: Path) -> list[str]:
     if p_idx + 1 >= len(out):
         return out
     prompt_text = out[p_idx + 1]
-    run_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = run_dir / "last_prompt.md"
-    prompt_path.write_text(prompt_text, encoding="utf-8")
+    _write_managed_text(prompt_path, prompt_text)
     # Replace -p PROMPT with --prompt-file PATH (single path arg, no --- issues)
     out[p_idx : p_idx + 2] = ["--prompt-file", str(prompt_path)]
     return out
@@ -551,18 +550,20 @@ def _materialize_prompt_file(argv: list[str], run_dir: Path) -> list[str]:
 def _prepare_grok_argv(argv: list[str], run_dir: Path) -> list[str]:
     """Materialize ``-p`` bodies to ``--prompt-file`` and record last_argv."""
     run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(run_dir)
     argv = _materialize_prompt_file(list(argv), run_dir)
-    (run_dir / "last_argv.json").write_text(
-        json.dumps(argv, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    _write_managed_text(
+        run_dir / "last_argv.json",
+        json.dumps(argv, indent=2, ensure_ascii=False) + "\n",
     )
     # Ensure last_prompt.md exists even if argv already used --prompt-file
     if not (run_dir / "last_prompt.md").is_file():
         try:
             if "--prompt-file" in argv:
                 pf = argv[argv.index("--prompt-file") + 1]
-                (run_dir / "last_prompt.md").write_text(
-                    Path(pf).read_text(encoding="utf-8"), encoding="utf-8"
+                _write_managed_text(
+                    run_dir / "last_prompt.md",
+                    Path(pf).read_text(encoding="utf-8"),
                 )
         except (ValueError, OSError, IndexError):
             pass
@@ -618,7 +619,7 @@ def _spawn_grok_process(
     try:
         proc = subprocess.Popen(argv, **popen_kwargs)
     except OSError as exc:
-        (run_dir / "launch_error").write_text(f"{exc}\n", encoding="utf-8")
+        _write_managed_text(run_dir / "launch_error", f"{exc}\n")
         raise
 
     # Record pid + starttime + pgid so cancel can refuse PID-reused kills.
@@ -668,7 +669,7 @@ def _wait_grok_process(
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        (run_dir / "timeout").write_text("1\n", encoding="utf-8")
+        _write_managed_text(run_dir / "timeout", "1\n")
         return 124
 
 
@@ -708,7 +709,7 @@ def _launch_grok(
     ``cancel.request.json`` exists (shared ``launch_refused_for_cancel``).
     """
     run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_managed_dir(run_dir)
 
     identity = _resolve_run_identity(run_dir)
     if identity is not None:
@@ -740,7 +741,7 @@ def _launch_grok(
                 return 1
             if dry_run:
                 _prepare_grok_argv(argv, run_dir)
-                (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
+                _write_managed_text(run_dir / "dry_run", "1\n")
                 return 0
             try:
                 proc = _spawn_grok_process(argv, cwd=cwd, run_dir=run_dir)
@@ -753,7 +754,7 @@ def _launch_grok(
 
     if dry_run:
         _prepare_grok_argv(argv, run_dir)
-        (run_dir / "dry_run").write_text("1\n", encoding="utf-8")
+        _write_managed_text(run_dir / "dry_run", "1\n")
         return 0
 
     try:
