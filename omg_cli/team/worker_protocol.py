@@ -39,6 +39,9 @@ def team_worker_protocol_lines(
         "1. ACK the leader:",
         "   `OMG_EXPERIMENTAL_TMUX_TEAM=1 omg team api send-message --input "
         f"'{_dumps(ack)}'`",
+        "If the API returns team control plane missing / team_not_found,",
+        "retry that exact command every 2s for up to 45s — `team.json`",
+        "publishes after pane spawn. Do not skip ACK/claim.",
     ]
     if api_task_id:
         claim = {"task_id": str(api_task_id), "worker": worker_id}

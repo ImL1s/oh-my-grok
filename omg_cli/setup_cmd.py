@@ -322,12 +322,18 @@ def compute_package_identity(
     root: Path | str,
     *,
     tolerate_missing_roots: frozenset[str] | set[str] | None = None,
+    canonicalize_posix_launchers: bool = True,
 ) -> dict[str, Any]:
     """Hash deterministic shipping bytes and their executable-mode contract.
 
     ``tolerate_missing_roots`` is for reading older managed installs that
     predate newly required shipping roots. Packages being installed must pass
     with the default (strict) root set.
+
+    ``canonicalize_posix_launchers`` (default True) strips CR on ``bin/omg``
+    and ``scripts/*.sh`` so a Windows autocrlf checkout hashes as LF.
+    Staged/installed verification must pass ``False`` so a CRLF-tampered
+    launcher cannot share the LF digest.
     """
 
     package_root = Path(root).resolve()
@@ -349,7 +355,9 @@ def compute_package_identity(
     for relative, path in _iter_shipping_files(
         package_root, tolerate_missing=tolerate_missing_roots
     ):
-        body = posix_launcher_bytes(relative, path.read_bytes())
+        body = path.read_bytes()
+        if canonicalize_posix_launchers:
+            body = posix_launcher_bytes(relative, body)
         executable = bool(path.stat().st_mode & 0o111)
         inventory.append(
             {
@@ -519,7 +527,9 @@ def _copy_package_to_stage(
             dst.write_bytes(posix_launcher_bytes(relative, src.read_bytes()))
             dst.chmod(0o755 if row["executable"] else 0o644)
         staged = compute_package_identity(
-            temporary, tolerate_missing_roots=tolerate_missing_roots
+            temporary,
+            tolerate_missing_roots=tolerate_missing_roots,
+            canonicalize_posix_launchers=False,
         )
         if staged["digest"] != identity["digest"] or staged["version"] != identity["version"]:
             raise InstallError("staged package identity differs from source")
@@ -538,7 +548,9 @@ def _copy_package_to_stage(
         except OSError as exc:
             if destination.exists():
                 existing = compute_package_identity(
-                    destination, tolerate_missing_roots=tolerate_missing_roots
+                    destination,
+                    tolerate_missing_roots=tolerate_missing_roots,
+                    canonicalize_posix_launchers=False,
                 )
                 if existing["digest"] == identity["digest"]:
                     shutil.rmtree(temporary, ignore_errors=True)
@@ -1412,7 +1424,9 @@ def verified_current_install(store: Path, cli_pointer: Path) -> VerifiedCurrentI
         if plugin_path != raw_plugin:
             raise InstallError("current receipt host plugin path is not canonical")
         _verify_host_plugin_path(plugin_path, stage=stage, grok_home=store.parent)
-        plugin_identity = compute_package_identity(plugin_path)
+        plugin_identity = compute_package_identity(
+            plugin_path, canonicalize_posix_launchers=False
+        )
         if (
             plugin_identity["digest"] != digest
             or plugin_identity["version"] != identity["version"]

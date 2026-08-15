@@ -78,7 +78,7 @@ def _omg_control_plane_dir(candidate: Path) -> bool:
         return False
 
 
-def _path_is_under(path: Path, parent: Path) -> bool:
+def path_is_under(path: Path, parent: Path) -> bool:
     """True when *path* is *parent* or a descendant (after resolve)."""
     try:
         return path.resolve() == parent.resolve() or path.resolve().is_relative_to(
@@ -108,7 +108,7 @@ def owning_project_from_omg_worktree(start: Path) -> Path | None:
         cur = parent
 
 
-def _is_shared_temp_root(path: Path) -> bool:
+def is_shared_temp_root(path: Path) -> bool:
     """True for well-known shared temp directories (never implicit project roots)."""
     try:
         resolved = path.resolve()
@@ -258,7 +258,7 @@ def resolve_project_root(
         )
 
     if omg_roots and git_root is not None:
-        inside = [p for p in omg_roots if _path_is_under(p, git_root)]
+        inside = [p for p in omg_roots if path_is_under(p, git_root)]
         ignored = tuple(p for p in omg_roots if p not in inside)
         if inside:
             return _omg_resolution(inside[0], ignored=ignored)
@@ -276,7 +276,7 @@ def resolve_project_root(
         usable: list[Path] = []
         ignored_temp: list[Path] = []
         for candidate in omg_roots:
-            if _is_shared_temp_root(candidate) and candidate != start:
+            if is_shared_temp_root(candidate) and candidate != start:
                 ignored_temp.append(candidate)
                 continue
             usable.append(candidate)

@@ -113,13 +113,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ### Fixed
 - **Live WSL evidence (2026-08-15):** PATH `omg` shebang stays LF across
   Windows autocrlf (`bin/omg` / `scripts/*.sh` `eol=lf` plus installer CR
-  strip). Project-root discovery fail-closes on unrelated ancestor `.omg`
-  (leftover `/tmp/.omg` must not steal `/tmp/omg-live-*` or nested team
-  worktrees). `live_suite.sh` pins `OMG_PROJECT_ROOT` + `omg setup --here`
-  outside `/tmp`. Team shorthand seeds the API board **before** pane spawn
-  and puts exact `claim-task` / `transition-task-status` CLI in the
-  single-turn prompt. Canary parent prompt asks for a verbatim hook reason
-  (classifier unchanged). Does not claim `LIVE_TEAM_SMOKE_OK` /
+  strip). Project-root **and** state-root discovery fail-close on unrelated
+  ancestor `.omg` (leftover `/tmp/.omg` must not steal `/tmp/omg-live-*`
+  or nested team worktrees). `live_suite.sh` pins `OMG_PROJECT_ROOT` +
+  `omg setup --here` outside `/tmp`. Team shorthand seeds the API board
+  **before** pane spawn and puts exact `claim-task` /
+  `transition-task-status` CLI (with control-plane retry) in the
+  single-turn prompt. Staged/installed launcher identity is hashed raw
+  after CR-strip copy. Canary parent prompt asks for a verbatim hook
+  reason (classifier unchanged). Does not claim `LIVE_TEAM_SMOKE_OK` /
   `LIVE_TEAM_INTERACTIVE_TTY_OK`. Refs #69 #147 #79 (does not close).
 - **Leftover Codex reviews (#177/#178/#179/#180):** project-local `.omg/state`
   stays confined while leftover writers remain; agent frontmatter must match

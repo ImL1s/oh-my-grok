@@ -3440,6 +3440,29 @@ def start_team(
                     tasks_by_id[tid0] = t
 
             api_task_ids: dict[str, str] = {}
+            if before_spawn is not None and not created_team_dir:
+                from omg_cli.team.api import (
+                    _api_config_path,
+                    _tasks_dir,
+                    _worker_dir,
+                )
+
+                _note_start_file_backup(
+                    file_backups, _api_config_path(root_path, rid, tid_plane)
+                )
+                tasks_dir = _tasks_dir(root_path, rid, tid_plane)
+                if tasks_dir.is_dir() and not tasks_dir.is_symlink():
+                    for child in tasks_dir.iterdir():
+                        if child.is_file() and child.name.startswith("task-"):
+                            _note_start_file_backup(file_backups, child)
+                for src in tasks:
+                    logical = str(src.get("task_id") or src.get("id") or "")
+                    if logical:
+                        _note_start_file_backup(
+                            file_backups,
+                            _worker_dir(root_path, rid, tid_plane, logical)
+                            / "inbox.md",
+                        )
             if before_spawn is not None:
                 seeded = before_spawn(rid)
                 if isinstance(seeded, Mapping):
@@ -3452,6 +3475,18 @@ def start_team(
                         src = tasks_by_id.get(kid)
                         if isinstance(src, dict):
                             src["api_task_id"] = vid
+                if not created_team_dir:
+                    from omg_cli.team.api import _task_path, _worker_dir
+
+                    for kid, vid in api_task_ids.items():
+                        tpath = _task_path(root_path, rid, tid_plane, vid)
+                        if tpath not in file_backups:
+                            file_backups[tpath] = (None, None)
+                        inbox = (
+                            _worker_dir(root_path, rid, tid_plane, kid) / "inbox.md"
+                        )
+                        if inbox not in file_backups:
+                            file_backups[inbox] = (None, None)
 
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])

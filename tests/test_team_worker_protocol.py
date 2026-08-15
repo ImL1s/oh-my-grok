@@ -21,6 +21,8 @@ def test_protocol_lines_include_numeric_board_id() -> None:
     assert "not `w1`" in text
     assert "transition-task-status" in text
     assert "CLAIM_TOKEN_FROM_PREVIOUS_JSON" in text
+    assert "team_not_found" in text
+    assert "retry" in text.lower()
 
 
 def test_protocol_without_board_id_tells_worker_to_list() -> None:

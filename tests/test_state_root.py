@@ -578,6 +578,18 @@ def test_existing_project_root_resolver_unchanged(tmp_path: Path) -> None:
     assert state.project_root == legacy.root
 
 
+def test_state_root_ignores_unrelated_ancestor_omg(tmp_path: Path) -> None:
+    """Leftover parent/.omg must not become state identity for a git child."""
+    parent = tmp_path / "tmp"
+    parent.mkdir()
+    (parent / ".omg").mkdir()
+    repo = parent / "omg-live-xxx"
+    _init_git(repo)
+    res = resolve_state_root(cwd=repo, env={}, home=_home(tmp_path))
+    assert res.project_root == repo.resolve()
+    assert res.diagnostics["project_root_source"] == "git"
+
+
 def test_here_uses_cwd_and_does_not_write(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_git(repo)

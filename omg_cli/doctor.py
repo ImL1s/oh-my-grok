@@ -1133,7 +1133,9 @@ def check_installed_release_identity() -> SoftResult:
             stage = current.resolve(strict=True)
             if stage != Path(expected_stage).resolve(strict=True):
                 return (name, "fail", "pending install stage differs from expected stage")
-            stage_identity = compute_package_identity(stage)
+            stage_identity = compute_package_identity(
+                stage, canonicalize_posix_launchers=False
+            )
             if stage_identity["digest"] != expected:
                 return (name, "fail", "pending immutable stage digest differs")
             active_identity = compute_package_identity(plugin_root())
@@ -1154,7 +1156,9 @@ def check_installed_release_identity() -> SoftResult:
         stage = verified.stage
         receipt = verified.receipt
         expected = str(receipt["installed"]["package_digest"])
-        stage_identity = compute_package_identity(stage)
+        stage_identity = compute_package_identity(
+            stage, canonicalize_posix_launchers=False
+        )
         if stage_identity["digest"] != expected:
             return (name, "fail", "immutable stage digest differs from receipt")
         recorded_inventory = receipt["installed"].get("inventory")

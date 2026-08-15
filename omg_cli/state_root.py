@@ -11,8 +11,10 @@ Precedence for the physical state directory (highest first):
 3. derived from the canonical project-root identity (per-worktree ``<root>/.omg``)
 
 Project identity still follows ``omg_cli.project_root`` precedence
-(``--project-root`` / ``OMG_PROJECT_ROOT`` / nearest real ``.omg`` / git
-worktree / cwd) but git discovery here is filesystem-only (no subprocess).
+(``--project-root`` / ``OMG_PROJECT_ROOT`` / ``.omg/worktrees`` owner /
+in-repo ``.omg`` / git worktree / cwd) but git discovery here is
+filesystem-only (no subprocess). Unrelated ancestor ``.omg`` outside the
+git worktree is ignored.
 """
 
 from __future__ import annotations
@@ -31,7 +33,13 @@ from omg_cli.contracts.path_keys import (
     safe_path_key,
     validate_safe_key,
 )
-from omg_cli.project_root import ENV_PROJECT_ROOT, list_omg_ancestors
+from omg_cli.project_root import (
+    ENV_PROJECT_ROOT,
+    is_shared_temp_root,
+    list_omg_ancestors,
+    owning_project_from_omg_worktree,
+    path_is_under,
+)
 
 STATE_ROOT_SCHEMA_VERSION = 1
 ENV_STATE_DIR = "OMG_STATE_DIR"
@@ -376,9 +384,24 @@ def _discover_project(
     raw_env = (env.get(ENV_PROJECT_ROOT) or "").strip()
     if raw_env:
         return _resolve_existing_dir(Path(raw_env), label=ENV_PROJECT_ROOT), "env", git_ids
+    worktree_owner = owning_project_from_omg_worktree(start)
+    if worktree_owner is not None and (worktree_owner / ".omg").is_dir():
+        return worktree_owner.resolve(), "omg", git_ids
     omg_roots = list_omg_ancestors(start)
+    if omg_roots and git_ids is not None:
+        git_root = git_ids[0]
+        inside = [p for p in omg_roots if path_is_under(p, git_root)]
+        if inside:
+            return inside[0].resolve(), "omg", git_ids
+        return git_root, "git", git_ids
     if omg_roots:
-        return omg_roots[0].resolve(), "omg", git_ids
+        usable = [
+            p
+            for p in omg_roots
+            if not (is_shared_temp_root(p) and p.resolve() != start)
+        ]
+        if usable:
+            return usable[0].resolve(), "omg", git_ids
     if git_ids is not None:
         return git_ids[0], "git", git_ids
     return start, "cwd", git_ids
