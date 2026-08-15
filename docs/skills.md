@@ -635,7 +635,7 @@ Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog
 uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
 must not conceal a more permissive plugin definition). Agent markdown is
-opened with `O_NOFOLLOW` and read through that pinned descriptor. Antigravity
+opened with `O_NOFOLLOW|O_NONBLOCK` and read through that pinned descriptor. Antigravity
 `agent.md` files under
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 are **projections only** — not an installed AG plugin and not live AG evidence.

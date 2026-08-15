@@ -342,6 +342,14 @@ def test_read_plugin_regular_text_rejects_symlink(tmp_path: Path) -> None:
         _read_plugin_regular_text(tmp_path, "agents/omg-executor.md")
 
 
+def test_read_plugin_regular_text_rejects_fifo(tmp_path: Path) -> None:
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    os.mkfifo(agents / "omg-executor.md")
+    with pytest.raises(AgentsCatalogError, match="missing agent"):
+        _read_plugin_regular_text(tmp_path, "agents/omg-executor.md")
+
+
 def test_frontmatter_omitted_capability_mode_fails_closed(tmp_path: Path) -> None:
     entry = _agent_entry(
         "omg-executor",

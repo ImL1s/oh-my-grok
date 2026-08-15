@@ -9,8 +9,8 @@ Fail-closed: missing catalog, missing agent file, extra uncatalogued
 disagrees with catalog ``capabilityMode`` / ``permissionMode``. Grok agent
 files must use those camelCase keys; snake_case aliases are rejected so a
 read-only/plan agent cannot silently fall back to host defaults. Agent
-markdown is opened with ``O_NOFOLLOW`` and read through that pinned
-descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
+markdown is opened with ``O_NOFOLLOW|O_NONBLOCK`` and read through that
+pinned descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
 ``all``.
 
 Not a routing runtime. Antigravity ``agent.md`` files are static projections
@@ -327,15 +327,13 @@ def _read_plugin_regular_text(root: Path, relative: str) -> str:
             os.close(current)
             current = nxt
         try:
-            descriptor = os.open(
-                parts[-1],
-                os.O_RDONLY | os.O_NOFOLLOW,
-                dir_fd=current,
-            )
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(parts[-1], flags, dir_fd=current)
         except OSError as exc:
             if (
                 exc.errno in _NOFOLLOW_ERRNOS
-                or exc.errno in {errno.ELOOP, errno.ENOENT}
+                or exc.errno
+                in {errno.ELOOP, errno.ENOENT, errno.ENXIO, errno.EAGAIN}
             ):
                 raise AgentsCatalogError(f"missing agent: {relative}") from exc
             raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
