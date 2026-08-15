@@ -24,6 +24,7 @@ from omg_cli.agents_catalog import (
     check_antigravity_projections,
     inspect_agents_catalog,
     load_agents_catalog,
+    load_yaml_catalog_document,
     lookup_agent,
     plugin_root,
     render_antigravity_projections,
@@ -693,3 +694,39 @@ def test_write_antigravity_projections_prunes_obsolete(tmp_path: Path) -> None:
     write_antigravity_projections(tmp_path)
     assert not stale.exists()
     assert check_antigravity_projections(tmp_path) == []
+
+
+def test_alias_canonical_id_cannot_steal_prior(tmp_path: Path) -> None:
+    first = _agent_entry(
+        "omg-alpha",
+        capability_mode="read-only",
+        permission_mode="plan",
+        tier="planner",
+        spawn_policy="leaf",
+    )
+    first["aliases"] = ["omg-beta"]
+    second = _agent_entry(
+        "omg-beta",
+        capability_mode="read-only",
+        permission_mode="plan",
+        tier="planner",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-alpha", mode="read-only")
+    _stub_agent(tmp_path, "omg-beta", mode="read-only")
+    _write_catalog(tmp_path, [first, second])
+    with pytest.raises(AgentsCatalogError, match="collides with alias"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_yaml_decode_error_is_catalog_error(tmp_path: Path) -> None:
+    yaml_path = tmp_path / YAML_RELATIVE
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(AgentsCatalogError, match="cannot read YAML"):
+        load_yaml_catalog_document(tmp_path)
+
+
+def test_yaml_block_scalar_keeps_blank_and_hash_lines() -> None:
+    parsed = parse_yaml("note: |-\n  first\n\n  # heading\n  last\n")
+    assert parsed["note"] == "first\n\n# heading\nlast"

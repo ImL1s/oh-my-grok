@@ -550,6 +550,11 @@ def load_agents_catalog(
 
     alias_owners: dict[str, str] = {}
     for record in records:
+        owner = alias_owners.get(record.id)
+        if owner is not None and owner != record.id:
+            raise AgentsCatalogError(
+                f"canonical id {record.id!r} collides with alias of {owner}"
+            )
         alias_owners[record.id] = record.id
         for alias in record.aliases:
             if alias in alias_owners:
@@ -957,7 +962,7 @@ def load_yaml_catalog_document(root: Path) -> dict[str, Any]:
     path = yaml_catalog_path(root)
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise AgentsCatalogError(f"cannot read YAML catalog: {path}: {exc}") from exc
     try:
         raw = parse_yaml(text)

@@ -28,16 +28,27 @@ def parse_yaml(text: str) -> Any:
     raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     rows: list[tuple[int, str]] = []
     for index, line in enumerate(raw_lines, start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
         rows.append((index, line.rstrip()))
+    while rows and not rows[-1][1].strip():
+        rows.pop()
     if not rows:
         raise CatalogYamlError("empty YAML document")
-    value, next_index = _parse_node(rows, 0, 0)
+    start = 0
+    while start < len(rows) and _is_ignorable_yaml_line(rows[start][1]):
+        start += 1
+    if start >= len(rows):
+        raise CatalogYamlError("empty YAML document")
+    value, next_index = _parse_node(rows, start, 0)
+    while next_index < len(rows) and _is_ignorable_yaml_line(rows[next_index][1]):
+        next_index += 1
     if next_index != len(rows):
         line_no, leftover = rows[next_index]
         raise CatalogYamlError(f"line {line_no}: unexpected content {leftover!r}")
     return value
+
+
+def _is_ignorable_yaml_line(line: str) -> bool:
+    return not line.strip() or line.lstrip().startswith("#")
 
 
 def _spaces(indent: int) -> str:
@@ -225,6 +236,9 @@ def _parse_map(
     out: dict[str, Any] = {}
     while index < len(rows):
         line_no, line = rows[index]
+        if _is_ignorable_yaml_line(line):
+            index += 1
+            continue
         current = _indent_of(line)
         if current < indent:
             break
@@ -241,16 +255,19 @@ def _parse_map(
             raise CatalogYamlError(f"line {line_no}: duplicate key {key!r}")
         rest = rest.strip()
         if rest == "":
-            if index + 1 >= len(rows):
+            look = index + 1
+            while look < len(rows) and _is_ignorable_yaml_line(rows[look][1]):
+                look += 1
+            if look >= len(rows):
                 out[key] = {}
                 index += 1
                 continue
-            next_indent = _indent_of(rows[index + 1][1])
+            next_indent = _indent_of(rows[look][1])
             if next_indent <= indent:
                 out[key] = {}
                 index += 1
                 continue
-            value, index = _parse_node(rows, index + 1, indent + 2)
+            value, index = _parse_node(rows, look, indent + 2)
             out[key] = value
             continue
         if rest in {"|", "|-"}:
@@ -268,6 +285,9 @@ def _parse_list(
     out: list[Any] = []
     while index < len(rows):
         line_no, line = rows[index]
+        if _is_ignorable_yaml_line(line):
+            index += 1
+            continue
         current = _indent_of(line)
         if current < indent:
             break
@@ -278,11 +298,14 @@ def _parse_list(
             break
         body = stripped[1:]
         if body == "":
-            if index + 1 >= len(rows):
+            look = index + 1
+            while look < len(rows) and _is_ignorable_yaml_line(rows[look][1]):
+                look += 1
+            if look >= len(rows):
                 out.append(None)
                 index += 1
                 continue
-            value, index = _parse_node(rows, index + 1, indent + 2)
+            value, index = _parse_node(rows, look, indent + 2)
             out.append(value)
             continue
         if not body.startswith(" "):
@@ -319,6 +342,10 @@ def _parse_block(
     parts: list[str] = []
     while index < len(rows):
         _no, line = rows[index]
+        if not line.strip():
+            parts.append("")
+            index += 1
+            continue
         spaces = _indent_of(line)
         if spaces < min_spaces:
             break
