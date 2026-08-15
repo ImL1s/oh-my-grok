@@ -62,9 +62,9 @@ Library failures map to stable CLI codes (exit `1`). Missing/unreadable
 | `E_HASH_EDIT_PLAN` | other `HashEditPlannerError` |
 | `E_HASH_EDIT` | other `HashEditError` |
 
-Stale, ambiguous, and path errors fail closed. Apply on hosts without
-`O_NOFOLLOW` / `fcntl` (win32) fail closed in the library; do not weaken
-that floor.
+Stale, ambiguous, and path errors fail closed. Plan and apply on hosts
+without `O_NOFOLLOW` / `dir_fd` (win32) fail closed in the library; do not
+weaken that floor.
 
 ## Descriptor (fail closed)
 
