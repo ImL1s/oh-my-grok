@@ -157,3 +157,18 @@ def test_discover_binary_accepts_grok_symlink(
     found = discover_binary(env=os_mod.environ)
     assert Path(found).name == "grok"
     assert Path(found).resolve() == real.resolve()
+
+
+def test_discover_binary_absolutizes_relative_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.grok import discover_binary
+    from tests.jobs_grok_testutil import install_fake_grok
+
+    install_fake_grok(tmp_path, name="grok")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMG_GROK_BIN", "grok")
+    found = discover_binary()
+    assert os.path.isabs(found)
+    assert Path(found).name == "grok"
+    assert Path(found) == tmp_path / "grok"

@@ -23,7 +23,9 @@ from omg_cli.contracts.path_keys import (
 from omg_cli.contracts.state_schemas import (
     ContractValidationError,
     require_integer,
+    require_nonempty_string,
     require_safe_id,
+    require_sha256,
 )
 from omg_cli.contracts.writer_chain import (
     canonical_json_bytes,
@@ -173,7 +175,22 @@ def _validate_queue(
             raise PromptQueueError("host prompt queue has duplicate prompt_id")
         seen.add(pid)
         require_integer(item.get("sequence"), label="sequence", minimum=0)
-        require_safe_id(item.get("kind"), label="kind")
+        kind = require_safe_id(item.get("kind"), label="kind")
+        if kind in FORBIDDEN_KINDS:
+            raise PromptQueueError(
+                f"kind {kind!r} is a mailbox/task protocol token, not a host prompt",
+                code="E_TEAM_PROMPT_QUEUE_KIND",
+            )
+        if "body" not in item:
+            raise PromptQueueError("host prompt queue entry is missing body")
+        require_nonempty_string(item.get("enqueued_at"), label="enqueued_at")
+        preview = item.get("body_preview")
+        if not isinstance(preview, str):
+            raise PromptQueueError("host prompt queue entry body_preview must be a string")
+        digest = require_sha256(item.get("content_hash"), label="content_hash")
+        expected = sha256_hex(canonical_json_bytes(item.get("body")))
+        if digest != expected:
+            raise PromptQueueError("host prompt queue entry content_hash mismatch")
     if next_seq < len(entries):
         raise PromptQueueError("host prompt queue next_sequence is behind entries")
     waiting = state.get("waiting")
@@ -191,7 +208,10 @@ def _load_locked(path: Path, *, run_id: str, team_id: str) -> dict[str, Any]:
         raise PromptQueueError(f"host prompt queue is unreadable: {exc}") from exc
     if not isinstance(raw, dict):
         raise PromptQueueError("host prompt queue document must be an object")
-    return _validate_queue(raw, run_id=run_id, team_id=team_id)
+    try:
+        return _validate_queue(raw, run_id=run_id, team_id=team_id)
+    except ContractValidationError as exc:
+        raise PromptQueueError(f"host prompt queue is invalid: {exc}") from exc
 
 
 def _preview(body: Any) -> str:

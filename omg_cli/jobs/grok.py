@@ -93,6 +93,11 @@ def _require_grok_basename(path: Path, *, source: str) -> None:
         )
 
 
+def _abspath_keep_basename(path: Path) -> str:
+    """Absolute path without following a symlink (keeps ``grok`` basename)."""
+    return os.path.abspath(os.path.expanduser(str(path)))
+
+
 def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
     source = env if env is not None else os.environ
     override = (source.get(ENV_BIN_OVERRIDE) or "").strip()
@@ -100,7 +105,7 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
         path = Path(override).expanduser()
         if path.is_file() and os.access(path, os.X_OK):
             _require_grok_basename(path, source=f"{ENV_BIN_OVERRIDE}={override!r}")
-            return str(path)
+            return _abspath_keep_basename(path)
         raise ProviderBinaryMissing(
             f"OMG_GROK_BIN={override!r} is not an executable file"
         )
@@ -117,7 +122,7 @@ def discover_binary(*, env: Mapping[str, str] | None = None) -> str:
             f"{BINARY_NAME!r} on PATH is not an executable file after resolve"
         )
     # Keep the PATH entry name (`grok`); exec follows a symlink target.
-    return str(found)
+    return _abspath_keep_basename(found)
 
 
 def probe_version(binary: str | None = None) -> VersionInfo:

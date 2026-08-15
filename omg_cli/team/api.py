@@ -1102,6 +1102,12 @@ def _op_send_message(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("send-message", {"message": message})
 
 
+def _broadcast_recipient_dedupe_key(base: str, recipient: str) -> str:
+    """Fixed-length per-recipient key. Caller keys can already be 128 chars."""
+    digest = hashlib.sha256(f"{base}\0{recipient}".encode("utf-8")).hexdigest()[:32]
+    return f"bd-{digest}"
+
+
 def _op_broadcast(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     """Leader-only broadcast as N durable DMs (not a second mailbox store)."""
     run_id = _resolve_run_id(payload, root)
@@ -1182,7 +1188,7 @@ def _op_broadcast(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
                     generation=generation,
                     kind=kind,
                     body=body.strip() if isinstance(body, str) else body,
-                    dedupe_key=f"{dedupe_key}--{recipient}",
+                    dedupe_key=_broadcast_recipient_dedupe_key(dedupe_key, recipient),
                     message_id=_optional_str(payload, "message_id"),
                 )
             )

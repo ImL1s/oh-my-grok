@@ -39,8 +39,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   host probe). Durable Jobs public start admits `--provider grok` (headless
   `--prompt-file` only; fake-only flags denied; Team `--worker-topology=job`
   admits grok). Team job topology stamps each worker's owned worktree as
-  Jobs `cwd` (not the leader checkout). `grok` PATH symlinks keep the
-  `grok` basename. Omitted broadcast `dedupe_key` is retry-stable.
+  Jobs `cwd` (not the leader checkout). `grok` PATH / `OMG_GROK_BIN` entries
+  are stored as absolute paths while keeping the `grok` basename. Omitted
+  broadcast `dedupe_key` is retry-stable; per-recipient mailbox keys are
+  fixed-length hashes (never `{key}--{recipient}` overflow). Host prompt-queue
+  load validates full entry shape and `content_hash`.
   v1–v4 goldens unchanged.   Antigravity is not installed here;
   no live AG / live grok job smoke. Leftover AC remains on issue 69.
 - **Parity coverage_digest after #69 catalog v5 GAPS sync:** refresh OMC/OMX/OmO/Antigravity

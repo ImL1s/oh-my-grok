@@ -185,3 +185,34 @@ def test_api_enqueue_list_reorder_and_worker_acl(
     )
     assert code == 2
     assert denied2["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_load_rejects_incomplete_and_tampered_entries(tmp_path: Path) -> None:
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, parse_canonical_json_bytes
+
+    enqueue_host_prompt(tmp_path, run_id="run-q", team_id="team-q", body="alpha-one")
+    path = queue_path(tmp_path, "run-q", "team-q")
+    raw = parse_canonical_json_bytes(path.read_bytes())
+    assert isinstance(raw, dict)
+    incomplete = dict(raw)
+    incomplete["entries"] = [{k: v for k, v in raw["entries"][0].items() if k != "content_hash"}]
+    atomic_write_bytes(
+        path, canonical_json_bytes(incomplete), mode=DATA_FILE_MODE, replace=True
+    )
+    with pytest.raises(PromptQueueError, match="invalid|content_hash"):
+        list_host_prompt_queue(tmp_path, run_id="run-q", team_id="team-q")
+
+    enqueue_host_prompt(tmp_path, run_id="run-q2", team_id="team-q", body="bravo-two")
+    path2 = queue_path(tmp_path, "run-q2", "team-q")
+    raw2 = parse_canonical_json_bytes(path2.read_bytes())
+    assert isinstance(raw2, dict)
+    tampered = dict(raw2)
+    entry = dict(raw2["entries"][0])
+    entry["content_hash"] = "0" * 64
+    tampered["entries"] = [entry]
+    atomic_write_bytes(
+        path2, canonical_json_bytes(tampered), mode=DATA_FILE_MODE, replace=True
+    )
+    with pytest.raises(PromptQueueError, match="content_hash mismatch"):
+        list_host_prompt_queue(tmp_path, run_id="run-q2", team_id="team-q")
