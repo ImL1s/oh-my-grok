@@ -124,7 +124,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   reason (classifier unchanged). Injected `TMPDIR`/`TMP`/`TEMP` classify
   shared-temp roots (process env is not leaked into `env={}`). Reused
   `--run` rolls back board tasks created by a partial `before_spawn`.
-  Does not claim `LIVE_TEAM_SMOKE_OK` / `LIVE_TEAM_INTERACTIVE_TTY_OK`.
+  Staged/installed identity readback hashes launcher bytes raw (CRLF
+  cannot share the LF digest). Does not claim `LIVE_TEAM_SMOKE_OK` /
+  `LIVE_TEAM_INTERACTIVE_TTY_OK`.
   Refs #69 #147 #79 (does not close).
 - **Leftover Codex reviews (#177/#178/#179/#180):** project-local `.omg/state`
   stays confined while leftover writers remain; agent frontmatter must match

@@ -576,7 +576,9 @@ def _verify_immutable_stage(
     """Reread staged bytes/type/mode inventory exactly before any switch."""
 
     actual = compute_package_identity(
-        stage, tolerate_missing_roots=tolerate_missing_roots
+        stage,
+        tolerate_missing_roots=tolerate_missing_roots,
+        canonicalize_posix_launchers=False,
     )
     if actual["digest"] != identity["digest"] or actual["inventory"] != identity["inventory"]:
         raise InstallError("immutable stage inventory readback differs from source")
@@ -607,7 +609,9 @@ def stage_immutable_package(
         if destination.is_symlink() or not destination.is_dir():
             raise InstallError("immutable stage path is not a regular directory")
         installed = compute_package_identity(
-            destination, tolerate_missing_roots=tolerate_missing_roots
+            destination,
+            tolerate_missing_roots=tolerate_missing_roots,
+            canonicalize_posix_launchers=False,
         )
         if installed["digest"] != identity["digest"]:
             raise InstallError("immutable stage path already contains different bytes")
@@ -1406,7 +1410,9 @@ def verified_current_install(store: Path, cli_pointer: Path) -> VerifiedCurrentI
         stage_info = stage.lstat()
         if not stat.S_ISDIR(stage_info.st_mode) or stat.S_ISLNK(stage_info.st_mode):
             raise InstallError("current receipt stage is not a regular release directory")
-        identity = compute_package_identity(stage)
+        identity = compute_package_identity(
+            stage, canonicalize_posix_launchers=False
+        )
         digest = installed.get("package_digest")
         if not isinstance(digest, str) or identity["digest"] != digest:
             raise InstallError("immutable stage package digest differs from receipt")

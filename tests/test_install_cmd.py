@@ -13,10 +13,12 @@ from omg_cli.setup_cmd import (
     InstallError,
     _copy_package_to_stage,
     _default_doctor_probe,
+    _verify_immutable_stage,
     compute_package_identity,
     install_package,
     posix_launcher_bytes,
     read_install_receipt,
+    stage_immutable_package,
 )
 
 
@@ -234,6 +236,17 @@ def test_copy_package_to_stage_strips_crlf_from_bin_omg(tmp_path, monkeypatch) -
     body = (dest / "bin" / "omg").read_bytes()
     assert b"\r" not in body
     assert body.startswith(b"#!/usr/bin/env python3\n")
+
+
+def test_verify_immutable_stage_rejects_crlf_tampered_launcher(tmp_path: Path) -> None:
+    """Staged launcher verification hashes raw bytes (CRLF must not share the LF digest)."""
+    stage, identity = stage_immutable_package(ROOT, tmp_path / "releases")
+    omg = stage / "bin" / "omg"
+    for path in (stage, stage / "bin", omg):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    omg.write_bytes(omg.read_bytes().replace(b"\n", b"\r\n"))
+    with pytest.raises(InstallError, match="inventory readback"):
+        _verify_immutable_stage(stage, identity)
 
 
 def test_install_stages_immutable_switches_cli_plugin_and_writes_receipt(tmp_path, monkeypatch):
