@@ -216,3 +216,23 @@ def test_load_rejects_incomplete_and_tampered_entries(tmp_path: Path) -> None:
     )
     with pytest.raises(PromptQueueError, match="content_hash mismatch"):
         list_host_prompt_queue(tmp_path, run_id="run-q2", team_id="team-q")
+
+
+def test_load_rejects_sequence_that_does_not_match_order(tmp_path: Path) -> None:
+    from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, parse_canonical_json_bytes
+
+    enqueue_host_prompt(tmp_path, run_id="run-q3", team_id="team-q", body="alpha")
+    path = queue_path(tmp_path, "run-q3", "team-q")
+    raw = parse_canonical_json_bytes(path.read_bytes())
+    assert isinstance(raw, dict)
+    broken = dict(raw)
+    entry = dict(raw["entries"][0])
+    entry["sequence"] = 99
+    broken["entries"] = [entry]
+    broken["next_sequence"] = 1
+    atomic_write_bytes(
+        path, canonical_json_bytes(broken), mode=DATA_FILE_MODE, replace=True
+    )
+    with pytest.raises(PromptQueueError, match="sequence"):
+        list_host_prompt_queue(tmp_path, run_id="run-q3", team_id="team-q")

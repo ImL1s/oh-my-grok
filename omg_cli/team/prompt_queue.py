@@ -167,14 +167,18 @@ def _validate_queue(
         raise PromptQueueError("host prompt queue entries must be a list")
     next_seq = require_integer(state.get("next_sequence"), label="next_sequence", minimum=0)
     seen: set[str] = set()
-    for item in entries:
+    for index, item in enumerate(entries):
         if not isinstance(item, Mapping):
             raise PromptQueueError("host prompt queue entry must be an object")
         pid = require_safe_id(item.get("prompt_id"), label="prompt_id")
         if pid in seen:
             raise PromptQueueError("host prompt queue has duplicate prompt_id")
         seen.add(pid)
-        require_integer(item.get("sequence"), label="sequence", minimum=0)
+        seq = require_integer(item.get("sequence"), label="sequence", minimum=0)
+        if seq != index:
+            raise PromptQueueError("host prompt queue sequence does not match stored order")
+        if seq >= next_seq:
+            raise PromptQueueError("host prompt queue sequence is at or past next_sequence")
         kind = require_safe_id(item.get("kind"), label="kind")
         if kind in FORBIDDEN_KINDS:
             raise PromptQueueError(
