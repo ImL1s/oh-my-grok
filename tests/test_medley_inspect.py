@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from omg_cli.host_capabilities import HOST_TIER_GROK, HOST_TIER_MEDLEY
+from omg_cli.host_capabilities import HOST_TIER_GROK, HOST_TIER_MEDLEY, route_specific_facts_state
 from omg_cli.medley_inspect import (
     INSPECT_SCHEMA,
     MedleyInspectError,
@@ -85,6 +85,8 @@ def test_inspect_negotiates_medley_caps(tmp_path: Path) -> None:
     assert fields["selected_model_ref"] == "review-primary-example"
     assert fields["route_receipt_digest"] == "a" * 64
     assert fields["attempt"] == 2
+    assert doc.schema_version == 1
+    assert doc.to_json()["schema_version"] == 1
     assert (
         receipt_for_policy(
             doc,
@@ -112,6 +114,22 @@ def test_inspect_secret_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(MedleyInspectError) as exc:
         resolve_host_snapshot(inspect_path=path)
     assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"
+
+
+def test_risk_based_reason_is_not_secret_material(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "risk.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "unsupported",
+                "reason": "risk-based routing is disabled",
+            }
+        ],
+        receipts=[],
+    )
+    snap, _doc = resolve_host_snapshot(inspect_path=inspect)
+    assert snap.state_of("medley.native-route-receipt.v1") == "unsupported"
 
 
 def test_inspect_wrong_schema_is_incompatible(tmp_path: Path) -> None:
@@ -267,6 +285,7 @@ def test_unknown_capability_state_is_preserved(tmp_path: Path) -> None:
     snap, _doc = resolve_host_snapshot(inspect_path=inspect)
     assert snap.state_of("medley.native-route-receipt.v1") == "unknown"
     assert not snap.is_supported("medley.native-route-receipt.v1")
+    assert route_specific_facts_state(snap) == "unknown"
 
 
 def test_duplicate_capability_rows_are_rejected(tmp_path: Path) -> None:

@@ -39,12 +39,12 @@ _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Credential-shaped values. Diagnostic words such as "authorization" in a
 # capability reason are not secrets; secret-named keys with values still fail.
 _VALUE_SECRET_NEEDLES: tuple[str, ...] = (
-    "sk-",
     "bearer ",
     "acct_",
     "-----begin ",
     "x-api-key",
 )
+_SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
 _SECRET_KEYS = frozenset(
     {
         "authorization",
@@ -178,8 +178,8 @@ def load_inspect_document(
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
         if state == "supported":
-            version = item.get("version")
-            ver = str(version).strip() if isinstance(version, str) else ""
+            cap_version = item.get("version")
+            ver = str(cap_version).strip() if isinstance(cap_version, str) else ""
             if ver and ver not in KNOWN_VERSIONS:
                 raise MedleyInspectError(
                     f"unrecognized capability version {ver!r}",
@@ -389,6 +389,11 @@ def _normalized_secret_key(key: str) -> str:
 
 def _reject_secrets(text: str, *, label: str) -> None:
     lower = text.lower()
+    if _SK_TOKEN_RE.search(lower):
+        raise MedleyInspectError(
+            f"{label} contains forbidden material",
+            code="E_MEDLEY_INSPECT_SECRET",
+        )
     for needle in _VALUE_SECRET_NEEDLES:
         if needle in lower:
             raise MedleyInspectError(

@@ -75,6 +75,7 @@ def test_advertised_unknown_is_not_unsupported() -> None:
     )
     assert snap.state_of("medley.native-route-receipt.v1") == "unknown"
     assert not snap.is_supported("medley.native-route-receipt.v1")
+    assert route_specific_facts_state(snap) == "unknown"
 
 
 def test_claimed_but_missing_is_unavailable() -> None:

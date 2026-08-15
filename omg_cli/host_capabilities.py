@@ -330,6 +330,8 @@ def route_specific_facts_state(snapshot: HostCapabilitySnapshot) -> str:
         return "unavailable"
     if snapshot.state_of("medley.native-route-receipt.v1") == "incompatible":
         return "incompatible"
+    if snapshot.state_of("medley.native-route-receipt.v1") == "unknown":
+        return "unknown"
     if snapshot.host_tier == HOST_TIER_UNKNOWN:
         return "unknown"
     return "unavailable"
