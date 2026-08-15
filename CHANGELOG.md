@@ -10,6 +10,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#147 grok 1.0.4 interactive TUI_READY wrapper:** `--io-mode interactive`
+  grok panes `exec` `python -m omg_cli.team.interactive_wrapper` on the pane
+  TTY (not the Team supervisor). The wrapper prints `TUI_READY:<nonce>` only
+  after stdin is a TTY and the grok child has started reading it; spawn-only
+  is not ready. `--no-alt-screen --minimal --no-subagents --rules` keep the
+  TUI in tmux scrollback. `PROVIDER_ECHO` is still child-produced (fixture or
+  grok reply), never wrapper-faked. One WSL live launch against grok 1.0.4
+  (`team-smoke-20260815T145621Z.json`) proved wrapper `TUI_READY` on a real
+  TUI (`tui_ready=true`) but **did not** show `PROVIDER_ECHO:` after
+  `send-keys` submit — composer local echo only. `LIVE_TEAM_INTERACTIVE_TTY_OK`
+  is **not** claimed. Leftover is grok TUI submit/echo, not wrapper
+  spawn-only false-green. Refs #147 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

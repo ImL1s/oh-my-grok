@@ -33,9 +33,13 @@ fallback. Explicit `--no-wait` → `unverified_start` only.
 
 `--io-mode interactive` does **not** wait for supervisor ACK receipts. The
 leader polls the pane TTY (same timeout) for `TUI_READY:<nonce>`, then
-CLI-promotes `input_ready`. Timeout fails closed (no silent headless
-downgrade). Workers/descriptors never self-promote from stdout scrape.
-Default/`auto` remain headless. `LIVE_TEAM_INTERACTIVE_TTY_OK` is not claimed.
+CLI-promotes `input_ready`. Grok 1.0.4 has no native ready emitter; the pane
+`exec`s `python -m omg_cli.team.interactive_wrapper`, which prints
+`TUI_READY:<nonce>` only after the child TTY is interactive and grok has
+started reading stdin. The wrapper never fabricates `PROVIDER_ECHO`.
+Timeout fails closed (no silent headless downgrade). Workers/descriptors
+never self-promote from stdout scrape. Default/`auto` remain headless until
+`LIVE_TEAM_INTERACTIVE_TTY_OK` is proven on a live capture.
 
 ## HARD RULES
 - Launch authority is **only** the `omg team …` CLI. Do not fake team with
