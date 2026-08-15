@@ -11,6 +11,7 @@ from omg_cli.host_capabilities import HOST_TIER_GROK, HOST_TIER_MEDLEY
 from omg_cli.medley_inspect import (
     INSPECT_SCHEMA,
     MedleyInspectError,
+    advertised_from_inspect,
     apply_receipt_to_view_fields,
     receipt_for_policy,
     resolve_host_snapshot,
@@ -136,3 +137,86 @@ def test_no_path_inference_from_binary_name(tmp_path: Path) -> None:
     snap, doc = resolve_host_snapshot(env={"PATH": str(tmp_path)})
     assert snap.host_tier == HOST_TIER_GROK
     assert doc is None
+
+
+def test_incompatible_state_stays_incompatible_even_with_v1(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "incompatible.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "incompatible",
+                "version": "v1",
+                "reason": "authorization unavailable on this host",
+            },
+            {
+                "capability_id": "medley.native-exact-model.v1",
+                "state": "incompatible",
+                "version": "v1",
+                "reason": "schema mismatch",
+            },
+        ],
+        receipts=[],
+    )
+    snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert doc is not None
+    advertised = advertised_from_inspect(doc)
+    assert advertised["medley.native-route-receipt.v1"] == "incompatible"
+    assert "host.native-exact-model.v1" not in advertised
+    assert snap.state_of("medley.native-route-receipt.v1") == "incompatible"
+    assert not snap.is_supported("medley.native-route-receipt.v1")
+    assert snap.state_of("host.native-exact-model.v1") == "unsupported"
+
+
+def test_malformed_receipt_is_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "bad-receipt.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": "review-primary-example",
+                "route_digest": "abc",
+                "attempt": -1,
+            }
+        ],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_authorization_reason_is_not_a_secret(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "reason.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+                "version": "v1",
+                "reason": "authorization unavailable on fallback path",
+            }
+        ],
+    )
+    snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert doc is not None
+    assert snap.is_supported("medley.native-route-receipt.v1")
+
+
+def test_authorization_key_is_still_secret(tmp_path: Path) -> None:
+    path = tmp_path / "header.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [],
+                "receipts": [],
+                "authorization": "not-a-header-value",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=path)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"

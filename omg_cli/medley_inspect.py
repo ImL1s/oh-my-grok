@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,18 +24,35 @@ from omg_cli.host_capabilities import (
 )
 
 INSPECT_SCHEMA = "medley.native-subagent-route.inspect/v1"
+RECEIPT_SCHEMA = "medley.native-route-receipt.v1"
 INSPECT_ENV = "OMG_MEDLEY_INSPECT"
 EXACT_HOST_CAP = "host.native-exact-model.v1"
 EXACT_MEDLEY_CAP = "medley.native-exact-model.v1"
+_ADVERTISED_INCOMPATIBLE = "incompatible"
+_DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
-_SECRET_NEEDLES: tuple[str, ...] = (
+# Credential-shaped values. Diagnostic words such as "authorization" in a
+# capability reason are not secrets; secret-named keys with values still fail.
+_VALUE_SECRET_NEEDLES: tuple[str, ...] = (
     "sk-",
     "bearer ",
     "acct_",
     "-----begin ",
-    "api_key",
-    "authorization",
     "x-api-key",
+)
+_SECRET_KEYS = frozenset(
+    {
+        "authorization",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "x_api_key",
+        "bearer",
+        "oauth",
+        "secret",
+        "password",
+        "token",
+    }
 )
 
 
@@ -168,7 +186,8 @@ def load_inspect_document(
                 "receipt must be an object",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
-        rec_rows.append(dict(item))
+        rec_rows.append(_validated_receipt(item))
+    _reject_secrets_tree(payload)
     return MedleyInspectDocument(
         schema=schema,
         schema_version=version,
@@ -191,9 +210,14 @@ def advertised_from_inspect(doc: MedleyInspectDocument) -> dict[str, str]:
         elif state == "unavailable":
             advertised[cap_id] = ADVERTISED_MISSING
         elif state == "incompatible":
-            advertised[cap_id] = str(version).strip() if version else "v99"
+            # Never forward a recognized version: negotiate() would mark
+            # incompatible+v1 as supported.
+            advertised[cap_id] = _ADVERTISED_INCOMPATIBLE
         # unsupported / unknown: omit so negotiate reports unsupported
-    if advertised.get(EXACT_MEDLEY_CAP) not in {None, ADVERTISED_MISSING}:
+    if any(
+        str(row["capability_id"]) == EXACT_MEDLEY_CAP and str(row["state"]) == "supported"
+        for row in doc.capabilities
+    ):
         advertised.setdefault(EXACT_HOST_CAP, "v1")
     return advertised
 
@@ -259,9 +283,50 @@ def apply_receipt_to_view_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
+    schema = str(item.get("schema") or "").strip()
+    if schema != RECEIPT_SCHEMA:
+        raise MedleyInspectError(
+            f"unsupported receipt schema {schema!r}",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    selected = (
+        item.get("selectedCatalogId")
+        or item.get("selected_catalog_id")
+        or item.get("selected_model_ref")
+    )
+    if not str(selected or "").strip():
+        raise MedleyInspectError(
+            "receipt needs a selected catalog id",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    digest = (
+        item.get("routeDigest")
+        or item.get("route_digest")
+        or item.get("route_receipt_digest")
+    )
+    digest_text = str(digest or "").strip()
+    if not _DIGEST_RE.fullmatch(digest_text):
+        raise MedleyInspectError(
+            "receipt digest must be a 64-char hex SHA-256",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    attempt = item.get("attempt")
+    if type(attempt) is not int or attempt < 1:
+        raise MedleyInspectError(
+            "receipt attempt must be a positive integer",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    return dict(item)
+
+
+def _normalized_secret_key(key: str) -> str:
+    return key.strip().lower().replace("-", "_")
+
+
 def _reject_secrets(text: str, *, label: str) -> None:
     lower = text.lower()
-    for needle in _SECRET_NEEDLES:
+    for needle in _VALUE_SECRET_NEEDLES:
         if needle in lower:
             raise MedleyInspectError(
                 f"{label} contains forbidden material",
@@ -269,11 +334,37 @@ def _reject_secrets(text: str, *, label: str) -> None:
             )
 
 
+def _reject_secrets_tree(value: Any, *, key: str | None = None) -> None:
+    if key is not None and _normalized_secret_key(key) in _SECRET_KEYS:
+        if isinstance(value, str) and value.strip():
+            raise MedleyInspectError(
+                "inspect contains forbidden material",
+                code="E_MEDLEY_INSPECT_SECRET",
+            )
+        if value not in (None, "", [], {}):
+            raise MedleyInspectError(
+                "inspect contains forbidden material",
+                code="E_MEDLEY_INSPECT_SECRET",
+            )
+    if isinstance(value, str):
+        _reject_secrets(value, label="inspect")
+    elif isinstance(value, Mapping):
+        for nested_key, nested in value.items():
+            _reject_secrets_tree(
+                nested,
+                key=str(nested_key) if nested_key is not None else None,
+            )
+    elif isinstance(value, list):
+        for nested in value:
+            _reject_secrets_tree(nested)
+
+
 __all__ = [
     "INSPECT_ENV",
     "INSPECT_SCHEMA",
     "MedleyInspectDocument",
     "MedleyInspectError",
+    "advertised_from_inspect",
     "apply_receipt_to_view_fields",
     "inspect_path_from_env",
     "load_inspect_document",
