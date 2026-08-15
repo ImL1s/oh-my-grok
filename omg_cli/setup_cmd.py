@@ -268,6 +268,42 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _refresh_owned_hook_identities(
+    owned: list[dict[str, Any]],
+    *,
+    hook_json: Path,
+    hook_wrapper: Path,
+    hook_py: Path,
+) -> list[dict[str, Any]]:
+    """Replace receipt hook identities with live bytes after reconciliation.
+
+    Exact-idempotent setup may repair a drifted wrapper without reinstalling
+    the plugin. Uninstall compares live hashes to receipt-owned identities;
+    keeping the old receipt would treat the repaired wrapper as foreign drift.
+    """
+    identities: dict[str, str] = {}
+    for path in (hook_json, hook_wrapper, hook_py):
+        try:
+            if path.is_file() and not path.is_symlink():
+                identities[str(path)] = _sha256_file(path)
+        except OSError:
+            continue
+    refreshed = [dict(row) for row in owned]
+    seen: set[str] = set()
+    for row in refreshed:
+        path = str(row.get("path") or "")
+        if path in identities:
+            row["identity"] = identities[path]
+            row["kind"] = "global_hook"
+            seen.add(path)
+    for path, ident in identities.items():
+        if path not in seen:
+            refreshed.append(
+                {"path": path, "kind": "global_hook", "identity": ident}
+            )
+    return refreshed
+
+
 def _safe_package_rel(relative: str) -> str:
     pure = PurePosixPath(relative)
     if pure.is_absolute() or ".." in pure.parts or str(pure) != relative:
@@ -1685,25 +1721,12 @@ def install_package(
                     # reuse or re-attest a receipt that would misstate runtime.
                     bound_plugin_path = None
                 if bound_plugin_path is not None:
-                    if _exact_idempotent_receipt_reusable(
-                        receipt,
-                        mode=mode,
-                        probe_status=probe_status,
-                        asset_evidence=asset_evidence,
-                    ):
-                        return {
-                            "ok": True,
-                            "status": "already_installed",
-                            "stage_path": str(stage),
-                            "receipt_path": str(receipt_path),
-                            "receipt_hash": receipt["receipt_hash"],
-                            "package_digest": identity["digest"],
-                        }
-
                     # Bytes + host path match but authority differs (mode
-                    # promotion, missing release evidence, or a stricter probe
-                    # status).  Re-attest without host uninstall/install and
-                    # publish a new receipt bound to the live host path.
+                    # promotion, missing release evidence, a stricter probe
+                    # status, or hook reconciliation that changed receipt-owned
+                    # wrapper/JSON/standalone bytes).  Re-attest without host
+                    # uninstall/install and publish a new receipt bound to the
+                    # live host path.
                     prior_status = receipt.get("status")
                     if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
                         status_value = _stricter_install_status(prior_status, probe_status)
@@ -1727,6 +1750,31 @@ def install_package(
                                 "identity": str(identity["digest"]),
                             }
                         )
+                    hook_repaired = hook_action != "unchanged"
+                    if hook_repaired:
+                        reattest_owned = _refresh_owned_hook_identities(
+                            reattest_owned,
+                            hook_json=hook_json,
+                            hook_wrapper=hook_wrapper,
+                            hook_py=hook_py,
+                        )
+                    if (
+                        not hook_repaired
+                        and _exact_idempotent_receipt_reusable(
+                            receipt,
+                            mode=mode,
+                            probe_status=probe_status,
+                            asset_evidence=asset_evidence,
+                        )
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "already_installed",
+                            "stage_path": str(stage),
+                            "receipt_path": str(receipt_path),
+                            "receipt_hash": receipt["receipt_hash"],
+                            "package_digest": identity["digest"],
+                        }
                     reattest_tid = uuid.uuid4().hex
                     reattest_material = _receipt_material(
                         transaction_id=reattest_tid,

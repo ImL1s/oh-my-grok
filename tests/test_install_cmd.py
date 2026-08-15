@@ -292,6 +292,52 @@ def test_install_stages_immutable_switches_cli_plugin_and_writes_receipt(tmp_pat
     assert again["stage_path"] == result["stage_path"]
 
 
+def test_exact_idempotent_setup_publishes_receipt_when_hook_wrapper_repaired(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    host = FakeGrok()
+
+    result = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=_doctor_ok,
+        mode="development",
+    )
+    wrapper = grok_home / "hooks" / "omg_pretool_deny"
+    assert wrapper.is_file()
+    wrapper.write_text("#!/bin/sh\necho drifted\n", encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    first_hash = result["receipt_hash"]
+
+    again = install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=_doctor_ok,
+        mode="development",
+    )
+    assert again["status"] != "already_installed"
+    assert again["receipt_hash"] != first_hash
+    receipt = read_install_receipt(Path(again["receipt_path"]))
+    owned = {
+        str(row.get("path")): str(row.get("identity"))
+        for row in receipt.get("owned_inventory", [])
+        if isinstance(row, dict) and row.get("kind") == "global_hook"
+    }
+    import hashlib
+
+    assert owned[str(wrapper)] == hashlib.sha256(wrapper.read_bytes()).hexdigest()
+    assert wrapper.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    assert "echo drifted" not in wrapper.read_text(encoding="utf-8")
+
+
 def test_install_accepts_and_reuses_host_managed_exact_copy(tmp_path, monkeypatch):
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"

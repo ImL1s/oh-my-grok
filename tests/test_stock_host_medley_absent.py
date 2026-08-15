@@ -57,11 +57,13 @@ from tests.stock_host_medley_absent_support import (
     _StockHostMedleyImportBlocker,
     _allowlisted_env,
     _allowed_subprocess_argv,
+    _durable_wrapper_python3,
     _install_fake_grok,
     _install_network_denial,
     _install_subprocess_guard,
     _is_reviewed_hook_shell_argv,
     _is_reviewed_python_argv,
+    _is_reviewed_python_launch,
     _link_python,
     _runtime_sys_path,
     assert_blocker_raises,
@@ -902,6 +904,47 @@ def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> 
     argv = ["python3", "-I", "-S", str(staged)]
     assert _is_reviewed_python_argv(argv, "python3", grok_home) is True
     assert _allowed_subprocess_argv(argv, bin_dir, grok_home) is True
+    durable = _durable_wrapper_python3()
+    if durable:
+        durable_argv = [durable, "-I", "-S", str(staged)]
+        assert _is_reviewed_python_argv(durable_argv, durable, grok_home) is False
+        assert _is_reviewed_python_launch(durable_argv, durable, bin_dir, grok_home) is True
+        assert _allowed_subprocess_argv(durable_argv, bin_dir, grok_home) is True
+
+
+def test_guarded_popen_allows_durable_python3_stage_smoke(monkeypatch, tmp_path) -> None:
+    """P1: staging smoke argv0 is the durable interpreter, not isolation python3."""
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    from omg_cli.hook_install import STANDALONE_BASENAME, _stage_file, committed_standalone
+
+    hooks = iso.grok_home / "hooks"
+    hooks.mkdir()
+    staged = _stage_file(
+        hooks / STANDALONE_BASENAME,
+        committed_standalone().read_bytes(),
+        mode=0o644,
+    )
+    durable = _durable_wrapper_python3()
+    if not durable:
+        pytest.skip("no durable python3 interpreter")
+    proc = subprocess.run(
+        [durable, "-I", "-S", str(staged)],
+        input='{"tool_name":"run_terminal_command","tool_input":{"command":"ls"}}',
+        capture_output=True,
+        text=True,
+        cwd=tempfile.gettempdir(),
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        timeout=10,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(
+            [durable, "-c", "print(1)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def test_reviewed_python_argv_rejects_unrelated_and_lookalikes(
