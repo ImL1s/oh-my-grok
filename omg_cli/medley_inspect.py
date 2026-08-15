@@ -40,7 +40,6 @@ _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # "bearer authentication unavailable" in a capability reason are not secrets;
 # secret-named keys with values still fail.
 _VALUE_SECRET_NEEDLES: tuple[str, ...] = (
-    "acct_",
     "-----begin ",
 )
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
@@ -48,6 +47,7 @@ _BEARER_RE = re.compile(
     r"(?i)(?:^|[^a-z0-9])bearer\s+(?:sk-|eyj|[a-z0-9._\-+/=]{20,})"
 )
 _X_API_KEY_RE = re.compile(r"(?i)x-api-key\s*[:=]\s*\S+")
+_ACCT_RE = re.compile(r"(?i)(?:^|[^a-z0-9])acct_[a-z0-9]{8,}")
 _SECRET_KEYS = frozenset(
     {
         "authorization",
@@ -286,20 +286,25 @@ def receipt_for_policy(
     want_digest = str(policy_digest or "").strip()
     matches: list[dict[str, Any]] = []
     for row in doc.receipts:
-        consumer = str(
-            row.get("consumerPolicyId")
-            or row.get("consumer_policy_id")
+        consumer = (
+            _nonempty_string(row.get("consumerPolicyId") or row.get("consumer_policy_id"))
             or ""
-        ).strip()
-        row_digest = str(
-            row.get("consumerPolicyDigest")
-            or row.get("consumer_policy_digest")
-            or ""
-        ).strip()
-        id_match = consumer == policy_id
-        agent_match = bool(
-            agent_id and str(row.get("agent_id") or row.get("agentId") or "") == agent_id
         )
+        row_digest = (
+            _nonempty_string(
+                row.get("consumerPolicyDigest") or row.get("consumer_policy_digest")
+            )
+            or ""
+        )
+        row_agent = (
+            _nonempty_string(row.get("agent_id") or row.get("agentId")) or ""
+        )
+        if consumer and consumer != policy_id:
+            continue
+        if agent_id and row_agent and row_agent != agent_id:
+            continue
+        id_match = bool(consumer) and consumer == policy_id
+        agent_match = bool(agent_id and row_agent and row_agent == agent_id)
         if not id_match and not agent_match:
             continue
         if want_digest:
@@ -375,8 +380,8 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
         or item.get("route_digest")
         or item.get("route_receipt_digest")
     )
-    digest_text = str(digest or "").strip()
-    if not _DIGEST_RE.fullmatch(digest_text):
+    digest_text = _nonempty_string(digest)
+    if digest_text is None or not _DIGEST_RE.fullmatch(digest_text):
         raise MedleyInspectError(
             "receipt digest must be a 64-char hex SHA-256",
             code="E_MEDLEY_INSPECT_SCHEMA",
@@ -403,7 +408,12 @@ def _nonempty_string(value: Any) -> str | None:
 
 def _reject_secrets(text: str, *, label: str) -> None:
     lower = text.lower()
-    if _SK_TOKEN_RE.search(lower) or _BEARER_RE.search(lower) or _X_API_KEY_RE.search(lower):
+    if (
+        _SK_TOKEN_RE.search(lower)
+        or _BEARER_RE.search(lower)
+        or _X_API_KEY_RE.search(lower)
+        or _ACCT_RE.search(lower)
+    ):
         raise MedleyInspectError(
             f"{label} contains forbidden material",
             code="E_MEDLEY_INSPECT_SECRET",
