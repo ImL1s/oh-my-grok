@@ -55,6 +55,32 @@ def test_grok_preflight_rejects_fake_flags(fake_grok_path: Path, tmp_path: Path)
     assert ei.value.code == "E_JOB_PROVIDER_OPTIONS"
 
 
+def test_grok_preflight_rejects_unforwarded_effort_mode(
+    fake_grok_path: Path, tmp_path: Path
+) -> None:
+    del fake_grok_path
+    prompt = tmp_path / "p.md"
+    prompt.write_text("hi", encoding="utf-8")
+    with pytest.raises(JobStoreError) as ei:
+        start_job(
+            tmp_path,
+            provider="grok",
+            role="executor",
+            prompt_file=prompt,
+            effort="high",
+        )
+    assert ei.value.code == "E_JOB_PROVIDER_OPTIONS"
+    with pytest.raises(JobStoreError) as ei2:
+        start_job(
+            tmp_path,
+            provider="grok",
+            role="executor",
+            prompt_file=prompt,
+            mode="plan",
+        )
+    assert ei2.value.code == "E_JOB_PROVIDER_OPTIONS"
+
+
 def test_grok_job_runs_prompt_file(
     fake_grok_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

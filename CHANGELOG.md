@@ -43,7 +43,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   are stored as absolute paths while keeping the `grok` basename. Omitted
   broadcast `dedupe_key` is retry-stable; per-recipient mailbox keys are
   fixed-length hashes (never `{key}--{recipient}` overflow). Host prompt-queue
-  load validates full entry shape and `content_hash`.
+  load validates full entry shape and `content_hash`. Omitted broadcast keys
+  hash the redacted body (no credential oracle). Grok jobs reject `--effort` /
+  `--mode` (not forwarded).
   v1–v4 goldens unchanged.   Antigravity is not installed here;
   no live AG / live grok job smoke. Leftover AC remains on issue 69.
 - **Parity coverage_digest after #69 catalog v5 GAPS sync:** refresh OMC/OMX/OmO/Antigravity

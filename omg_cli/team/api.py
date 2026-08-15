@@ -40,7 +40,9 @@ from omg_cli.contracts.state_schemas import (
 from omg_cli.contracts.writer_chain import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
+    sha256_hex,
 )
+from omg_cli.redaction import redact_value
 from omg_cli.team.mailbox import (
     MailboxError,
     ack_message,
@@ -1131,8 +1133,9 @@ def _op_broadcast(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     require_safe_id(kind, label="kind")
     dedupe_key = _optional_str(payload, "dedupe_key")
     if not dedupe_key:
-        body_text = body.strip() if isinstance(body, str) else json.dumps(body, sort_keys=True, default=str)
-        material = "\0".join((run_id, team_id, sender, kind, body_text, str(generation)))
+        redacted = redact_value(body.strip() if isinstance(body, str) else body)
+        body_digest = sha256_hex(canonical_json_bytes(redacted))
+        material = "\0".join((run_id, team_id, sender, kind, body_digest, str(generation)))
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
         dedupe_key = f"bcast-{digest}"
     require_safe_id(dedupe_key, label="dedupe_key")

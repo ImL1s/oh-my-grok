@@ -336,6 +336,11 @@ def preflight_grok(
             "are not allowed with provider=grok",
             code="E_JOB_PROVIDER_OPTIONS",
         )
+    if (effort or "").strip() or (mode or "").strip():
+        raise JobStoreError(
+            "grok jobs do not forward --effort/--mode; omit them or pass --model only",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
     adapter, meta = resolve_job_provider("grok")
     fmt = (output_format or meta.default_output_format).strip().lower()
     if fmt not in {"text", "json", "stream-json"}:
@@ -395,8 +400,8 @@ def preflight_grok(
         provider_pin_revision=PIN_REVISION,
         output_format=fmt,
         model=str(model) if model else None,
-        effort=str(effort) if effort else None,
-        mode=str(mode) if mode else None,
+        effort=None,
+        mode=None,
         timeout_s=timeout,
         observed_formats=tuple(str(x) for x in observed),
     )

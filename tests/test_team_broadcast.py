@@ -215,3 +215,46 @@ def test_broadcast_long_dedupe_key_stays_within_safe_id(
         )
         assert code == 0
         assert listing["data"]["count"] == 1
+
+
+def test_broadcast_omitted_key_hashes_redacted_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env_on(monkeypatch)
+    _init_repo(tmp_path)
+    meta = start_team(
+        "broadcast seed",
+        SEED_TASKS,
+        root=tmp_path,
+        dry_run=True,
+        env={EXPERIMENTAL_ENV: "1"},
+        check_binary=False,
+    )
+    run_id = str(meta["run_id"])
+    for worker in ("t-a", "t-b"):
+        code, created = execute_team_api(
+            "create-task",
+            {
+                "run_id": run_id,
+                "team_id": TEAM,
+                "subject": f"seed-{worker}",
+                "description": f"seed-{worker}",
+                "workers": [worker],
+            },
+            root=tmp_path,
+        )
+        assert code == 0, created
+    payload = {
+        "run_id": run_id,
+        "team_id": TEAM,
+        "from_worker": "leader",
+        "body": {"token": "123456", "note": "hi"},
+    }
+    code1, env1 = execute_team_api("broadcast", payload, root=tmp_path)
+    assert code1 == 0, env1
+    first_ids = {msg["message_id"] for msg in env1["data"]["messages"]}
+    bodies = [msg["body"] for msg in env1["data"]["messages"]]
+    assert all(item.get("token") != "123456" for item in bodies)
+    code2, env2 = execute_team_api("broadcast", payload, root=tmp_path)
+    assert code2 == 0
+    assert {msg["message_id"] for msg in env2["data"]["messages"]} == first_ids
