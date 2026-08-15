@@ -111,6 +111,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **Team stop after headless grok exit:** `team stop` no longer treats a
+  rebound tmux pane PID (shell after the receipted grok process exited) as
+  either a signal target *or* a reason to skip `kill-session`. If the
+  receipted pid/pgid are proven gone and the session/nonce are still owned
+  by this Team, disappearance is verified and the **owned** session is torn
+  down. Signalling a live pid that is not the receipted one remains refused.
+  Does **not** claim `LIVE_TEAM_SMOKE_OK` (needs a live re-run). Refs #69
+  (does not close).
+- **Hook interpreter shims:** `python3_executable()` rejects pyenv/asdf
+  shims when `/usr/bin/python3` (and other durable candidates) are absent,
+  so install/doctor do not persist a cwd-dependent `.python-version` shim
+  that later fail-opens via `|| true`. Custom `PYENV_ROOT` / `ASDF_DATA_DIR`
+  shim dirs are rejected as well, as is a durable-looking launcher that is a
+  symlink to such a shim (one `readlink` hop; Homebrew Cellar stays
+  un-resolved). A failed repair that cannot replace
+  an already-installed shim wrapper quarantines the active hook JSON
+  instead of leaving the shim live. Refs #79 (does not close).
 - **Grok 1.0.4 PreToolUse execvp:** grok 1.0.4 `execvp()`s the hook
   `command` string as argv0 (no shell). The previous
   `python3 -I -S "<abs>" || true` launcher was `ENOENT`, fail-opened, then

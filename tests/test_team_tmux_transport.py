@@ -5224,3 +5224,95 @@ def test_resolve_live_signal_target_refuses_respawn_pid(
         )
         is None
     )
+
+
+def test_owned_receipt_process_disappeared_when_receipt_gone_rebound_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Receipt pid gone + owned session/nonce → verified; live pane pid unused."""
+    from omg_cli.team import plane
+
+    receipt = {"session_id": "$9", "launch_nonce": "d" * 32}
+    row = {
+        "task_id": "t1",
+        "window_index": 0,
+        "pane_id": "%81",
+        "pid": 100,
+        "pgid": 100,
+        "pid_start": "start-100",
+    }
+    pane_probes: list[list[str]] = []
+
+    def fake_tmux(args, **_kw):
+        cmd = list(args)
+        pane_probes.append(cmd)
+        raise AssertionError(f"helper must not probe live pane pid: {cmd}")
+
+    monkeypatch.setattr(plane, "_tmux_run", fake_tmux)
+    monkeypatch.setattr(plane, "_read_tmux_session_identity", lambda s: (s, "$9"))
+    monkeypatch.setattr(plane, "_team_launch_nonce_matches", lambda **_k: True)
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", lambda _pid: (None, None))
+    monkeypatch.setattr(plane, "_process_group_disappeared", lambda _pgid: (True, None))
+
+    gone, err = plane._owned_receipt_process_disappeared(
+        "sess", receipt, row, session_owned=True, window_id=None
+    )
+    assert gone is True
+    assert err is None
+    assert pane_probes == []
+
+
+def test_owned_receipt_process_disappeared_false_when_receipt_still_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import plane
+
+    receipt = {"session_id": "$9", "launch_nonce": "d" * 32}
+    row = {
+        "task_id": "t1",
+        "window_index": 0,
+        "pane_id": "%81",
+        "pid": 100,
+        "pgid": 100,
+        "pid_start": "start-100",
+    }
+    monkeypatch.setattr(plane, "_read_tmux_session_identity", lambda s: (s, "$9"))
+    monkeypatch.setattr(plane, "_team_launch_nonce_matches", lambda **_k: True)
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", lambda _pid: (100, None))
+    monkeypatch.setattr(
+        plane, "_process_group_disappeared", lambda _pgid: (True, None)
+    )
+
+    gone, err = plane._owned_receipt_process_disappeared(
+        "sess", receipt, row, session_owned=True, window_id=None
+    )
+    assert gone is False
+    assert err == "receipted process still live"
+
+
+def test_owned_receipt_process_disappeared_false_on_nonce_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.team import plane
+
+    receipt = {"session_id": "$9", "launch_nonce": "d" * 32}
+    row = {
+        "task_id": "t1",
+        "window_index": 0,
+        "pane_id": "%81",
+        "pid": 100,
+        "pgid": 100,
+        "pid_start": "start-100",
+    }
+    monkeypatch.setattr(plane, "_read_tmux_session_identity", lambda s: (s, "$9"))
+    monkeypatch.setattr(plane, "_team_launch_nonce_matches", lambda **_k: False)
+    monkeypatch.setattr(plane, "_receipt_leader_pgid", lambda _pid: (None, None))
+    monkeypatch.setattr(
+        plane, "_process_group_disappeared", lambda _pgid: (True, None)
+    )
+
+    gone, err = plane._owned_receipt_process_disappeared(
+        "sess", receipt, row, session_owned=True, window_id=None
+    )
+    assert gone is False
+    assert err == "launch nonce mismatch"

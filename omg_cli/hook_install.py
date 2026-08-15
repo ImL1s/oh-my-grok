@@ -102,6 +102,77 @@ def _looks_like_venv_python(path: str) -> bool:
     return False
 
 
+def _shim_dir_layout(path: str) -> bool:
+    """True when *path* lives in a pyenv/asdf shims directory (no symlink follow)."""
+    try:
+        parent = os.path.abspath(str(Path(path).parent))
+        parts = [part.lower() for part in Path(path).parts]
+    except (OSError, TypeError, ValueError):
+        return False
+    for index, part in enumerate(parts):
+        if part != "shims" or index == 0:
+            continue
+        if parts[index - 1] in {".pyenv", "pyenv", ".asdf", "asdf"}:
+            return True
+    for key in ("PYENV_ROOT", "ASDF_DATA_DIR"):
+        raw = os.environ.get(key)
+        if not raw or not str(raw).strip():
+            continue
+        try:
+            shim_dir = os.path.abspath(
+                os.path.join(os.path.expanduser(str(raw).strip()), "shims")
+            )
+        except OSError:
+            continue
+        if parent == shim_dir:
+            return True
+    return False
+
+
+def _looks_like_version_manager_shim(path: str) -> bool:
+    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``).
+
+    Detects default layouts (``~/.pyenv/shims``, ``~/.asdf/shims``), customized
+    ``PYENV_ROOT`` / ``ASDF_DATA_DIR`` shims dirs, and a single symlink hop
+    whose target is such a shim (e.g. ``/usr/local/bin/python3`` → pyenv).
+    Does not ``Path.resolve()`` through Homebrew Cellar inodes.
+    """
+    if _shim_dir_layout(path):
+        return True
+    try:
+        if not os.path.islink(path):
+            return False
+        target = os.readlink(path)
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(os.path.abspath(path)), target)
+        return _shim_dir_layout(os.path.abspath(target))
+    except OSError:
+        return False
+
+
+def _wrapper_embedded_interpreter(wrapper_text: str | bytes | None) -> str | None:
+    """Return argv0 from a ``render_wrapper`` script, or None if unreadable."""
+    if wrapper_text is None:
+        return None
+    if isinstance(wrapper_text, bytes):
+        try:
+            text = wrapper_text.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        text = wrapper_text
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(stripped)
+        except ValueError:
+            return None
+        return parts[0] if parts else None
+    return None
+
+
 def python3_executable() -> str:
     """Absolute python3 grok's empty hook PATH may not find as ``python3``.
 
@@ -111,15 +182,27 @@ def python3_executable() -> str:
 
     Do not ``Path.resolve()``: Homebrew's ``/opt/homebrew/bin/python3`` must
     stay the stable launcher, not a Cellar inode a brew upgrade deletes.
+
+    pyenv/asdf shims are never persisted: they pick an interpreter from the
+    process cwd. If no durable candidate exists, fall back to
+    ``/usr/bin/python3`` so install/smoke fail closed instead of baking a shim.
     """
     for candidate in _DURABLE_PYTHON3:
         try:
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            if (
+                os.path.isfile(candidate)
+                and os.access(candidate, os.X_OK)
+                and not _looks_like_version_manager_shim(candidate)
+            ):
                 return candidate
         except OSError:
             continue
     found = shutil.which("python3")
-    if found and not _looks_like_venv_python(found):
+    if (
+        found
+        and not _looks_like_venv_python(found)
+        and not _looks_like_version_manager_shim(found)
+    ):
         return os.path.abspath(found)
     path_env = os.environ.get("PATH") or ""
     for directory in path_env.split(os.pathsep):
@@ -131,11 +214,12 @@ def python3_executable() -> str:
                 os.path.isfile(cand)
                 and os.access(cand, os.X_OK)
                 and not _looks_like_venv_python(cand)
+                and not _looks_like_version_manager_shim(cand)
             ):
                 return os.path.abspath(cand)
         except OSError:
             continue
-    if found:
+    if found and not _looks_like_version_manager_shim(found):
         return os.path.abspath(found)
     return "/usr/bin/python3"
 
@@ -405,8 +489,17 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         # Publish failed → grok must not keep discovering JSON that points at a
         # missing/broken wrapper. Canonical JSON is still dangerous after we
         # started mutating live executables (replace/wrapper write). A staged
-        # smoke failure before replace leaves the live hook untouched.
-        if os.path.lexists(json_path) and (noncanonical or live_mutated):
+        # smoke failure before replace leaves the live hook untouched — unless
+        # that live wrapper already embeds a pyenv/asdf shim we refused to
+        # persist (cwd-dependent fail-open). Then quarantine so setup failure
+        # cannot leave the shim active.
+        prior_interp = _wrapper_embedded_interpreter(prior_wrapper)
+        shim_live = bool(
+            prior_interp and _looks_like_version_manager_shim(prior_interp)
+        )
+        if os.path.lexists(json_path) and (
+            noncanonical or live_mutated or shim_live
+        ):
             _dest, removed = _quarantine(json_path)
             if not removed:
                 return json_path, "failed:QuarantineLeftActive"

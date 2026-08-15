@@ -821,6 +821,119 @@ def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeyp
     assert os.path.realpath(got) == os.path.realpath(cellar)
 
 
+def test_python3_executable_rejects_pyenv_asdf_shims(tmp_path, monkeypatch):
+    """pyenv/asdf shims are cwd-dependent; never persist them as hook python."""
+    from omg_cli import hook_install as hi
+
+    pyenv_shim = tmp_path / ".pyenv" / "shims" / "python3"
+    pyenv_shim.parent.mkdir(parents=True)
+    pyenv_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    pyenv_shim.chmod(0o755)
+    asdf_shim = tmp_path / ".asdf" / "shims" / "python3"
+    asdf_shim.parent.mkdir(parents=True)
+    asdf_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    asdf_shim.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", ())
+
+    def _which(name, *args, **kwargs):
+        return str(pyenv_shim) if name == "python3" else None
+
+    monkeypatch.setattr(hi.shutil, "which", _which)
+    monkeypatch.setenv("PATH", str(pyenv_shim.parent))
+    assert hi.python3_executable() == "/usr/bin/python3"
+    assert hi._looks_like_version_manager_shim(str(pyenv_shim)) is True
+    assert hi._looks_like_version_manager_shim(str(asdf_shim)) is True
+    assert hi._looks_like_version_manager_shim("/usr/bin/python3") is False
+
+
+def test_python3_executable_rejects_custom_pyenv_asdf_root_shims(
+    tmp_path, monkeypatch
+):
+    """PYENV_ROOT / ASDF_DATA_DIR shims dirs are cwd-dependent even if unnamed pyenv."""
+    from omg_cli import hook_install as hi
+
+    pyenv_root = tmp_path / "my-python"
+    pyenv_shim = pyenv_root / "shims" / "python3"
+    pyenv_shim.parent.mkdir(parents=True)
+    pyenv_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    pyenv_shim.chmod(0o755)
+    asdf_root = tmp_path / "asdf-data"
+    asdf_shim = asdf_root / "shims" / "python3"
+    asdf_shim.parent.mkdir(parents=True)
+    asdf_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    asdf_shim.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", ())
+    monkeypatch.setenv("PYENV_ROOT", str(pyenv_root))
+    monkeypatch.setenv("ASDF_DATA_DIR", str(asdf_root))
+    monkeypatch.setattr(
+        hi.shutil,
+        "which",
+        lambda name, *a, **k: str(pyenv_shim) if name == "python3" else None,
+    )
+    monkeypatch.setenv("PATH", str(pyenv_shim.parent))
+    assert hi._looks_like_version_manager_shim(str(pyenv_shim)) is True
+    assert hi._looks_like_version_manager_shim(str(asdf_shim)) is True
+    assert hi.python3_executable() == "/usr/bin/python3"
+
+
+def test_python3_executable_rejects_durable_symlink_to_pyenv_shim(
+    tmp_path, monkeypatch
+):
+    """A /usr/local/bin/python3 symlink to a pyenv shim is not durable."""
+    from omg_cli import hook_install as hi
+
+    shim = tmp_path / ".pyenv" / "shims" / "python3"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    launcher = tmp_path / "usr" / "local" / "bin" / "python3"
+    launcher.parent.mkdir(parents=True)
+    try:
+        launcher.symlink_to(shim)
+    except OSError:
+        pytest.skip("symlink python3 fixture unavailable")
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(launcher),))
+    monkeypatch.setattr(hi.shutil, "which", lambda *_a, **_k: None)
+    monkeypatch.delenv("PATH", raising=False)
+    assert hi._looks_like_version_manager_shim(str(launcher)) is True
+    assert hi.python3_executable() == "/usr/bin/python3"
+
+
+def test_install_quarantines_shim_wrapper_when_durable_python_missing(
+    tmp_path, monkeypatch
+):
+    """Setup failure must not leave a pyenv/asdf shim wrapper + active JSON."""
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hooks = gh / "hooks"
+    hooks.mkdir(parents=True)
+    shim = tmp_path / ".pyenv" / "shims" / "python3"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    installed_py = hooks / hi.STANDALONE_BASENAME
+    installed_py.write_bytes(STANDALONE.read_bytes())
+    installed_py.chmod(0o755)
+    wrapper = hooks / hi.WRAPPER_BASENAME
+    wrapper.write_text(
+        hi.render_wrapper(installed_py, python3=str(shim)),
+        encoding="utf-8",
+        newline="\n",
+    )
+    wrapper.chmod(0o755)
+    json_path = hooks / hi.HOOK_JSON_NAME
+    json_path.write_text(hi.render_hook_json(installed_py), encoding="utf-8", newline="\n")
+    monkeypatch.setattr(hi, "python3_executable", lambda: str(tmp_path / "missing-python3"))
+
+    _, action = hi.install_global_hook(home=gh)
+    assert action.startswith("failed:"), action
+    assert not json_path.is_file()
+    names = os.listdir(hooks)
+    assert not any(n.endswith(".json") for n in names)
+    assert any(n.startswith("omg-pretool-deny.broken-") for n in names)
+
+
 def test_python3_executable_prefers_durable_system_path(monkeypatch, tmp_path):
     """Install/doctor must not pin the caller's venv python3."""
     from omg_cli import hook_install as hi
