@@ -1441,7 +1441,7 @@ def check_visual_capture() -> SoftResult:
         diagnosis = diagnose_capture_source(config_path=config_path)
         detail = str(diagnosis.get("detail") or diagnosis.get("source") or "none")
         if diagnosis.get("source") == "none":
-            return (name, "warn", detail)
+            return (name, "ok", f"optional; {detail}")
         return (name, "ok", detail)
     except Exception as exc:  # pragma: no cover - fail-open soft check
         return (name, "warn", f"visual capture probe failed ({type(exc).__name__})")

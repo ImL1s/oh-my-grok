@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.command_registry import KNOWN_SUBCOMMANDS
 from omg_cli.contracts.visual_contract import (
@@ -638,8 +640,8 @@ def test_doctor_visual_capture_none(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OMG_PROJECT_ROOT", raising=False)
     name, level, detail = check_visual_capture()
     assert name == "visual capture adapter"
-    assert level == "warn"
-    assert "blocked" in detail
+    assert level == "ok"
+    assert "optional" in detail
     assert "playwright" not in detail.lower() or "not required" in detail.lower() or "none" in detail
 
 
@@ -659,3 +661,73 @@ def test_yaml_config_roundtrip(tmp_path: Path, capsys) -> None:
     payload = _out(capsys)
     assert payload["result"]["status"] == "blocked"
     assert payload["result"]["block_code"] == "capture_unavailable"
+
+
+def test_default_run_id_is_valid() -> None:
+    from omg_cli.visual_runtime import new_run_id, validate_run_id
+
+    rid = new_run_id()
+    assert rid == validate_run_id(rid)
+    assert "T" not in rid and "Z" not in rid
+
+
+def test_reviewer_capability_cannot_override_catalog() -> None:
+    from omg_cli.visual_runtime import VisualReviewerError, enforce_independent_reviewer
+
+    with pytest.raises(VisualReviewerError, match="cannot override"):
+        enforce_independent_reviewer(
+            editor_role="omg-designer",
+            reviewer_role="omg-executor",
+            reviewer_capability="read-only",
+        )
+
+
+def test_zero_dimensions_are_metadata_errors(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    cfg = _write_config(tmp_path, _compat_cfg())
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "verdict",
+            "--config",
+            str(cfg),
+            "--reference",
+            "ref.png",
+            "--actual",
+            "current.png",
+            "--width",
+            "0",
+            "--height",
+            "200",
+            "--run-id",
+            "zero-w",
+        )
+    )
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_METADATA" or payload.get("error_code") == (
+        "E_VISUAL_METADATA"
+    )
+
+
+def test_capture_unlinks_stale_output(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    config = _compat_cfg(
+        capture={
+            "command": [sys.executable, str(FIXTURES / "noop_capture.py")],
+            "target": "about:blank",
+            "readiness": "explicit",
+        }
+    )
+    cfg = _write_config(tmp_path, config)
+    stale = tmp_path / ".omg" / "artifacts" / "visual" / "stale1" / "current.png"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(tmp_path / "ref.png", stale)
+    rc = main(_argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "stale1"))
+    assert rc == 0
+    payload = _out(capsys)
+    assert payload["result"]["status"] == "blocked"
+    assert payload["result"]["block_code"] == "capture_failed"
+    assert not stale.is_file()

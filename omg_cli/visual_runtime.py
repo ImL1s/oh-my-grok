@@ -107,7 +107,7 @@ def utc_now() -> str:
 
 
 def new_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%Sz")
     return f"vis-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
@@ -239,7 +239,12 @@ def enforce_independent_reviewer(
         raise VisualReviewerError(
             "editor_role and reviewer_role must be independent"
         )
-    capability = reviewer_capability or role_capability(reviewer, roles=roles)
+    catalog_capability = role_capability(reviewer, roles=roles)
+    if reviewer_capability is not None and reviewer_capability != catalog_capability:
+        raise VisualReviewerError(
+            "reviewer_capability_mode cannot override the catalog role floor"
+        )
+    capability = catalog_capability
     if capability != "read-only":
         raise VisualReviewerError(
             "reviewer_role must be read-only (omg-vision or a read-only reviewer)"
@@ -639,6 +644,8 @@ def _require_hw(spec: Mapping[str, Any], config: Mapping[str, Any], *, width: in
         raise VisualMetadataError(
             "width/height must be declared in config or flags (images are not decoded)"
         )
+    if w <= 0 or h <= 0:
+        raise VisualMetadataError("width/height must be positive integers")
     return w, h
 
 
@@ -720,6 +727,8 @@ def run_capture(
     )
     timestamp = utc_now()
     output = run_dir / "current.png"
+    if output.exists() or output.is_symlink():
+        output.unlink(missing_ok=True)
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "kind": CAPTURE_RESULT_KIND,
@@ -848,21 +857,27 @@ def run_verdict(
         raise VisualMetadataError("reference and actual image paths are required")
     ref_w, ref_h = _require_hw(ref_spec, config, width=width, height=height)
     act_w, act_h = _require_hw(act_spec, config, width=width, height=height)
-    ref_copy = copy_image(root, ref_src, run_dir / "reference.png")
-    act_copy = copy_image(root, act_src, run_dir / "current.png")
+    ref_media = ref_spec.get("media_type") or media_type_for(ref_src)
+    act_media = act_spec.get("media_type") or media_type_for(act_src)
+    ref_copy = copy_image(
+        root, ref_src, run_dir / f"reference{ref_src.suffix or '.png'}"
+    )
+    act_copy = copy_image(
+        root, act_src, run_dir / f"current{act_src.suffix or '.png'}"
+    )
     reference = image_descriptor(
         root=root,
         path=ref_copy,
         width=ref_w,
         height=ref_h,
-        media_type=ref_spec.get("media_type"),
+        media_type=ref_media,
     )
     candidate = image_descriptor(
         root=root,
         path=act_copy,
         width=act_w,
         height=act_h,
-        media_type=act_spec.get("media_type"),
+        media_type=act_media,
     )
     masks = config.get("masks") if isinstance(config.get("masks"), list) else []
     overlay = overlay_sidecar(masks=masks, reference=reference, candidate=candidate)
