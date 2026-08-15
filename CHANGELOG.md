@@ -30,6 +30,29 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `arg0 == 0` (they do not fall through to the poll/raw-TTY branch). Wrapper
   timeout signals the child **process group** (SIGTERM then SIGKILL) with
   bounded WNOHANG reaps. Refs #147 (does not close).
+- **#69 catalog v5 + grok jobs + Team prompt-queue:** default Team catalog is
+  schema v5 (42 named / 32 dispatched). `broadcast` fans out as N
+  durable DMs (leader-only; retry-stable per-recipient dedupe). Host prompt-queue consume
+  (`enqueue-host-prompt` / `list-host-prompt-queue` /
+  `reorder-host-prompt-queue`) is a Team-owned LEGACY file — not mailbox,
+  not task ACK, not host-TUI wiring (`grok.prompt_queue.*` stay BLOCKED on
+  host probe). Durable Jobs public start admits `--provider grok` (headless
+  `--prompt-file` only; fake-only flags denied; Team `--worker-topology=job`
+  admits grok). Team job topology stamps each worker's owned worktree as
+  Jobs `cwd` (not the leader checkout). `grok` PATH / `OMG_GROK_BIN` entries
+  are stored as absolute paths while keeping the `grok` basename. Omitted
+  broadcast `dedupe_key` is retry-stable; per-recipient mailbox keys are
+  fixed-length hashes (never `{key}--{recipient}` overflow). Host prompt-queue
+  load validates full entry shape, `content_hash`, and sequence-vs-order. Omitted broadcast keys
+  hash the redacted body (no credential oracle). Grok jobs reject `--effort` /
+  `--mode` (not forwarded).
+  v1–v4 goldens unchanged.   Antigravity is not installed here;
+  no live AG / live grok job smoke. Leftover AC remains on issue 69.
+- **Parity coverage_digest after #69 catalog v5 GAPS sync:** refresh OMC/OMX/OmO/Antigravity
+  proof `coverage_digest` values only after gap text for catalog v5 + hermetic
+  grok jobs (no policy/mapping/status changes). OMC digest refreshed again
+  after rewording catalog counts so the release gate does not read
+  `implemented` as a maturity claim. Leftover AC remains on issue 69.
 - **#70 Wave B/C skill playbooks + catalog-driven routing:**   29 catalog-only
   canonical skills now have real `skills/omg-*/SKILL.md` playbooks (13 Wave B +
   16 Wave C) plus bundled `resources/contract.json` on every plugin skill

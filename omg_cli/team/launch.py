@@ -29,7 +29,7 @@ WORKER_TOPOLOGIES: frozenset[str] = frozenset(
 EXECUTION_SCHEMA = 1
 
 # Jobs-plane providers Team may launch for worker-topology=job.
-JOB_ADMITTED_PROVIDERS: frozenset[str] = frozenset({"fake", "antigravity"})
+JOB_ADMITTED_PROVIDERS: frozenset[str] = frozenset({"fake", "antigravity", "grok"})
 
 # Task / worker status vocabulary for the launch abstraction (team.json).
 STATUS_READY = "ready"
@@ -238,12 +238,31 @@ def resolve_job_provider(provider: str, *, executor: str | None = None) -> str:
         return raw
     raise WorkerLaunchError(
         "worker-topology=job requires a jobs-admitted provider "
-        f"(fake|antigravity); got {provider!r}",
+        f"(fake|antigravity|grok); got {provider!r}",
         code="E_TEAM_JOB_PROVIDER",
     )
 
 
 PaneLauncher = Callable[..., str]
+
+
+def _optional_job_cwd(root: Path, cwd: Path | str | None) -> str | None:
+    """Resolve a job working directory; None means the Jobs runner default."""
+    if cwd is None:
+        return None
+    text = str(cwd).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise WorkerLaunchError(
+            f"job cwd is not a directory: {resolved}",
+            code="E_TEAM_JOB_CWD",
+        )
+    return str(resolved)
 
 
 def launch_worker(
@@ -266,6 +285,7 @@ def launch_worker(
     executor: str | None = None,
     sleep_s: float | None = None,
     job_request_stamps: Mapping[str, Any] | None = None,
+    cwd: Path | str | None = None,
 ) -> WorkerExecutionHandle:
     """Launch one worker as a pane or durable job; return an execution handle.
 
@@ -389,6 +409,7 @@ def launch_worker(
             launch=True,
             team_id=team_id,
             request_overrides=stamps or None,
+            cwd=_optional_job_cwd(root_path, cwd),
         )
     except JobStoreError as exc:
         raise WorkerLaunchError(
@@ -825,6 +846,7 @@ def launch_descriptors_for_tasks(
                 if dry_run
                 else f"Team worker {tid} run={run_id} team={team_id}"
             ),
+            cwd=raw.get("worktree"),
         )
         handles.append(handle)
     return handles

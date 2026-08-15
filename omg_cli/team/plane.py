@@ -3694,13 +3694,15 @@ def start_team(
                     interactive_nonce = None
 
                 # Job-backed workers may take an explicit jobs-admitted provider
-                # from the task dict (fake|antigravity) when not using fixture.
+                # from the task dict (fake|antigravity|grok) when not using fixture.
                 if worker_topo == WORKER_TOPOLOGY_JOB and not use_fixture_executor:
                     src_prov = str(src_task.get("provider") or "").strip().lower()
                     if src_prov in ("agy", "antigravity"):
                         provider = "antigravity"
                     elif src_prov == "fake":
                         provider = "fake"
+                    elif src_prov in ("grok", ""):
+                        provider = "grok"
 
                 # Persist per-task argv under team/ (mirrors fanout workers/*.argv.json)
                 argv_path = tdir / f"{tid}.argv.json"
@@ -3822,6 +3824,7 @@ def start_team(
                             launch_generation=1,
                             dry_run=True,
                             executor=executor_norm,
+                            cwd=rec.get("worktree"),
                         )
                         stamp_execution_on_task(rec, handle)
                     except WorkerLaunchError as exc:
@@ -3900,6 +3903,7 @@ def start_team(
                                 f"Team worker {rec['task_id']} "
                                 f"run={rid} team={tid_plane} goal={goal}"
                             ),
+                            cwd=rec.get("worktree"),
                         )
                         stamp_execution_on_task(rec, handle)
                         if handle.job_id:

@@ -31,9 +31,9 @@ def _prompt(root: Path, text: str = "do the thing") -> Path:
     return p
 
 
-def test_job_provider_registry_accepts_only_fake_and_antigravity() -> None:
-    assert registered_provider_names() == ("fake", "antigravity")
-    for name in ("fake", "antigravity"):
+def test_job_provider_registry_accepts_fake_antigravity_and_grok() -> None:
+    assert registered_provider_names() == ("fake", "antigravity", "grok")
+    for name in ("fake", "antigravity", "grok"):
         adapter, meta = resolve_job_provider(name)
         assert meta.name == name
         assert adapter.name == name
@@ -86,6 +86,9 @@ def test_parent_and_runner_resolve_the_same_job_provider() -> None:
     a2, _ = resolve_job_provider("antigravity")
     b2 = runner_mod.resolve_adapter("antigravity")
     assert a2.name == b2.name == "antigravity"
+    a3, _ = resolve_job_provider("grok")
+    b3 = runner_mod.resolve_adapter("grok")
+    assert a3.name == b3.name == "grok"
 
 
 def test_antigravity_preflight_rejects_missing_binary_before_job_materialization(
@@ -200,6 +203,9 @@ def test_get_provider_meta_exact() -> None:
     assert meta.allow_fake_flags is True
     meta2 = get_provider_meta("antigravity")
     assert meta2.requires_preflight is True
+    meta3 = get_provider_meta("grok")
+    assert meta3.requires_preflight is True
+    assert meta3.allow_fake_flags is False
 
 
 

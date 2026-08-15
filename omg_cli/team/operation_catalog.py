@@ -1,4 +1,4 @@
-"""Versioned Team API operation catalog (schema v1 + v2 + v3 + v4).
+"""Versioned Team API operation catalog (schema v1–v5).
 
 Single source of truth for operation names and metadata. Derived exports
 (``TEAM_API_OPERATIONS``, ``P0_OPERATIONS``, worker ACL sets) must not be
@@ -13,8 +13,10 @@ v2 remains frozen (golden ``team_operation_catalog_v2.json`` — adds
 ``replace-worker``).
 v3 remains frozen (golden ``team_operation_catalog_v3.json`` — adds
 leader-only read-only ``read-presentation-state``).
-Default dispatch / CLI catalog is **v4** (adds leader-only mutating
-``bulk-create-tasks``).
+v4 remains frozen (golden ``team_operation_catalog_v4.json`` — adds
+leader-only mutating ``bulk-create-tasks``).
+Default dispatch / CLI catalog is **v5** (implements ``broadcast`` as N DMs
+and adds host-prompt-queue consume ops).
 """
 
 from __future__ import annotations
@@ -29,8 +31,9 @@ CATALOG_SCHEMA_VERSION_V1 = 1
 CATALOG_SCHEMA_VERSION_V2 = 2
 CATALOG_SCHEMA_VERSION_V3 = 3
 CATALOG_SCHEMA_VERSION_V4 = 4
+CATALOG_SCHEMA_VERSION_V5 = 5
 # Default / active catalog schema (CLI ``omg team api catalog``).
-CATALOG_SCHEMA_VERSION = 4
+CATALOG_SCHEMA_VERSION = 5
 
 _OP_FIELDS = (
     "name",
@@ -375,8 +378,62 @@ TEAM_OPERATION_CATALOG_V4: tuple[TeamOperation, ...] = TEAM_OPERATION_CATALOG_V3
     ),
 )
 
+
+def _with_op(
+    ops: tuple[TeamOperation, ...],
+    name: str,
+    replacement: TeamOperation,
+) -> tuple[TeamOperation, ...]:
+    found = False
+    out: list[TeamOperation] = []
+    for op in ops:
+        if op.name == name:
+            out.append(replacement)
+            found = True
+        else:
+            out.append(op)
+    if not found:
+        raise ValueError(f"catalog replace missed {name!r}")
+    return tuple(out)
+
+
+# Catalog v5 = v4 + implemented broadcast + host prompt-queue consume (#69).
+TEAM_OPERATION_CATALOG_V5: tuple[TeamOperation, ...] = _with_op(
+    TEAM_OPERATION_CATALOG_V4,
+    "broadcast",
+    _op(
+        "broadcast",
+        domain="mailbox",
+        dispatch_state="implemented",
+        mutates_state=True,
+        worker_allowed=False,
+    ),
+) + (
+    _op(
+        "enqueue-host-prompt",
+        domain="queue",
+        dispatch_state="implemented",
+        mutates_state=True,
+        worker_allowed=False,
+    ),
+    _op(
+        "list-host-prompt-queue",
+        domain="queue",
+        dispatch_state="implemented",
+        mutates_state=False,
+        worker_allowed=True,
+    ),
+    _op(
+        "reorder-host-prompt-queue",
+        domain="queue",
+        dispatch_state="implemented",
+        mutates_state=True,
+        worker_allowed=False,
+    ),
+)
+
 # Active catalog alias (default dispatch).
-TEAM_OPERATION_CATALOG = TEAM_OPERATION_CATALOG_V4
+TEAM_OPERATION_CATALOG = TEAM_OPERATION_CATALOG_V5
 
 
 def _validate_catalog(ops: tuple[TeamOperation, ...]) -> None:
@@ -404,20 +461,21 @@ _validate_catalog(TEAM_OPERATION_CATALOG_V1)
 _validate_catalog(TEAM_OPERATION_CATALOG_V2)
 _validate_catalog(TEAM_OPERATION_CATALOG_V3)
 _validate_catalog(TEAM_OPERATION_CATALOG_V4)
+_validate_catalog(TEAM_OPERATION_CATALOG_V5)
 
-# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V4 instead.
+# Derived exports — do not hand-edit; change TEAM_OPERATION_CATALOG_V5 instead.
 TEAM_API_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V4
+    op.name for op in TEAM_OPERATION_CATALOG_V5
 )
 P0_OPERATIONS: tuple[str, ...] = tuple(
-    op.name for op in TEAM_OPERATION_CATALOG_V4 if op.implemented
+    op.name for op in TEAM_OPERATION_CATALOG_V5 if op.implemented
 )
 WORKER_ALLOWED_OPS: frozenset[str] = frozenset(
-    op.name for op in TEAM_OPERATION_CATALOG_V4 if op.implemented and op.worker_allowed
+    op.name for op in TEAM_OPERATION_CATALOG_V5 if op.implemented and op.worker_allowed
 )
 WORKER_DENIED_OPS: frozenset[str] = frozenset(
     op.name
-    for op in TEAM_OPERATION_CATALOG_V4
+    for op in TEAM_OPERATION_CATALOG_V5
     if op.implemented and not op.worker_allowed
 )
 
@@ -429,9 +487,9 @@ def serialize_operation_catalog(
 ) -> dict[str, Any]:
     """Machine-readable catalog document (kind + schema_version + operations)."""
     if operations is None:
-        ops = TEAM_OPERATION_CATALOG_V4
+        ops = TEAM_OPERATION_CATALOG_V5
         version = (
-            CATALOG_SCHEMA_VERSION_V4 if schema_version is None else schema_version
+            CATALOG_SCHEMA_VERSION_V5 if schema_version is None else schema_version
         )
     else:
         ops = operations
@@ -443,8 +501,10 @@ def serialize_operation_catalog(
             version = CATALOG_SCHEMA_VERSION_V2
         elif ops is TEAM_OPERATION_CATALOG_V3:
             version = CATALOG_SCHEMA_VERSION_V3
-        else:
+        elif ops is TEAM_OPERATION_CATALOG_V4:
             version = CATALOG_SCHEMA_VERSION_V4
+        else:
+            version = CATALOG_SCHEMA_VERSION_V5
     return {
         "kind": CATALOG_KIND,
         "schema_version": version,
@@ -478,7 +538,7 @@ def operation_by_name(
     *,
     operations: tuple[TeamOperation, ...] | None = None,
 ) -> TeamOperation | None:
-    ops = TEAM_OPERATION_CATALOG_V4 if operations is None else operations
+    ops = TEAM_OPERATION_CATALOG_V5 if operations is None else operations
     for op in ops:
         if op.name == name:
             return op
@@ -501,6 +561,7 @@ __all__ = [
     "CATALOG_SCHEMA_VERSION_V2",
     "CATALOG_SCHEMA_VERSION_V3",
     "CATALOG_SCHEMA_VERSION_V4",
+    "CATALOG_SCHEMA_VERSION_V5",
     "P0_OPERATIONS",
     "TEAM_API_OPERATIONS",
     "TEAM_OPERATION_CATALOG",
@@ -508,6 +569,7 @@ __all__ = [
     "TEAM_OPERATION_CATALOG_V2",
     "TEAM_OPERATION_CATALOG_V3",
     "TEAM_OPERATION_CATALOG_V4",
+    "TEAM_OPERATION_CATALOG_V5",
     "TeamOperation",
     "WORKER_ALLOWED_OPS",
     "WORKER_DENIED_OPS",

@@ -33,6 +33,7 @@ from omg_cli.jobs.ownership import (
 from omg_cli.jobs.providers import (
     build_request_snapshot,
     preflight_antigravity,
+    preflight_grok,
     resolve_job_provider,
 )
 from omg_cli.jobs.store import (
@@ -182,6 +183,7 @@ def start_job(
     job_id: str | None = None,
     attempt_budget: int = 1,
     team_id: str | None = None,
+    cwd: Path | str | None = None,
 ) -> StartResult:
     """Atomic start: preflight → persist queued→starting before spawn.
 
@@ -194,7 +196,9 @@ def start_job(
     temp path cannot cross-contaminate prompts.
 
     Optional ``team_id`` is stamped onto the immutable Jobs ``request`` so Team
-    resume/bind can fail-closed on foreign jobs (#69 PR4).
+    resume/bind can fail-closed on foreign jobs (#69 PR4). Optional ``cwd`` is
+    the provider working directory (Team worktree); omitted → runner uses the
+    project root.
     """
     provider = (provider or "").strip().lower()
     role = (role or "").strip() or "researcher"
@@ -213,6 +217,21 @@ def start_job(
     request_snapshot: dict[str, Any]
     if provider == "antigravity":
         preflight = preflight_antigravity(
+            output_format=output_format,
+            model=model,
+            effort=effort,
+            mode=mode,
+            timeout_s=provider_timeout_s,
+            sleep_s=sleep_s,
+            fail=fail,
+            large_output=large_output,
+            ignore_sigterm=ignore_sigterm,
+        )
+        request_snapshot = build_request_snapshot(
+            provider, preflight=preflight
+        )
+    elif provider == "grok":
+        preflight = preflight_grok(
             output_format=output_format,
             model=model,
             effort=effort,
@@ -282,6 +301,20 @@ def start_job(
             stamps[key] = val.strip() if isinstance(val, str) else int(val)
         if stamps:
             request_snapshot = {**request_snapshot, **stamps}
+
+    if cwd is not None and provider != "grok-acp-session":
+        cwd_text = str(cwd).strip()
+        if cwd_text:
+            cwd_path = Path(cwd_text).expanduser()
+            if not cwd_path.is_absolute():
+                cwd_path = Path(project_root) / cwd_path
+            cwd_resolved = cwd_path.resolve()
+            if not cwd_resolved.is_dir():
+                raise JobStoreError(
+                    f"cwd is not a directory: {cwd_resolved}",
+                    code="E_JOB_CWD",
+                )
+            request_snapshot = {**request_snapshot, "cwd": str(cwd_resolved)}
 
     if prompt_text is not None and prompt_file is not None:
         raise JobStoreError(

@@ -3,7 +3,7 @@
 Exact-name registry shared by parent ``start_job`` and child ``runner``.
 No aliases, no import-by-user-string, no fallback provider.
 
-Public admission: ``fake`` and ``antigravity`` only.
+Public admission: ``fake``, ``antigravity``, and ``grok``.
 Internal-only: ``grok-acp-session`` (Team ACP sidecar; rejected by public start).
 """
 
@@ -31,7 +31,7 @@ FAKE_ONLY_FLAGS: Final[frozenset[str]] = frozenset(
     {"sleep_s", "fail", "large_output", "ignore_sigterm"}
 )
 
-PUBLIC_PROVIDER_NAMES: Final[tuple[str, ...]] = ("fake", "antigravity")
+PUBLIC_PROVIDER_NAMES: Final[tuple[str, ...]] = ("fake", "antigravity", "grok")
 INTERNAL_PROVIDER_NAMES: Final[tuple[str, ...]] = ("grok-acp-session",)
 ACP_SESSION_PROVIDER: Final[str] = "grok-acp-session"
 
@@ -60,6 +60,12 @@ def _make_antigravity() -> ProviderAdapter:
     return AntigravityProvider()
 
 
+def _make_grok() -> ProviderAdapter:
+    from omg_cli.jobs.grok import GrokJobProvider
+
+    return GrokJobProvider()
+
+
 def _make_acp_session() -> ProviderAdapter:
     from omg_cli.jobs.acp_provider import GrokAcpSessionProvider
 
@@ -80,6 +86,14 @@ _REGISTRY: Final[Mapping[str, JobProviderMeta]] = {
         factory=_make_antigravity,
         allow_fake_flags=False,
         default_output_format=DEFAULT_ANTIGRAVITY_OUTPUT_FORMAT,
+        requires_preflight=True,
+        internal=False,
+    ),
+    "grok": JobProviderMeta(
+        name="grok",
+        factory=_make_grok,
+        allow_fake_flags=False,
+        default_output_format="text",
         requires_preflight=True,
         internal=False,
     ),
@@ -287,10 +301,116 @@ def preflight_antigravity(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class GrokPreflight:
+    """Immutable snapshot produced by successful grok job admission."""
+
+    provider_binary: str
+    provider_version: str
+    provider_compat: str
+    provider_pin_revision: str
+    output_format: str
+    model: str | None
+    effort: str | None
+    mode: str | None
+    timeout_s: float
+    observed_formats: tuple[str, ...]
+
+
+def preflight_grok(
+    *,
+    output_format: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    mode: str | None = None,
+    timeout_s: float | None = None,
+    sleep_s: float | None = None,
+    fail: bool = False,
+    large_output: bool = False,
+    ignore_sigterm: bool = False,
+) -> GrokPreflight:
+    """Fail-closed grok admission before job directory materialization."""
+    if sleep_s is not None or fail or large_output or ignore_sigterm:
+        raise JobStoreError(
+            "fake-only flags (--sleep/--fail/--large-output/--ignore-sigterm) "
+            "are not allowed with provider=grok",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+    if (effort or "").strip() or (mode or "").strip():
+        raise JobStoreError(
+            "grok jobs do not forward --effort/--mode; omit them or pass --model only",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+    adapter, meta = resolve_job_provider("grok")
+    fmt = (output_format or meta.default_output_format).strip().lower()
+    if fmt not in {"text", "json", "stream-json"}:
+        raise JobStoreError(
+            f"unsupported grok output format {fmt!r}",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+    try:
+        binary = adapter.discover_binary()
+    except ProviderBinaryMissing as exc:
+        raise JobStoreError(
+            f"grok binary missing: {exc}",
+            code="E_JOB_PROVIDER_MISSING",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise JobStoreError(
+            f"grok binary discovery failed: {exc}",
+            code="E_JOB_PROVIDER_MISSING",
+        ) from exc
+    if not isinstance(binary, str) or not binary.strip():
+        raise JobStoreError(
+            "grok binary discovery returned empty path",
+            code="E_JOB_PROVIDER_MISSING",
+        )
+    try:
+        caps = adapter.probe_capabilities(binary)
+    except (ProviderProbeError, ProviderVersionError) as exc:
+        raise JobStoreError(
+            f"grok probe failed: {exc}",
+            code="E_JOB_PROVIDER_PROBE",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise JobStoreError(
+            f"grok probe failed: {exc}",
+            code="E_JOB_PROVIDER_PROBE",
+        ) from exc
+    compat = str(getattr(caps, "compat_status", "") or "")
+    if compat != "compatible":
+        raise JobStoreError(
+            f"grok binary incompatible (compat_status={compat!r})",
+            code="E_JOB_PROVIDER_COMPAT",
+        )
+    version = str(getattr(caps, "version", "") or "")
+    timeout = float(timeout_s) if timeout_s is not None else 3600.0
+    if timeout <= 0:
+        raise JobStoreError(
+            "provider timeout must be positive",
+            code="E_JOB_PROVIDER_OPTIONS",
+        )
+    from omg_cli.jobs.grok import PIN_REVISION
+
+    observed = tuple(getattr(caps, "output_formats", ()) or ("text",))
+    return GrokPreflight(
+        provider_binary=str(binary),
+        provider_version=version,
+        provider_compat=compat,
+        provider_pin_revision=PIN_REVISION,
+        output_format=fmt,
+        model=str(model) if model else None,
+        effort=None,
+        mode=None,
+        timeout_s=timeout,
+        observed_formats=tuple(str(x) for x in observed),
+    )
+
+
 def build_request_snapshot(
     provider: str,
     *,
-    preflight: AntigravityPreflight | None = None,
+    preflight: AntigravityPreflight | GrokPreflight | None = None,
     output_format: str | None = None,
     model: str | None = None,
     effort: str | None = None,
@@ -308,6 +428,23 @@ def build_request_snapshot(
         if preflight is None:
             raise JobStoreError(
                 "antigravity request snapshot requires successful preflight",
+                code="E_JOB_PROVIDER",
+            )
+        return {
+            "output_format": preflight.output_format,
+            "model": preflight.model,
+            "effort": preflight.effort,
+            "mode": preflight.mode,
+            "timeout_s": preflight.timeout_s,
+            "provider_binary": preflight.provider_binary,
+            "provider_version": preflight.provider_version,
+            "provider_compat": preflight.provider_compat,
+            "provider_pin_revision": preflight.provider_pin_revision,
+        }
+    if provider == "grok":
+        if preflight is None:
+            raise JobStoreError(
+                "grok request snapshot requires successful preflight",
                 code="E_JOB_PROVIDER",
             )
         return {
@@ -414,6 +551,34 @@ def revalidate_stored_request(provider: str, request: Mapping[str, Any] | None) 
                     code="E_JOB_RETRY_PREFLIGHT",
                 )
         return
+    if provider == "grok":
+        preflight = preflight_grok(
+            output_format=req.get("output_format"),
+            model=req.get("model"),
+            effort=req.get("effort"),
+            mode=req.get("mode"),
+            timeout_s=req.get("timeout_s"),
+        )
+        fresh = build_request_snapshot("grok", preflight=preflight)
+        for key in (
+            "output_format",
+            "model",
+            "effort",
+            "mode",
+            "provider_binary",
+            "provider_version",
+            "provider_compat",
+            "provider_pin_revision",
+        ):
+            stored = req.get(key)
+            now = fresh.get(key)
+            if stored != now:
+                raise JobStoreError(
+                    f"immutable request field {key!r} no longer matches "
+                    f"preflight (stored={stored!r}, now={now!r})",
+                    code="E_JOB_RETRY_PREFLIGHT",
+                )
+        return
     if provider == "fake":
         resolve_job_provider("fake")
         return
@@ -431,10 +596,12 @@ __all__ = [
     "INTERNAL_PROVIDER_NAMES",
     "PUBLIC_PROVIDER_NAMES",
     "AntigravityPreflight",
+    "GrokPreflight",
     "JobProviderMeta",
     "build_request_snapshot",
     "get_provider_meta",
     "preflight_antigravity",
+    "preflight_grok",
     "public_provider_names",
     "public_request_summary",
     "registered_provider_names",

@@ -48,6 +48,7 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V1,
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
+    TEAM_OPERATION_CATALOG_V4,
     catalog_document_json,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, WORKER_ENV_MARKERS, start_team
@@ -346,8 +347,11 @@ def test_catalog_v1_v4_goldens_unchanged() -> None:
         catalog_document_json(operations=TEAM_OPERATION_CATALOG_V3, schema_version=3)
         == GOLDEN_V3.read_text(encoding="utf-8")
     )
-    assert CATALOG_SCHEMA_VERSION == 4
-    assert catalog_document_json() == GOLDEN_V4.read_text(encoding="utf-8")
+    assert CATALOG_SCHEMA_VERSION == 5
+    assert (
+        catalog_document_json(operations=TEAM_OPERATION_CATALOG_V4, schema_version=4)
+        == GOLDEN_V4.read_text(encoding="utf-8")
+    )
 
 
 def test_require_fixture_executor_refuses_live_providers() -> None:
