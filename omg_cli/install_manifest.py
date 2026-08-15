@@ -15,6 +15,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
 SCHEMA = "omg-install-manifest/v1"
@@ -33,6 +34,36 @@ CLASSES = (
 MANAGED_MARKER = "<!-- OMG:MANAGED -->"
 OMG_START = "<!-- OMG:START -->"
 MAX_BACKUP_BYTES = 1_048_576
+STATE_MARKER_TYPE = "state marker"
+RUNTIME_ENABLED_TYPES = frozenset(
+    {
+        "rules",
+        "skill",
+        "agent",
+        "hook",
+        "plugin metadata",
+        "MCP config",
+    }
+)
+OPTIONAL_ARTIFACT_IDS = frozenset({"user.grok.rules", "user.grok.hook"})
+# Exact id set for each (runtime, scope). Optional machine-scoped grok
+# rules/hook rows are extra and are subtracted before this comparison.
+EXPECTED_IDS_BY_RUNTIME_SCOPE = MappingProxyType(
+    {
+        ("grok", "project"): frozenset({"project.agents", "project.gitignore"}),
+        ("antigravity", "project"): frozenset(
+            {"project.ag.projection", "project.gitignore"}
+        ),
+        ("both", "project"): frozenset(
+            {"project.agents", "project.gitignore", "project.ag.projection"}
+        ),
+        ("grok", "user"): frozenset({"user.manifest.marker"}),
+        ("antigravity", "user"): frozenset(
+            {"user.ag.projection", "user.manifest.marker"}
+        ),
+        ("both", "user"): frozenset({"user.ag.projection", "user.manifest.marker"}),
+    }
+)
 
 
 class InstallManifestError(ValueError):
@@ -98,7 +129,10 @@ def classify_bytes(
 
 
 def classify_path(path: Path, *, desired: bytes | None = None) -> str:
+    """Classify a target path. Directories and non-files are foreign, not missing."""
     if path.is_symlink():
+        return "foreign"
+    if path.exists() and not path.is_file():
         return "foreign"
     if not path.is_file():
         return "missing"
@@ -107,6 +141,39 @@ def classify_path(path: Path, *, desired: bytes | None = None) -> str:
     except OSError:
         return "malformed"
     return classify_bytes(desired=desired, actual=actual)
+
+
+def _is_real_directory(path: Path) -> bool:
+    """True when a real directory (not a symlink) occupies the path."""
+    return bool(path.exists() and path.is_dir() and not path.is_symlink())
+
+
+def assert_expected_artifact_ids(
+    runtime: str, scope: str, rows: list[Mapping[str, Any]]
+) -> None:
+    """Fail-closed: desired ids must match the frozen expected set."""
+    ids = [str(row.get("id") or "") for row in rows]
+    if any(not ident for ident in ids):
+        raise InstallManifestError("E_IDS", "artifact row missing id")
+    if len(ids) != len(set(ids)):
+        raise InstallManifestError("E_IDS", "duplicate artifact ids")
+    expected = EXPECTED_IDS_BY_RUNTIME_SCOPE.get((runtime, scope))
+    if expected is None:
+        raise InstallManifestError(
+            "E_IDS", f"no expected artifact ids for runtime={runtime!r} scope={scope!r}"
+        )
+    core = frozenset(ids) - OPTIONAL_ARTIFACT_IDS
+    if core != expected:
+        raise InstallManifestError(
+            "E_IDS",
+            f"desired artifact ids {sorted(core)} != expected {sorted(expected)}",
+        )
+    extras = frozenset(ids) & OPTIONAL_ARTIFACT_IDS
+    if extras and not (scope == "project" and runtime in {"grok", "both"}):
+        raise InstallManifestError(
+            "E_IDS",
+            f"optional artifact ids not allowed for runtime={runtime!r} scope={scope!r}",
+        )
 
 
 def _install_root(scope: str, project_root: Path | None) -> Path:
@@ -144,6 +211,38 @@ def _assert_parents_not_symlink(path: Path, root: Path) -> None:
         if parent == current:
             raise InstallManifestError("E_PATH", f"target escapes install root: {path}")
         current = parent
+
+
+def _machine_grok_home() -> Path:
+    from omg_cli.hook_install import grok_home as hook_grok_home
+
+    return hook_grok_home()
+
+
+def _containment_roots(
+    *,
+    scope: str,
+    project_root: Path | None,
+    runtime: str,
+) -> tuple[Path, ...]:
+    roots = [_install_root(scope, project_root)]
+    if scope == "project" and runtime in {"grok", "both"}:
+        roots.append(_machine_grok_home())
+    return tuple(roots)
+
+
+def _root_for_path(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    for root in roots:
+        if _lexical_under(path, root):
+            return root
+    return None
+
+
+def _hook_companion_paths(json_path: Path) -> tuple[Path, Path]:
+    from omg_cli.hook_install import STANDALONE_BASENAME, WRAPPER_BASENAME
+
+    parent = json_path.parent
+    return (parent / STANDALONE_BASENAME, parent / WRAPPER_BASENAME)
 
 
 def _mkdir(path: Path) -> None:
@@ -220,12 +319,26 @@ def _seal_observed_identity(row: dict[str, Any], target: Path) -> None:
         row["classification"] = "exact"
 
 
+def _seal_written_identity(row: dict[str, Any], target: Path) -> None:
+    """Record the bytes we just merged/installed (gitignore has no OMG:START)."""
+    if target.is_symlink() or not target.is_file():
+        return
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return
+    row["content_hash"] = _sha256_bytes(data)
+    row["classification"] = "exact"
+
+
 def desired_artifacts(
     *,
     runtime: str,
     scope: str,
     project_root: Path | None,
     plugin: Path | None = None,
+    install_rules: bool = False,
+    install_hook: bool = False,
 ) -> list[dict[str, Any]]:
     if runtime not in RUNTIMES:
         raise InstallManifestError("E_RUNTIME", f"runtime must be one of {RUNTIMES}")
@@ -266,6 +379,56 @@ def desired_artifacts(
                     "note": "static projection copy; not live AG evidence",
                 }
             )
+        rows.append(
+            {
+                "id": "project.gitignore",
+                "runtime": runtime,
+                "scope": "project",
+                "type": "wrapper",
+                "target": str(base / ".gitignore"),
+                "ownership": "OMG-managed",
+                "enabled": True,
+                "mergeable": True,
+                "note": "generic .omg gitignore init; not live runtime evidence",
+            }
+        )
+        if "grok" in runtimes:
+            machine_home = _machine_grok_home()
+            if install_rules:
+                from omg_cli.guidance import rules_file_path
+
+                rows.append(
+                    {
+                        "id": "user.grok.rules",
+                        "runtime": "grok",
+                        "scope": "user",
+                        "type": "rules",
+                        "target": str(rules_file_path(home=machine_home)),
+                        "ownership": "OMG-managed",
+                        "enabled": True,
+                        "mergeable": True,
+                        "machine_scoped": True,
+                        "note": "user-machine grok rules; not live verification",
+                    }
+                )
+            if install_hook:
+                from omg_cli.hook_install import HOOK_JSON_NAME
+
+                hook_json = machine_home / "hooks" / HOOK_JSON_NAME
+                rows.append(
+                    {
+                        "id": "user.grok.hook",
+                        "runtime": "grok",
+                        "scope": "user",
+                        "type": "hook",
+                        "target": str(hook_json),
+                        "ownership": "OMG-managed",
+                        "enabled": True,
+                        "mergeable": True,
+                        "machine_scoped": True,
+                        "note": "user-machine grok hook; not live verification",
+                    }
+                )
     else:
         dest = user_store() / "projections" / "antigravity" / "README.md"
         if "antigravity" in runtimes:
@@ -287,13 +450,14 @@ def desired_artifacts(
                 "id": "user.manifest.marker",
                 "runtime": "grok" if "grok" in runtimes else runtime,
                 "scope": "user",
-                "type": "state marker",
+                "type": STATE_MARKER_TYPE,
                 "target": str(user_store() / "README.md"),
                 "ownership": "OMG-managed",
                 "enabled": True,
                 "mergeable": False,
             }
         )
+    assert_expected_artifact_ids(runtime, scope, rows)
     for row in rows:
         target = Path(row["target"])
         body = _desired_body(row, plugin=plugin)
@@ -304,8 +468,13 @@ def desired_artifacts(
 
 def _desired_body(row: Mapping[str, Any], *, plugin: Path) -> bytes | None:
     ident = row["id"]
-    if ident == "project.agents":
-        return None  # mergeable; existing setup_cmd owns the bytes
+    if ident in {
+        "project.agents",
+        "project.gitignore",
+        "user.grok.rules",
+        "user.grok.hook",
+    }:
+        return None  # merge/install inside the transaction
     if ident.endswith("ag.projection"):
         src = plugin / "docs" / "parity" / "projections" / "antigravity"
         banner = (
@@ -334,7 +503,7 @@ def _writable_restore_paths(
     project_root: Path | None,
     plugin: Path | None = None,
 ) -> set[Path]:
-    """Paths this transaction may create or overwrite (not mergeable AGENTS.md)."""
+    """Paths this transaction may create or overwrite, including mergeable files."""
     plugin = plugin or plugin_root()
     allowed: set[Path] = set()
     for row in desired_artifacts(
@@ -342,10 +511,15 @@ def _writable_restore_paths(
         scope=scope,
         project_root=project_root,
         plugin=plugin,
+        install_rules=True,
+        install_hook=True,
     ):
-        if _desired_body(row, plugin=plugin) is None:
-            continue
-        allowed.add(Path(row["target"]).absolute())
+        target = Path(row["target"]).absolute()
+        allowed.add(target)
+        if row["id"] == "user.grok.hook":
+            py_path, wrapper_path = _hook_companion_paths(target)
+            allowed.add(py_path.absolute())
+            allowed.add(wrapper_path.absolute())
     if scope == "user":
         allowed.add(user_manifest_path().absolute())
     elif project_root is not None:
@@ -361,12 +535,16 @@ def build_manifest(
     transaction_id: str,
     plugin: Path | None = None,
     source_version: str | None = None,
+    install_rules: bool = False,
+    install_hook: bool = False,
 ) -> dict[str, Any]:
     artifacts = desired_artifacts(
         runtime=runtime,
         scope=scope,
         project_root=project_root,
         plugin=plugin,
+        install_rules=install_rules,
+        install_hook=install_hook,
     )
     return {
         "schema": SCHEMA,
@@ -422,11 +600,6 @@ def rollback_interrupted(
             state = fallback
     if state.get("status") == "committed":
         return {"ok": True, "rolled_back": False}
-    try:
-        install_root = _install_root(scope, project_root)
-    except InstallManifestError:
-        marker.unlink(missing_ok=True)
-        return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
     tx_id = str(state.get("transaction_id") or "")
     runtime = str(state.get("runtime") or "")
     backups = Path(state.get("backup_dir") or "")
@@ -445,6 +618,13 @@ def rollback_interrupted(
             "rolled_back": False,
             "note": "tx marker backup_dir rejected",
         }
+    try:
+        roots = _containment_roots(
+            scope=scope, project_root=project_root, runtime=runtime
+        )
+    except InstallManifestError:
+        marker.unlink(missing_ok=True)
+        return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
     allowed_targets = _writable_restore_paths(
         runtime=runtime,
         scope=scope,
@@ -458,12 +638,13 @@ def rollback_interrupted(
         except (OSError, json.JSONDecodeError):
             continue
         target = Path(meta.get("target") or "")
-        if not _lexical_under(target, install_root):
+        contain = _root_for_path(target, roots)
+        if contain is None:
             continue
         if target.absolute() not in allowed_targets:
             continue
         try:
-            _assert_parents_not_symlink(target, install_root)
+            _assert_parents_not_symlink(target, contain)
         except InstallManifestError:
             continue
         kind = meta.get("kind")
@@ -499,12 +680,13 @@ def rollback_interrupted(
         except (OSError, json.JSONDecodeError):
             continue
         target = Path(meta.get("target") or "")
-        if not _lexical_under(target, install_root):
+        contain = _root_for_path(target, roots)
+        if contain is None:
             continue
         if target.absolute() not in allowed_targets:
             continue
         try:
-            _assert_parents_not_symlink(target, install_root)
+            _assert_parents_not_symlink(target, contain)
         except InstallManifestError:
             continue
         if any(row == str(target) for row in restored):
@@ -522,6 +704,107 @@ def rollback_interrupted(
     }
 
 
+def _ensure_project_omg_dirs(root: Path) -> None:
+    """Create the project ``.omg`` layout. POSIX uses confined mkdir; Windows falls back."""
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.state import OMG_PROJECT_SUBDIRS, OMG_RUN_STATE_SUBDIRS, ensure_omg_dirs
+
+    try:
+        ensure_omg_dirs(root)
+        return
+    except ContractPathError:
+        pass
+    for sub in (*OMG_PROJECT_SUBDIRS, *OMG_RUN_STATE_SUBDIRS):
+        _mkdir(Path(root) / ".omg" / sub)
+
+
+def _merge_kind(row: Mapping[str, Any]) -> str | None:
+    ident = str(row.get("id") or "")
+    if ident == "project.agents":
+        return "agents"
+    if ident == "project.gitignore":
+        return "gitignore"
+    if ident == "user.grok.rules":
+        return "rules"
+    if ident == "user.grok.hook":
+        return "hook"
+    return None
+
+
+def _skip_foreign_or_malformed(
+    row: dict[str, Any],
+    target: Path,
+    klass: str,
+    skipped: list[dict[str, str]],
+) -> None:
+    skipped.append({"target": str(target), "class": klass})
+    row["content_hash"] = None
+    row["enabled"] = False
+    if klass in {"user_owned", "user_owned_conflict", "foreign"}:
+        row["ownership"] = "user-owned" if str(klass).startswith("user") else "foreign"
+    row["classification"] = klass
+
+
+def _apply_merge_or_install(
+    *,
+    kind: str,
+    row: dict[str, Any],
+    target: Path,
+    project_root: Path | None,
+    backup_dir: Path,
+) -> str:
+    """Backup, mutate, seal. Returns a short action label for CLI output."""
+    ident = str(row["id"])
+    _mkdir(target.parent)
+    if kind == "hook":
+        py_path, wrapper_path = _hook_companion_paths(target)
+        _backup_existing(backup_dir, ident, target)
+        _backup_existing(backup_dir, f"{ident}.py", py_path)
+        _backup_existing(backup_dir, f"{ident}.wrapper", wrapper_path)
+    else:
+        _backup_existing(backup_dir, ident, target)
+
+    if kind == "agents":
+        from omg_cli.setup_fragments import merge_agents_fragment
+
+        if project_root is None:
+            raise InstallManifestError("E_SCOPE", "project.agents requires a project root")
+        action = merge_agents_fragment(Path(project_root))
+        label = f"AGENTS.md: {action}"
+    elif kind == "gitignore":
+        from omg_cli.setup_fragments import merge_gitignore_fragment
+
+        if project_root is None:
+            raise InstallManifestError(
+                "E_SCOPE", "project.gitignore requires a project root"
+            )
+        action = merge_gitignore_fragment(Path(project_root))
+        label = f".gitignore: {action}"
+    elif kind == "rules":
+        from omg_cli.guidance import GuidanceError, install_global_rules
+
+        try:
+            rpath, raction = install_global_rules(home=_machine_grok_home())
+        except GuidanceError as exc:
+            raise InstallManifestError("E_TX", f"global rules install failed: {exc}") from exc
+        label = f"{rpath}: {raction}"
+    elif kind == "hook":
+        from omg_cli.hook_install import install_global_hook
+
+        hpath, haction = install_global_hook(home=_machine_grok_home())
+        if haction.startswith("failed") or haction in {
+            "quarantined-no-source",
+            "skipped-no-source",
+        }:
+            raise InstallManifestError("E_TX", f"global hook install failed: {haction}")
+        label = f"{hpath}: {haction}"
+    else:
+        raise InstallManifestError("E_TX", f"unknown merge kind {kind!r}")
+    _seal_written_identity(row, target)
+    row["action"] = label
+    return label
+
+
 def apply_manifest(
     manifest: dict[str, Any],
     *,
@@ -535,6 +818,9 @@ def apply_manifest(
     runtime = manifest["runtime"]
     tx_id = manifest["transaction_id"]
     install_root = _install_root(scope, project_root)
+    roots = _containment_roots(
+        scope=scope, project_root=project_root, runtime=runtime
+    )
     rollback_interrupted(scope, project_root)
     tx_root = _tx_dir(scope, project_root)
     backup_dir = tx_root / tx_id
@@ -556,33 +842,68 @@ def apply_manifest(
     )
     written: list[str] = []
     skipped: list[dict[str, str]] = []
+    actions: list[str] = []
     try:
+        if scope == "project" and project_root is not None:
+            _ensure_project_omg_dirs(Path(project_root))
         for row in manifest["artifacts"]:
             target = Path(row["target"])
             body = _desired_body(row, plugin=plugin)
+            klass = classify_path(target, desired=body)
+            row["classification"] = klass
+            contain = _root_for_path(target, roots)
+            if contain is None:
+                raise InstallManifestError(
+                    "E_PATH", f"target escapes install roots: {target}"
+                )
+            merge_kind = _merge_kind(row)
+            if _is_real_directory(target):
+                if not force:
+                    _skip_foreign_or_malformed(row, target, "foreign", skipped)
+                    continue
+                raise InstallManifestError(
+                    "E_TX",
+                    f"refusing to write onto directory occupying managed path: {target}",
+                )
+            if merge_kind is not None:
+                if klass == "foreign" and not force:
+                    _skip_foreign_or_malformed(row, target, klass, skipped)
+                    continue
+                if klass == "malformed" and not force:
+                    _skip_foreign_or_malformed(row, target, klass, skipped)
+                    continue
+                _assert_parents_not_symlink(target, contain)
+                label = _apply_merge_or_install(
+                    kind=merge_kind,
+                    row=row,
+                    target=target,
+                    project_root=project_root,
+                    backup_dir=backup_dir,
+                )
+                actions.append(label)
+                if not str(label).endswith(": unchanged"):
+                    written.append(str(target))
+                continue
             if body is None:
                 _seal_observed_identity(row, target)
                 continue
-            klass = classify_path(target, desired=body)
-            row["classification"] = klass
             if klass in {"user_owned", "user_owned_conflict", "foreign"} and not force:
-                skipped.append({"target": str(target), "class": klass})
-                row["content_hash"] = None
-                row["enabled"] = False
-                row["ownership"] = (
-                    "user-owned" if str(klass).startswith("user") else "foreign"
-                )
+                _skip_foreign_or_malformed(row, target, klass, skipped)
                 continue
             if klass == "malformed" and not force:
-                skipped.append({"target": str(target), "class": klass})
-                row["content_hash"] = None
-                row["enabled"] = False
+                _skip_foreign_or_malformed(row, target, klass, skipped)
                 continue
-            _assert_parents_not_symlink(target, install_root)
+            if _is_real_directory(target):
+                raise InstallManifestError(
+                    "E_TX",
+                    f"refusing to write onto directory occupying managed path: {target}",
+                )
+            _assert_parents_not_symlink(target, contain)
             _mkdir(target.parent)
             _backup_existing(backup_dir, str(row["id"]), target)
             target.write_bytes(body)
             written.append(str(target))
+            actions.append(f"{row['id']}: written")
         dest = (
             user_manifest_path()
             if scope == "user"
@@ -609,6 +930,7 @@ def apply_manifest(
             "transaction_id": tx_id,
             "written": written,
             "skipped": skipped,
+            "actions": actions,
             "manifest": str(dest),
             "note": "manifest written; not live-verified; not agy discovery",
         }
@@ -624,6 +946,8 @@ def apply_manifest(
                 "scope": scope,
             },
         )
+        if isinstance(exc, InstallManifestError) and exc.code == "E_TX":
+            raise
         raise InstallManifestError(
             "E_TX", f"install transaction rolled back ({type(exc).__name__})"
         ) from exc
@@ -736,20 +1060,38 @@ def inspect_install_manifest(
         }
     drift = []
     plugin = plugin_root()
+    klasses: dict[str, str] = {}
+    inspect_runtime = str(raw.get("runtime") or "")
+    try:
+        inspect_roots = _containment_roots(
+            scope=scope,
+            project_root=project_root if scope == "project" else None,
+            runtime=inspect_runtime if inspect_runtime in RUNTIMES else "antigravity",
+        )
+    except InstallManifestError:
+        inspect_roots = (inspect_root,) if inspect_root is not None else tuple()
     for row in rows:
         if row.get("enabled") is False:
             continue
         target = Path(row.get("target") or "")
         claimed = row.get("content_hash")
-        if inspect_root is not None:
-            try:
-                _assert_parents_not_symlink(target, inspect_root)
-            except InstallManifestError:
-                drift.append(
-                    {"id": row.get("id"), "class": "foreign", "target": str(target)}
-                )
-                continue
-        if target.is_symlink():
+        ident = str(row.get("id") or "")
+        contain = _root_for_path(target, inspect_roots)
+        if contain is None:
+            klasses[ident] = "foreign"
+            drift.append(
+                {"id": row.get("id"), "class": "foreign", "target": str(target)}
+            )
+            continue
+        try:
+            _assert_parents_not_symlink(target, contain)
+        except InstallManifestError:
+            klasses[ident] = "foreign"
+            drift.append(
+                {"id": row.get("id"), "class": "foreign", "target": str(target)}
+            )
+            continue
+        if target.is_symlink() or _is_real_directory(target):
             klass = "foreign"
         elif isinstance(claimed, str) and claimed:
             if not target.is_file():
@@ -764,15 +1106,35 @@ def inspect_install_manifest(
         else:
             body = _desired_body(row, plugin=plugin)
             klass = classify_path(target, desired=body)
+        klasses[ident] = klass
         if klass in {"stale", "missing", "malformed", "foreign"}:
             drift.append({"id": row.get("id"), "class": klass, "target": str(target)})
     enabled_rows = [row for row in rows if row.get("enabled") is not False]
+    enabled_markers = [
+        str(row["id"])
+        for row in enabled_rows
+        if row.get("type") == STATE_MARKER_TYPE
+    ]
+    enabled_runtime = [
+        str(row["id"])
+        for row in enabled_rows
+        if row.get("type") != STATE_MARKER_TYPE
+    ]
+    runtime_exact = False
+    for row in enabled_rows:
+        if row.get("type") not in RUNTIME_ENABLED_TYPES:
+            continue
+        if klasses.get(str(row.get("id") or "")) == "exact":
+            runtime_exact = True
+            break
     return {
         "ok": not drift,
         "configured": True,
         "installed": bool(enabled_rows),
-        "enabled": bool(enabled_rows),
-        "loadable": bool(enabled_rows),
+        "enabled": runtime_exact,
+        "enabled_runtime": enabled_runtime,
+        "enabled_markers": enabled_markers,
+        "loadable": runtime_exact,
         "observed": False,
         "healthy": False,
         "verified": False,
@@ -836,11 +1198,16 @@ def run_scoped_setup(
     force: bool = False,
     source_version: str | None = None,
     plugin: Path | None = None,
+    install_rules: bool = False,
+    install_hook: bool = False,
 ) -> dict[str, Any]:
     if scope == "project":
         if project_root is None:
             raise InstallManifestError("E_SCOPE", "project scope requires a project root")
         refuse_home_project(Path(project_root), here=here)
+    if scope != "project" or runtime not in {"grok", "both"}:
+        install_rules = False
+        install_hook = False
     tx_id = uuid.uuid4().hex
     manifest = build_manifest(
         runtime=runtime,
@@ -849,19 +1216,25 @@ def run_scoped_setup(
         transaction_id=tx_id,
         plugin=plugin,
         source_version=source_version,
+        install_rules=install_rules,
+        install_hook=install_hook,
     )
     return apply_manifest(manifest, project_root=project_root, force=force, plugin=plugin)
 
 
 __all__ = [
     "CLASSES",
+    "EXPECTED_IDS_BY_RUNTIME_SCOPE",
+    "OPTIONAL_ARTIFACT_IDS",
     "InstallManifestError",
     "SCHEMA",
     "apply_manifest",
+    "assert_expected_artifact_ids",
     "build_manifest",
     "classify_auth",
     "classify_bytes",
     "classify_path",
+    "desired_artifacts",
     "inspect_install_manifest",
     "refuse_home_project",
     "rollback_interrupted",
