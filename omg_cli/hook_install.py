@@ -116,6 +116,29 @@ def _looks_like_version_manager_shim(path: str) -> bool:
     return False
 
 
+def _wrapper_embedded_interpreter(wrapper_text: str | bytes | None) -> str | None:
+    """Return argv0 from a ``render_wrapper`` script, or None if unreadable."""
+    if wrapper_text is None:
+        return None
+    if isinstance(wrapper_text, bytes):
+        try:
+            text = wrapper_text.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        text = wrapper_text
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(stripped)
+        except ValueError:
+            return None
+        return parts[0] if parts else None
+    return None
+
+
 def python3_executable() -> str:
     """Absolute python3 grok's empty hook PATH may not find as ``python3``.
 
@@ -428,8 +451,17 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         # Publish failed → grok must not keep discovering JSON that points at a
         # missing/broken wrapper. Canonical JSON is still dangerous after we
         # started mutating live executables (replace/wrapper write). A staged
-        # smoke failure before replace leaves the live hook untouched.
-        if os.path.lexists(json_path) and (noncanonical or live_mutated):
+        # smoke failure before replace leaves the live hook untouched — unless
+        # that live wrapper already embeds a pyenv/asdf shim we refused to
+        # persist (cwd-dependent fail-open). Then quarantine so setup failure
+        # cannot leave the shim active.
+        prior_interp = _wrapper_embedded_interpreter(prior_wrapper)
+        shim_live = bool(
+            prior_interp and _looks_like_version_manager_shim(prior_interp)
+        )
+        if os.path.lexists(json_path) and (
+            noncanonical or live_mutated or shim_live
+        ):
             _dest, removed = _quarantine(json_path)
             if not removed:
                 return json_path, "failed:QuarantineLeftActive"

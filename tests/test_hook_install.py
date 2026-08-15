@@ -846,6 +846,41 @@ def test_python3_executable_rejects_pyenv_asdf_shims(tmp_path, monkeypatch):
     assert hi._looks_like_version_manager_shim("/usr/bin/python3") is False
 
 
+def test_install_quarantines_shim_wrapper_when_durable_python_missing(
+    tmp_path, monkeypatch
+):
+    """Setup failure must not leave a pyenv/asdf shim wrapper + active JSON."""
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hooks = gh / "hooks"
+    hooks.mkdir(parents=True)
+    shim = tmp_path / ".pyenv" / "shims" / "python3"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    installed_py = hooks / hi.STANDALONE_BASENAME
+    installed_py.write_bytes(STANDALONE.read_bytes())
+    installed_py.chmod(0o755)
+    wrapper = hooks / hi.WRAPPER_BASENAME
+    wrapper.write_text(
+        hi.render_wrapper(installed_py, python3=str(shim)),
+        encoding="utf-8",
+        newline="\n",
+    )
+    wrapper.chmod(0o755)
+    json_path = hooks / hi.HOOK_JSON_NAME
+    json_path.write_text(hi.render_hook_json(installed_py), encoding="utf-8", newline="\n")
+    monkeypatch.setattr(hi, "python3_executable", lambda: str(tmp_path / "missing-python3"))
+
+    _, action = hi.install_global_hook(home=gh)
+    assert action.startswith("failed:"), action
+    assert not json_path.is_file()
+    names = os.listdir(hooks)
+    assert not any(n.endswith(".json") for n in names)
+    assert any(n.startswith("omg-pretool-deny.broken-") for n in names)
+
+
 def test_python3_executable_prefers_durable_system_path(monkeypatch, tmp_path):
     """Install/doctor must not pin the caller's venv python3."""
     from omg_cli import hook_install as hi
