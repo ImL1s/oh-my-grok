@@ -793,6 +793,35 @@ def test_capture_redacts_split_flag_and_stderr(tmp_path: Path, capsys) -> None:
     )
 
 
+def test_capture_redacts_target_query_secret(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    secret = "supersecret-target-token"
+    target = f"https://example.test/page?token={secret}"
+    config = _compat_cfg(
+        capture={
+            "command": [
+                sys.executable,
+                str(FIXTURES / "fake_capture.py"),
+            ],
+            "target": target,
+            "readiness": "explicit",
+        }
+    )
+    cfg = _write_config(tmp_path, config)
+    rc = main(_argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "redact3"))
+    assert rc == 0
+    payload = _out(capsys)
+    dumped = json.dumps(payload)
+    assert secret not in dumped
+    capture_json = tmp_path / ".omg" / "artifacts" / "visual" / "redact3" / "capture.json"
+    body = capture_json.read_text(encoding="utf-8")
+    assert secret not in body
+    persisted = payload["result"]["target"]
+    assert persisted is not None
+    assert secret not in persisted
+    assert "[REDACTED]" in persisted
+
+
 def test_verdict_missing_image_is_path_error(tmp_path: Path, capsys) -> None:
     _seed(tmp_path)
     cfg = _write_config(tmp_path, _compat_cfg())

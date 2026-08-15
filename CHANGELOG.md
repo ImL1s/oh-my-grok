@@ -80,7 +80,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (`E_VISUAL_REVIEWER` if editor==reviewer or reviewer is read-write).
   Overlay sidecars are **descriptor-only** (masks + byte-identity); this
   slice does **not** decode pixels and does **not** call an AG vision model.
-  Capture argv redacts the value after sensitive flags (`--token secret`)
+  Capture argv redacts the value after sensitive flags (`--token secret`),
+  redacts credentials in persisted `capture.target` (query tokens),
   and redacts bounded stderr before it is persisted. Visual Ralph is a bounded evidence loop (repair prompt artifact, no agent
   spawn, no `verified` stamp). Hermetic: `tests/test_visual_cli.py`. Refs #75
   (does not close — no live screenshot smoke / no AG vision model).

@@ -517,7 +517,9 @@ def diagnose_capture_source(
         "detail": f"source={source} (playwright not required)",
         "playwright_required": False,
         "tool": Path(command[0]).name,
-        "target": capture.get("target") if isinstance(capture, dict) else None,
+        "target": _redact_capture_target(
+            capture.get("target") if isinstance(capture, dict) else None
+        ),
         "readiness": capture.get("readiness") if isinstance(capture, dict) else loaded.get("readiness"),
     }
 
@@ -669,6 +671,16 @@ def _redact_capture_error(raw: str | None) -> str | None:
     return text
 
 
+def _redact_capture_target(target: Any) -> Any:
+    """Redact credentials in persisted capture targets; keep None as None."""
+
+    if target is None:
+        return None
+    if isinstance(target, str):
+        return redact_text(target)
+    return redact_text(str(target))
+
+
 def execute_capture_command(
     argv: Sequence[str],
     *,
@@ -757,7 +769,7 @@ def run_capture(
         "source": diagnosis["source"],
         "command": redact_argv(diagnosis.get("command")),
         "tool": diagnosis.get("tool"),
-        "target": target,
+        "target": _redact_capture_target(target),
         "readiness": readiness or "unspecified",
         "timestamp": timestamp,
         "pixel_decode": False,
