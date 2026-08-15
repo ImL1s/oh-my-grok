@@ -20,6 +20,7 @@ from omg_cli.host_capabilities import (
     ADVERTISED_UNKNOWN,
     CURRENT_VERSION,
     HOST_TIER_MEDLEY,
+    STATES,
     HostCapabilitySnapshot,
     negotiate,
     stock_grok_snapshot,
@@ -152,13 +153,8 @@ def load_inspect_document(
             "inspect host must be 'medley'",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    caps = payload.get("capabilities") or []
-    receipts = payload.get("receipts") or []
-    if not isinstance(caps, list) or not isinstance(receipts, list):
-        raise MedleyInspectError(
-            "capabilities and receipts must be arrays",
-            code="E_MEDLEY_INSPECT_SCHEMA",
-        )
+    caps = _json_array_field(payload, "capabilities")
+    receipts = _json_array_field(payload, "receipts")
     cap_rows: list[dict[str, Any]] = []
     seen_caps: dict[str, str] = {}
     for item in caps:
@@ -172,6 +168,11 @@ def load_inspect_document(
         if not cap_id or not state:
             raise MedleyInspectError(
                 "capability row needs capability_id and state",
+                code="E_MEDLEY_INSPECT_SCHEMA",
+            )
+        if state not in STATES:
+            raise MedleyInspectError(
+                f"unrecognized capability state {state!r}",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
         if cap_id in seen_caps:
@@ -265,6 +266,7 @@ def receipt_for_policy(
     if doc is None:
         return None
     want_digest = str(policy_digest or "").strip()
+    matches: list[dict[str, Any]] = []
     for row in doc.receipts:
         consumer = str(
             row.get("consumerPolicyId")
@@ -285,8 +287,14 @@ def receipt_for_policy(
         if want_digest:
             if not row_digest or row_digest != want_digest:
                 continue
-        return dict(row)
-    return None
+        matches.append(dict(row))
+    if not matches:
+        return None
+    best_attempt = max(_receipt_attempt(row) for row in matches)
+    top = [row for row in matches if _receipt_attempt(row) == best_attempt]
+    if len(top) != 1:
+        return None
+    return top[0]
 
 
 def apply_receipt_to_view_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -306,6 +314,25 @@ def apply_receipt_to_view_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "route_receipt_digest": str(digest).strip() if digest else None,
         "attempt": int(attempt) if isinstance(attempt, int) else None,
     }
+
+
+def _json_array_field(payload: Mapping[str, Any], key: str) -> list[Any]:
+    if key not in payload:
+        return []
+    value = payload[key]
+    if not isinstance(value, list):
+        raise MedleyInspectError(
+            f"{key} must be an array",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    return value
+
+
+def _receipt_attempt(row: Mapping[str, Any]) -> int:
+    attempt = row.get("attempt")
+    if type(attempt) is not int:
+        return 0
+    return attempt
 
 
 def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:

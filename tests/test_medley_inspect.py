@@ -291,3 +291,85 @@ def test_duplicate_capability_rows_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(MedleyInspectError) as exc:
         resolve_host_snapshot(inspect_path=inspect)
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_present_non_array_capabilities_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(tmp_path / "obj.json", capabilities={})
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_present_null_receipts_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(tmp_path / "null.json", receipts=None)
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_unrecognized_capability_state_is_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "state.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "available",
+                "version": "v1",
+            }
+        ],
+        receipts=[],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_receipt_for_policy_selects_highest_attempt(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "attempts.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "consumer_policy_id": "verifier.default",
+                "selected_catalog_id": "review-primary-example",
+                "route_digest": "a" * 64,
+                "attempt": 1,
+            },
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "consumer_policy_id": "verifier.default",
+                "selected_catalog_id": "review-fallback-example",
+                "route_digest": "b" * 64,
+                "attempt": 2,
+            },
+        ],
+    )
+    _snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    rec = receipt_for_policy(doc, policy_id="verifier.default")
+    assert rec is not None
+    assert rec["attempt"] == 2
+    assert rec["selected_catalog_id"] == "review-fallback-example"
+
+
+def test_receipt_for_policy_skips_tied_attempts(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "tied.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "consumer_policy_id": "verifier.default",
+                "selected_catalog_id": "review-primary-example",
+                "route_digest": "a" * 64,
+                "attempt": 2,
+            },
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "consumer_policy_id": "verifier.default",
+                "selected_catalog_id": "review-fallback-example",
+                "route_digest": "b" * 64,
+                "attempt": 2,
+            },
+        ],
+    )
+    _snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert receipt_for_policy(doc, policy_id="verifier.default") is None
