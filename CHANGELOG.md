@@ -82,6 +82,17 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `docs/parity/projections/antigravity/mcp/` are **not** an installed AG
   plugin and **not** live AG evidence. Does not set `verified`. Refs #73
   (does not close).
+- **#73 tools sidecar (follow-up):** Discover cargo `ast-grep` (identity-checked;
+  ignore shadow-utils `sg`). `--lsp-command` no longer swallows server flags —
+  pass them after `--` (e.g. `-- --stdio`). `code_action` sends the required
+  LSP `range`. Disk edits after `didOpen` send `textDocument/didChange`.
+  Minimal **local** CodeGraph import/symbol indexer
+  (`omg tools codegraph index`; not SCIP; shared indexes are not
+  branch-accurate on dirty worktrees). MCP `codegraph.index` requires
+  `capability_mode=read-write`. Network research still has no provider.
+  Doctor inventory never marks a detected language server `ready` until a
+  session is actually started. Not live Antigravity MCP. Does not set
+  `verified`. Refs #73 (does not close).
 - **#72 lifecycle bus (journal + allowlist):** in-process dispatcher now
   fail-closes registry load when `host_hook` is outside the event allowlist
   or when bundled security ids (`omg.pretool.deny`, `omg.stop.gate`,

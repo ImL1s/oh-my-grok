@@ -3,9 +3,8 @@
 English. **Code:** [`omg_cli/tools_sidecar.py`](../omg_cli/tools_sidecar.py)
 · CLI: `omg tools doctor|serve|lsp|ast|codegraph|research`
 
-This is a **first cut** of [#73](https://github.com/ImL1s/oh-my-grok/issues/73).
-It is an **OMG-owned sidecar**, not Grok-native LSP and not a live
-Antigravity MCP install.
+This is an **OMG-owned sidecar** for [#73](https://github.com/ImL1s/oh-my-grok/issues/73).
+It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 
 ## Honesty
 
@@ -13,25 +12,56 @@ Antigravity MCP install.
 |---------|------------|
 | `omg lsp status\|validate` | Unchanged host-owned `.lsp.json` probe. Semantic ops stay `E_LSP_HOST_OWNED`. |
 | `omg mcp-server` | Unchanged focused workflow MCP. `lsp.*` names remain **forbidden**. |
-| `omg tools …` | New sidecar. Semantic LSP talks to an explicit transport (`--fake-lsp` or `--lsp-command`). Missing ast-grep is **blocked**, not faked. |
+| `omg tools …` | Sidecar. Semantic LSP talks to an explicit transport (`--fake-lsp` or `--lsp-command`). Missing ast-grep is **blocked**, not faked. |
+
+- Detected language servers (for example `rust-analyzer` on PATH) are **not** `ready` until a sidecar session actually starts/initializes them. Doctor never auto-starts arbitrary LSPs.
+- CodeGraph is a **toy local import/symbol scan**, not SCIP and not a branch-accurate shared graph.
+- Network research stays opt-in and **blocked** until a provider and credentials exist (none are bundled).
+- Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
+- Never writes `passes` / `verified`.
 
 ## Commands
 
 ```text
 omg tools doctor [--strict] [--root PATH]
-omg tools serve --stdio
+omg tools serve --stdio [--lsp-command ARGV…] -- [--stdio]
 omg tools lsp servers|hover|definition|references|document_symbols|workspace_symbols|diagnostics|prepare_rename|rename|code_action|code_action_resolve
 omg tools ast search|replace --pattern '...' --lang python
-omg tools codegraph status|query --mode off|auto|shared|local
+omg tools codegraph status|query|index --mode off|auto|shared|local
 omg tools research status|search
 ```
 
+### `--lsp-command` and `--`
+
+`--lsp-command` takes the server program (and non-flag argv). Server flags such
+as `--stdio` must come **after `--`**, otherwise argparse treats `--stdio` as
+the `omg tools serve` flag (or as an unknown option on `omg tools lsp`):
+
+```text
+omg tools serve --stdio --lsp-command rust-analyzer -- --stdio
+omg tools lsp hover --path a.py --lsp-command rust-analyzer -- --stdio
+```
+
+Language servers are **never auto-installed**.
+
 - Rename / code-action **apply** and ast-grep **--write** require
   `--capability-mode read-write`. Default is preview / dry-run.
-- Language servers are **never auto-installed**.
+- `code_action` always sends the LSP-required `range` (`--line`/`--character`
+  plus optional `--end-line`/`--end-character`).
+- After `didOpen`, later disk edits send `textDocument/didChange` (full-text)
+  on the next sidecar operation for that URI.
 - Network research requires `OMG_TOOLS_NETWORK=1` and a configured provider
   (none is bundled; credentials are never shipped).
-- CodeGraph `shared` results are **not** worktree-accurate.
+- CodeGraph `shared` results are **not** worktree-accurate. `local` is
+  branch-accurate only when an index was built from this tree and is not stale.
+  `omg tools codegraph index` writes
+  `.omg/artifacts/codegraph/{local,shared}-index.json`.
+
+## AST-grep
+
+Doctor looks for the `ast-grep` binary on PATH, then `~/.cargo/bin` (and
+`CARGO_HOME`). `sg` is accepted only after an identity check so shadow-utils
+`/usr/bin/sg` is **not** treated as ast-grep.
 
 ## MCP image output
 

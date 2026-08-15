@@ -314,6 +314,10 @@ def main(argv: list[str] | None = None) -> int:
     # CPython <3.12: hoist options between ask positionals (see normalize_ask_argv).
     if "ask" in raw:
         raw = normalize_ask_argv(raw)
+    if "tools" in raw:
+        from omg_cli.commands.tools import normalize_tools_argv
+
+        raw = normalize_tools_argv(raw)
 
     catalog_verb = catalog_verb_from_argv(raw)
     if catalog_verb is not None:
