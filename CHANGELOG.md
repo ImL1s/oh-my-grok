@@ -150,6 +150,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `auth` / `capabilities` / `compatibility` / `live_evidence` (`auth.ok` and
   `live_evidence` stay false — invalid keys cannot false-green). File copy is
   not live AG/Grok verification. Refs #77 (does not close).
+- **#77 leftover AC (install transaction):** `omg setup` no longer calls
+  legacy `run_setup` beside the manifest; AGENTS.md merge, generic `.omg`
+  gitignore init (including `--runtime antigravity`), and optional machine-scoped
+  grok rules/hook run inside the same backup/rollback transaction.
+  Directories occupying a managed path classify `foreign` (`--force` refuses
+  to write onto them). User-scope `user.manifest.marker` is a state marker and
+  does not make doctor `enabled`/`loadable`. `desired_artifacts()` ids must
+  match frozen `EXPECTED_IDS_BY_RUNTIME_SCOPE`. POSIX `ensure_omg_dirs`
+  confinement failures stay fail-closed (no symlink-following mkdir fallback).
+  Malformed global hook JSON is repaired/quarantined without `--force`.
+  Foreign hook JSON (including dangling symlinks) is reconciled by
+  `install_global_hook` rather than skipped. Quarantined hooks — including
+  `failed:*` after a successful rename — are not restored onto grok's
+  `*.json` discovery path when the transaction rolls back. POSIX confinement
+  failures keep `E_PATH` after rollback. File copy is still not live
+  Grok/Antigravity discovery (`verified`/`observed`/`healthy` stay false).
+  Refs #77 (does not close).
 - **#73 tools sidecar (first cut):** `omg tools doctor|serve|lsp|ast|codegraph|research`
   is an OMG-owned sidecar (`omg_cli/tools_sidecar.py`). Semantic LSP uses an
   explicit transport (fake protocol or `--lsp-command`); it is **not**
