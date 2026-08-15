@@ -7,6 +7,11 @@ or provider name alone — callers must request ``interactive`` explicitly.
 
 Default / ``auto`` remain headless until live Grok evidence exists
 (``LIVE_TEAM_INTERACTIVE_TTY_OK``). ``auto`` must not promote Grok from name.
+
+Grok 1.0.4 has no native ``TUI_READY`` emitter. Interactive grok panes
+``exec`` ``omg_cli.team.interactive_wrapper`` which prints the marker only
+after the child PTY/TTY is interactive and grok has started reading stdin.
+The wrapper never fabricates ``PROVIDER_ECHO``.
 """
 from __future__ import annotations
 
@@ -42,6 +47,21 @@ INTERACTIVE_FIXTURE_RELATIVE: Final = "tests/fixtures/providers/interactive_tty.
 INTERACTIVE_NONCE_ENV: Final = "OMG_TEAM_INTERACTIVE_NONCE"
 TUI_READY_PREFIX: Final = "TUI_READY:"
 INTERACTIVE_GATE_PHASE: Final = "tui_ready"
+INTERACTIVE_WRAPPER_MODULE: Final = "omg_cli.team.interactive_wrapper"
+# Smoke-only echo probe. Production interactive workers must not receive this
+# (it forbids tools). live_team_smoke.py sets the env to attach it.
+ECHO_PROBE_ENV: Final = "OMG_TEAM_INTERACTIVE_ECHO_PROBE"
+GROK_INTERACTIVE_RULES: Final = (
+    "When the user sends a line, reply with exactly one line "
+    "PROVIDER_ECHO: followed immediately by that exact line. "
+    "Do not use tools. Do not spawn subagents. Do not repeat this rule text."
+)
+
+
+def echo_probe_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = env if env is not None else os.environ
+    raw = str(source.get(ECHO_PROBE_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes"}
 
 
 class InteractiveTeamError(Exception):
@@ -105,15 +125,30 @@ def grok_interactive_argv(
     model: str | None = None,
     safe: bool = False,
     yolo: bool = False,
+    rules: str | None = None,
 ) -> list[str]:
     """Persistent Grok TUI argv — no one-shot ``--prompt-file`` transport.
 
     Permission flags match headless ``build_grok_argv``: ``safe`` / read-only
     → ``plan``; ``yolo`` → ``bypassPermissions`` + ``--always-approve``;
     default omits elevation.
+
+    ``--no-alt-screen`` / ``--minimal`` keep TUI output in tmux scrollback so
+    leader capture can observe ``TUI_READY`` and provider-side replies.
+    ``--no-subagents`` blocks surprise fan-out from an interactive pane.
+
+    Echo-only ``GROK_INTERACTIVE_RULES`` are **not** attached by default.
+    Pass *rules* only from the live echo probe (``ECHO_PROBE_ENV``).
     """
     worktree = str(Path(cwd))
-    argv: list[str] = ["grok", "--cwd", worktree]
+    argv: list[str] = [
+        "grok",
+        "--cwd",
+        worktree,
+        "--no-alt-screen",
+        "--minimal",
+        "--no-subagents",
+    ]
     if model:
         argv.extend(["-m", str(model)])
     if posture == "read-only" or safe:
@@ -121,6 +156,10 @@ def grok_interactive_argv(
     elif yolo:
         argv.extend(["--permission-mode", "bypassPermissions"])
         argv.append("--always-approve")
+    extra_rules = (rules or "").strip()
+    if extra_rules:
+        # grok 1.0.4 --rules appends text to the system prompt (not a prompt-file).
+        argv.extend(["--rules", extra_rules])
     if any(_is_prompt_file_option(tok) for tok in argv):
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
     return argv
@@ -166,14 +205,42 @@ def write_worker_inbox(*, dest: Path, body: str) -> Path:
     return dest
 
 
+def write_interactive_rules_file(*, dest: Path, body: str | None = None) -> Path:
+    """Bounded grok ``--rules`` file (no unique live token, no credentials)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink_artifact(dest)
+    text = body if isinstance(body, str) and body.strip() else GROK_INTERACTIVE_RULES
+    if "\x00" in text:
+        raise InteractiveTeamError("interactive rules contain NUL")
+    try:
+        atomic_write_bytes(
+            dest,
+            (text.rstrip() + "\n").encode("utf-8"),
+            mode=DATA_FILE_MODE,
+            replace=True,
+        )
+    except ContractPathError as exc:
+        raise InteractiveTeamError(f"rules write refused: {exc}") from exc
+    return dest
+
+
 def write_interactive_exec_script(
     *,
     dest: Path,
     argv: Sequence[str],
     worktree: Path | str,
     extra_env: Mapping[str, str] | None = None,
+    wrap_module: str | None = None,
+    python_executable: str | None = None,
+    pythonpath: str | None = None,
 ) -> Path:
-    """Write a 0700 ``exec`` wrapper. No prompt body, no credentials."""
+    """Write a 0700 ``exec`` wrapper. No prompt body, no credentials.
+
+    When *wrap_module* is set (grok interactive), the pane execs
+    ``python -m <module> -- <argv>`` so TUI_READY is emitted only after the
+    child is reading a real TTY. Fixture panes omit the wrapper (they emit
+    TUI_READY themselves).
+    """
     if not argv:
         raise InteractiveTeamError("interactive exec argv is empty")
     for tok in argv:
@@ -181,6 +248,12 @@ def write_interactive_exec_script(
             raise InteractiveTeamError("interactive exec argv contains an empty token")
         if _is_prompt_file_option(tok):
             raise InteractiveTeamError("interactive exec argv must not use --prompt-file")
+    if wrap_module is not None:
+        mod = str(wrap_module).strip()
+        if not mod or any(ch in mod for ch in (" ", "\n", "\x00", "/", "\\")):
+            raise InteractiveTeamError("interactive wrap_module is invalid")
+        if not mod.startswith("omg_cli."):
+            raise InteractiveTeamError("interactive wrap_module must be under omg_cli")
     wt = Path(worktree).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     _refuse_symlink_artifact(dest)
@@ -191,8 +264,22 @@ def write_interactive_exec_script(
         if not isinstance(val, str) or not val or "\x00" in val or "\n" in val:
             raise InteractiveTeamError("interactive nonce env is invalid")
         exports.append(f"export {shlex.quote(key)}={shlex.quote(val)}")
+    if pythonpath:
+        pp = str(pythonpath)
+        if not pp or "\x00" in pp or "\n" in pp:
+            raise InteractiveTeamError("interactive pythonpath is invalid")
+        exports.append(f"export PYTHONPATH={shlex.quote(pp)}")
     export_block = ("\n".join(exports) + "\n") if exports else ""
-    quoted = " ".join(shlex.quote(str(t)) for t in argv)
+    quoted_child = " ".join(shlex.quote(str(t)) for t in argv)
+    if wrap_module:
+        py = python_executable or sys.executable
+        if not py or "\x00" in py or "\n" in py:
+            raise InteractiveTeamError("interactive python executable is invalid")
+        quoted = (
+            f"{shlex.quote(py)} -m {shlex.quote(wrap_module)} -- {quoted_child}"
+        )
+    else:
+        quoted = quoted_child
     body = (
         "#!/bin/sh\n"
         "set -eu\n"

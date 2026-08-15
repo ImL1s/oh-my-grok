@@ -215,7 +215,8 @@ omg accept --yes
 `startup_status=running`。認證/信任提示 → `blocked_start`。`--no-wait` →
 `unverified_start`。`--io-mode interactive` 不等 supervisor ACK，由 leader
 在同一逾時內等待 pane TTY 上的 `TUI_READY:<nonce>` 後再提升 `input_ready`；
-逾時 fail-closed，不會靜默降為 headless。
+Grok 1.0.4 無原生 ready 行，由 `interactive_wrapper` 僅在 grok 開始讀 TTY
+後列印。逾時 fail-closed，不會靜默降為 headless。
 
 **靜默 bootstrap（#100）：** worker pane 成功啟動不印 JSON / nested-`.omg` 警告；
 失敗僅一行提示。詳情見 `workers/<id>/bootstrap.log`，用

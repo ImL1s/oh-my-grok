@@ -40,11 +40,15 @@ omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 # provider_tty_owner=supervisor, operator_input_supported=false.
 # `--io-mode interactive` (grok|fixture pane only) execs the provider on the
 # pane TTY: io_mode=interactive_tty, provider_tty_owner=provider,
-# operator_input_supported=true. Leader waits (OMG_TEAM_READY_TIMEOUT_MS,
-# same --no-wait skip) for TUI_READY:<nonce> on the pane TTY then CLI-promotes
-# input_ready. Timeout/missing marker fails closed — never silent headless.
+# operator_input_supported=true. Grok 1.0.4 has no native TUI_READY emitter;
+# the pane execs `python -m omg_cli.team.interactive_wrapper` which prints
+# TUI_READY:<nonce> only after the child TTY is interactive and grok is
+# reading stdin. Leader waits (OMG_TEAM_READY_TIMEOUT_MS, same --no-wait skip)
+# then CLI-promotes input_ready. Timeout/missing marker fails closed — never
+# silent headless. PROVIDER_ECHO is child-produced, never wrapper-faked.
 # Workers/descriptors never self-promote from stdout scrape. Prefer mailbox.
-# Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK is still optional.
+# Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK requires capture of both
+# TUI_READY:<nonce> and PROVIDER_ECHO:<unique> after team input --submit.
 
 # Catalog v4 atomic task-batch DAG admission (leader-only; no MCP mutation):
 omg team api bulk-create-tasks --input BATCH.json --json

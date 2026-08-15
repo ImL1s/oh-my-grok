@@ -33,6 +33,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -3622,16 +3623,29 @@ def start_team(
 
                 if want_interactive:
                     from omg_cli.team.interactive import (
+                        GROK_INTERACTIVE_RULES,
                         INTERACTIVE_NONCE_ENV,
+                        INTERACTIVE_WRAPPER_MODULE,
                         assert_not_supervisor_pane_command,
+                        echo_probe_enabled,
                         fixture_interactive_argv,
                         grok_interactive_argv,
                         make_interactive_nonce,
                         pane_command_for_exec_script,
                         write_interactive_exec_script,
+                        write_interactive_rules_file,
                         write_worker_inbox,
                     )
 
+                    inbox_path = tdir / f"{tid}.inbox.txt"
+                    exec_script = tdir / f"{tid}.interactive.sh"
+                    rules_path = tdir / f"{tid}.interactive.rules.txt"
+                    if not created_team_dir:
+                        _note_start_file_backup(file_backups, inbox_path)
+                        _note_start_file_backup(file_backups, exec_script)
+                        _note_start_file_backup(file_backups, rules_path)
+                    wrap_module = None
+                    pythonpath = None
                     if use_fixture_executor:
                         argv = fixture_interactive_argv()
                         provider = "fixture"
@@ -3639,18 +3653,21 @@ def start_team(
                         routed_model = None
                         if multi_cli and resolved is not None:
                             routed_model = resolved.for_role(role).model
+                        probe_rules = (
+                            GROK_INTERACTIVE_RULES if echo_probe_enabled(env) else None
+                        )
+                        if probe_rules:
+                            write_interactive_rules_file(dest=rules_path, body=probe_rules)
                         argv = grok_interactive_argv(
                             cwd=wt,
                             posture=posture,
                             model=routed_model,
                             safe=safe,
                             yolo=yolo,
+                            rules=probe_rules,
                         )
-                    inbox_path = tdir / f"{tid}.inbox.txt"
-                    exec_script = tdir / f"{tid}.interactive.sh"
-                    if not created_team_dir:
-                        _note_start_file_backup(file_backups, inbox_path)
-                        _note_start_file_backup(file_backups, exec_script)
+                        wrap_module = INTERACTIVE_WRAPPER_MODULE
+                        pythonpath = str(Path(__file__).resolve().parents[2])
                     write_worker_inbox(
                         dest=inbox_path,
                         body=f"task_id={tid}\n{goal}\n",
@@ -3661,6 +3678,9 @@ def start_team(
                         argv=argv,
                         worktree=wt,
                         extra_env={INTERACTIVE_NONCE_ENV: interactive_nonce},
+                        wrap_module=wrap_module,
+                        python_executable=sys.executable,
+                        pythonpath=pythonpath,
                     )
                     pane_cmd = pane_command_for_exec_script(exec_script)
                     assert_not_supervisor_pane_command(pane_cmd)

@@ -10,6 +10,26 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#147 grok 1.0.4 interactive TUI_READY wrapper:** `--io-mode interactive`
+  grok panes `exec` `python -m omg_cli.team.interactive_wrapper` on the pane
+  TTY (not the Team supervisor). The wrapper prints `TUI_READY:<nonce>` only
+  after stdin is a TTY and the grok child has started reading it; spawn-only
+  is not ready. `--no-alt-screen --minimal --no-subagents` keep the
+  TUI in tmux scrollback. Echo-only `--rules` (PROVIDER_ECHO, no tools) are
+  smoke-probe-only (`OMG_TEAM_INTERACTIVE_ECHO_PROBE`), never production
+  interactive argv. `PROVIDER_ECHO` is still child-produced (fixture or
+  grok reply), never wrapper-faked. One WSL live launch against grok 1.0.4
+  (`team-smoke-20260815T145621Z.json`) proved wrapper `TUI_READY` on a real
+  TUI (`tui_ready=true`) but **did not** show `PROVIDER_ECHO:` after
+  `send-keys` submit — composer local echo only. `LIVE_TEAM_INTERACTIVE_TTY_OK`
+  is **not** claimed. Leftover is grok TUI submit/echo, not wrapper
+  spawn-only false-green. poll/select/epoll sleep is not stdin-wait unless
+  the shared TTY is already raw/noncanonical; zombies are not live.
+  aarch64 stdin-wait uses `epoll_pwait` 22 / `epoll_pwait2` 441 (not the
+  x86_64 232/281 numbers). Read-family syscalls only count as stdin-wait when
+  `arg0 == 0` (they do not fall through to the poll/raw-TTY branch). Wrapper
+  timeout signals the child **process group** (SIGTERM then SIGKILL) with
+  bounded WNOHANG reaps. Refs #147 (does not close).
 - **#70 Wave B/C skill playbooks + catalog-driven routing:**   29 catalog-only
   canonical skills now have real `skills/omg-*/SKILL.md` playbooks (13 Wave B +
   16 Wave C) plus bundled `resources/contract.json` on every plugin skill

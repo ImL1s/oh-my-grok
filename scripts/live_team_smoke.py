@@ -19,11 +19,18 @@ isolated tmux socket with a fake ready provider and prints
 ``LIVE_TEAM_INTERACTIVE_UX_OK`` only when leader visibility/focus + readiness
 assertions pass. Fail-closed without tmux; never invents credentials evidence.
 
+``--interactive-live`` launches one real grok 1.0.4 interactive pane and prints
+``LIVE_TEAM_INTERACTIVE_TTY_OK`` **only** when pane capture contains the
+exact ``TUI_READY:<nonce>`` line **and** ``PROVIDER_ECHO:<unique>`` after
+``omg team input --submit`` (not local echo of the typed bytes). One attempt;
+quota-aware; never false-green.
+
 Usage:
   python3 scripts/live_team_smoke.py --workers 2 --goal "1. a\\n2. b"
   OMG_EXPERIMENTAL_TMUX_TEAM=1 python3 scripts/live_team_smoke.py --live ...
   OMG_EXPERIMENTAL_TMUX_TEAM=1 python3 scripts/live_team_smoke.py --fixture-executor ...
   python3 scripts/live_team_smoke.py --interactive-ux --workers 2 --goal "1. a\\n2. b"
+  OMG_EXPERIMENTAL_TMUX_TEAM=1 python3 scripts/live_team_smoke.py --interactive-live
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+import secrets
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +71,136 @@ def _tmux(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _tmux_capture(session: str, pane_id: str) -> str:
+    del session  # pane_id is globally unique (%N) on the default server.
+    proc = _tmux("capture-pane", "-p", "-J", "-t", pane_id)
+    return proc.stdout or ""
+
+
+def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
+    """One grok interactive pane. Claim LIVE_TEAM_INTERACTIVE_TTY_OK only on proof."""
+    sys.path.insert(0, str(ROOT))
+    from omg_cli.team.interactive import capture_contains_tui_ready
+    from omg_cli.team.operator import input_worker
+    from omg_cli.team.plane import stop_team
+    from omg_cli.team.runtime import launch_team
+
+    token = f"OMG147-LIVE-{secrets.token_hex(6)}"
+    live_env = dict(env)
+    live_env.setdefault("OMG_TEAM_READY_TIMEOUT_MS", "45000")
+    live_env["OMG_TEAM_INTERACTIVE_ECHO_PROBE"] = "1"
+    evidence: dict = {
+        "ok": False,
+        "mode": "interactive-live",
+        "schema_version": 1,
+        "live_ok_line": False,
+        "marker": token,
+        "startup_status": None,
+        "tui_ready": False,
+        "provider_echo": False,
+    }
+    meta = None
+    try:
+        meta = launch_team(
+            "interactive tty live; reply PROVIDER_ECHO:<user line>; no tools",
+            workers=1,
+            role="executor",
+            root=cwd,
+            dry_run=False,
+            force=True,
+            check_binary=True,
+            env=live_env,
+            detach=True,
+            io_mode="interactive",
+            yolo=True,
+        )
+        evidence["run_id"] = meta.get("run_id")
+        evidence["startup_status"] = meta.get("startup_status")
+        evidence["startup_note"] = meta.get("startup_note")
+        task = (meta.get("tasks") or [{}])[0]
+        pane_id = str(task.get("pane_id") or "")
+        nonce = str(task.get("interactive_nonce") or "")
+        worker_id = str(task.get("task_id") or "w1")
+        session = str(meta.get("session") or "")
+        evidence["pane_id"] = pane_id
+        evidence["io_mode"] = task.get("io_mode")
+        evidence["input_ready"] = task.get("input_ready")
+        evidence["provider_tty_owner"] = task.get("provider_tty_owner")
+        evidence["pane_command"] = task.get("pane_command")
+        if "supervisor" in str(task.get("pane_command") or "").lower():
+            evidence["reason"] = "interactive pane still launches team supervisor"
+            _write_evidence(evidence)
+            return _fail(evidence["reason"])
+        if not nonce or not pane_id.startswith("%"):
+            evidence["reason"] = "missing pane_id or interactive_nonce"
+            _write_evidence(evidence)
+            return _fail(evidence["reason"])
+        capture = _tmux_capture(session, pane_id) if session else ""
+        if not capture:
+            cap_proc = _tmux("capture-pane", "-p", "-t", pane_id)
+            capture = cap_proc.stdout or ""
+        evidence["tui_ready"] = capture_contains_tui_ready(capture, nonce)
+        evidence["capture_preview"] = capture[-2000:]
+        if not evidence["tui_ready"] or meta.get("startup_status") != "running":
+            evidence["reason"] = (
+                f"TUI_READY missing or startup_status={meta.get('startup_status')!r}; "
+                "LIVE_TEAM_INTERACTIVE_TTY_OK not claimed"
+            )
+            _write_evidence(evidence)
+            return _fail(evidence["reason"])
+        if f"PROVIDER_ECHO:{token}" in capture:
+            evidence["reason"] = "PROVIDER_ECHO appeared before operator send"
+            _write_evidence(evidence)
+            return _fail(evidence["reason"])
+        input_worker(
+            cwd,
+            str(meta["run_id"]),
+            worker_id,
+            token,
+            submit=True,
+            operator_override=True,
+            is_tty=True,
+        )
+        deadline = time.monotonic() + 90.0
+        echoed = False
+        last = capture
+        while time.monotonic() < deadline:
+            last = _tmux_capture(session, pane_id) if session else ""
+            if not last:
+                last = (_tmux("capture-pane", "-p", "-t", pane_id).stdout or "")
+            if f"PROVIDER_ECHO:{token}" in last:
+                echoed = True
+                break
+            time.sleep(1.0)
+        evidence["provider_echo"] = echoed
+        evidence["capture_preview"] = last[-2000:]
+        bare_only = token in last and f"PROVIDER_ECHO:{token}" not in last
+        if bare_only or not echoed:
+            evidence["reason"] = (
+                "no provider-side PROVIDER_ECHO after input "
+                "(local echo of the marker is not sufficient)"
+            )
+            _write_evidence(evidence)
+            return _fail(evidence["reason"])
+        evidence["ok"] = True
+        evidence["live_ok_line"] = True
+        path = _write_evidence(evidence)
+        if path:
+            print(f"live_team_smoke: evidence {path}", file=sys.stderr)
+        print("LIVE_TEAM_INTERACTIVE_TTY_OK")
+        return 0
+    except Exception as exc:
+        evidence["error"] = repr(exc)
+        _write_evidence(evidence)
+        return _fail(f"interactive-live failed: {exc}")
+    finally:
+        if meta is not None:
+            try:
+                stop_team(cwd, str(meta["run_id"]), force=True)
+            except Exception:
+                pass
 
 
 def _fail(msg: str, *, code: int = 1) -> int:
@@ -329,7 +467,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--role", default="executor")
-    parser.add_argument("--goal", required=True)
+    parser.add_argument("--goal", required=False, default="")
     parser.add_argument(
         "--live",
         action="store_true",
@@ -352,6 +490,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--interactive-live",
+        action="store_true",
+        help=(
+            "One real grok interactive pane. Prints LIVE_TEAM_INTERACTIVE_TTY_OK "
+            "only when TUI_READY:<nonce> and PROVIDER_ECHO:<unique> are in capture"
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=None,
@@ -359,11 +505,22 @@ def main() -> int:
         f"(default OMG_LIVE_TEAM_TIMEOUT_S or {_DEFAULT_LIVE_TIMEOUT_S})",
     )
     args = parser.parse_args()
-    if sum(bool(x) for x in (args.live, args.fixture_executor, args.interactive_ux)) > 1:
+    if sum(
+        bool(x)
+        for x in (
+            args.live,
+            args.fixture_executor,
+            args.interactive_ux,
+            args.interactive_live,
+        )
+    ) > 1:
         return _fail(
-            "pass only one of --live / --fixture-executor / --interactive-ux",
+            "pass only one of --live / --fixture-executor / "
+            "--interactive-ux / --interactive-live",
             code=2,
         )
+    if not args.interactive_live and not str(args.goal or "").strip():
+        return _fail("--goal is required except with --interactive-live", code=2)
 
     env = os.environ.copy()
     env["OMG_EXPERIMENTAL_TMUX_TEAM"] = "1"
@@ -381,13 +538,13 @@ def main() -> int:
         else os.environ.get("OMG_LIVE_TEAM_TIMEOUT_S", _DEFAULT_LIVE_TIMEOUT_S)
     )
 
-    if args.live:
+    if args.live or args.interactive_live:
         reason = _preflight_live()
         if reason:
             _write_evidence(
                 {
                     "ok": False,
-                    "mode": "live",
+                    "mode": "interactive-live" if args.interactive_live else "live",
                     "reason": reason,
                     "live_ok_line": False,
                 }
@@ -441,6 +598,9 @@ def main() -> int:
             sys.stderr.write(setup.stdout)
             sys.stderr.write(setup.stderr)
             return _fail(f"omg setup --here failed: {setup.returncode}")
+
+        if args.interactive_live:
+            return _run_interactive_live(cwd=cwd, env=env)
 
         if args.interactive_ux:
             if shutil.which("tmux") is None:
