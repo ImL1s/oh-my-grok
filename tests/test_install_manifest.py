@@ -487,6 +487,29 @@ def test_refuses_symlinked_omg_parent(tmp_path: Path) -> None:
     assert not (outside / "projections").exists()
 
 
+def test_refuses_symlinked_omg_artifacts(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".omg").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (project / ".omg" / "artifacts").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    if os.name != "posix":
+        pytest.skip("confined mkdir is POSIX-only")
+    with pytest.raises(InstallManifestError, match="E_PATH"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=project,
+            here=True,
+            plugin=ROOT,
+        )
+    assert list(outside.iterdir()) == []
+
+
 def test_oversize_file_not_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -818,6 +841,63 @@ def test_hook_failure_rolls_back_rules_and_agents(
         )
     assert agents.read_text(encoding="utf-8") == "keep-agents\n"
     assert not (grok_home / "rules" / "omg.md").exists()
+
+
+def test_quarantined_hook_is_not_restored_on_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def quarantine(*, home=None, root=None):
+        dest = json_path.with_name("omg-pretool-deny.broken-1.bak")
+        if json_path.exists() or json_path.is_symlink():
+            json_path.replace(dest)
+        return (json_path, "quarantined-no-source")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", quarantine)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_hook=True,
+        )
+    assert not json_path.exists()
+    assert (hooks / "omg-pretool-deny.broken-1.bak").is_file()
+
+
+def test_malformed_hook_json_is_repaired_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def repair(*, home=None, root=None):
+        json_path.write_text('{"hooks": []}\n', encoding="utf-8")
+        return (json_path, "repaired")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", repair)
+    result = run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+        install_hook=True,
+    )
+    assert result["ok"] is True
+    assert json_path.read_text(encoding="utf-8") == '{"hooks": []}\n'
 
 
 def test_user_scope_grok_marker_is_not_runtime_enabled(

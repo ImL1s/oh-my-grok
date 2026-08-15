@@ -140,7 +140,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Directories occupying a managed path classify `foreign` (`--force` refuses
   to write onto them). User-scope `user.manifest.marker` is a state marker and
   does not make doctor `enabled`/`loadable`. `desired_artifacts()` ids must
-  match frozen `EXPECTED_IDS_BY_RUNTIME_SCOPE`. File copy is still not live
+  match frozen `EXPECTED_IDS_BY_RUNTIME_SCOPE`. POSIX `ensure_omg_dirs`
+  confinement failures stay fail-closed (no symlink-following mkdir fallback).
+  Malformed global hook JSON is repaired/quarantined without `--force`.
+  Quarantined hooks are not restored onto grok's `*.json` discovery path when
+  the transaction rolls back. File copy is still not live
   Grok/Antigravity discovery (`verified`/`observed`/`healthy` stay false).
   Refs #77 (does not close).
 - **#73 tools sidecar (first cut):** `omg tools doctor|serve|lsp|ast|codegraph|research`

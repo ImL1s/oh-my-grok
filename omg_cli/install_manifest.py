@@ -260,6 +260,17 @@ def _write_text_nofollow(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _discard_backup(backup_dir: Path, ident: str) -> None:
+    """Drop a backup so rollback cannot republish that target."""
+
+    prev = backup_dir / f"{ident}.prev.json"
+    bak = backup_dir / f"{ident}.bak"
+    meta = bak.with_suffix(".json")
+    prev.unlink(missing_ok=True)
+    bak.unlink(missing_ok=True)
+    meta.unlink(missing_ok=True)
+
+
 def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
     prev = backup_dir / f"{ident}.prev.json"
     if target.is_symlink():
@@ -707,15 +718,18 @@ def rollback_interrupted(
 
 
 def _ensure_project_omg_dirs(root: Path) -> None:
-    """Create the project ``.omg`` layout. POSIX uses confined mkdir; Windows falls back."""
+    """Create the project ``.omg`` layout. POSIX stays confined; Windows falls back."""
     from omg_cli.contracts.path_keys import ContractPathError
     from omg_cli.state import OMG_PROJECT_SUBDIRS, OMG_RUN_STATE_SUBDIRS, ensure_omg_dirs
 
     try:
         ensure_omg_dirs(root)
         return
-    except ContractPathError:
-        pass
+    except ContractPathError as exc:
+        if os.name == "posix":
+            raise InstallManifestError(
+                "E_PATH", f"cannot create confined .omg layout: {exc}"
+            ) from exc
     for sub in (*OMG_PROJECT_SUBDIRS, *OMG_RUN_STATE_SUBDIRS):
         _mkdir(Path(root) / ".omg" / sub)
 
@@ -800,6 +814,9 @@ def _apply_merge_or_install(
             "quarantined-no-source",
             "skipped-no-source",
         }:
+            if "quarantined" in haction:
+                # Quarantine is the fail-safe. Do not republish the JSON.
+                _discard_backup(backup_dir, ident)
             raise InstallManifestError("E_TX", f"global hook install failed: {haction}")
         label = f"{hpath}: {haction}"
     else:
@@ -873,7 +890,7 @@ def apply_manifest(
                 if klass == "foreign" and not force:
                     _skip_foreign_or_malformed(row, target, klass, skipped)
                     continue
-                if klass == "malformed" and not force:
+                if klass == "malformed" and not force and merge_kind != "hook":
                     _skip_foreign_or_malformed(row, target, klass, skipped)
                     continue
                 _assert_parents_not_symlink(target, contain)
