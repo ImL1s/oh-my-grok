@@ -328,8 +328,14 @@ def run_simplify(
     if not descriptors:
         raise SimplifyError("apply-edits contained no descriptors")
 
+    kept_set = {Path(rel).as_posix() for rel in kept}
     applied: list[dict[str, Any]] = []
     for desc in descriptors:
+        desc_path = Path(str(desc.path)).as_posix()
+        if desc_path not in kept_set:
+            raise SimplifyError(
+                f"apply-edits path {desc_path!r} is outside the bounded --paths set"
+            )
         assert_mutative_edit_allowed(root, desc.path, run_id=run_id, task_id=task_id)
         from omg_cli.hash_edit.apply import read_confined_regular_file
 

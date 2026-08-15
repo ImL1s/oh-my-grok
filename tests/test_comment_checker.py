@@ -453,3 +453,42 @@ def test_apply_without_manifest_is_not_ownership_error(
     payload = _out(capsys)
     assert _code(payload) != "E_OWNERSHIP"
     assert _code(payload) != "E_READ_ONLY"
+
+
+def test_comments_fix_preserves_trailing_code(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = project / "mixed.js"
+    src.write_text(
+        "/* AI-generated helper */ const important = 42;\n",
+        encoding="utf-8",
+    )
+    rc = main(["--json", "edit", "comments", "--paths", "mixed.js", "--fix"])
+    assert rc == 0
+    _out(capsys)
+    assert "const important = 42;" in src.read_text(encoding="utf-8")
+
+
+def test_simplify_apply_edits_must_stay_in_paths(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "allowed.py").write_text("alpha", encoding="utf-8")
+    (project / "outside.py").write_text("alpha", encoding="utf-8")
+    desc = project / "edits.json"
+    desc.write_text(json.dumps([_descriptor("outside.py")]), encoding="utf-8")
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "allowed.py",
+            "--enable",
+            "--apply-edits",
+            str(desc),
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY"
+    assert (project / "outside.py").read_text(encoding="utf-8") == "alpha"

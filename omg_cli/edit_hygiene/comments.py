@@ -236,6 +236,8 @@ def git_unified_diff(root: Path, paths: Sequence[str] | None = None) -> str:
         "git",
         "-C",
         str(root),
+        "-c",
+        "core.quotePath=false",
         "diff",
         "HEAD",
         "--unified=0",
@@ -669,10 +671,13 @@ def apply_comment_fixes(
             ok = True
             for lineno in range(item.line, item.end_line + 1):
                 stripped = lines[lineno - 1].lstrip()
-                if not (
+                if stripped.startswith("/*"):
+                    if "*/" in stripped and not stripped.rstrip().endswith("*/"):
+                        ok = False
+                        break
+                elif not (
                     stripped.startswith("#")
                     or stripped.startswith("//")
-                    or stripped.startswith("/*")
                     or stripped.startswith("*")
                     or stripped.startswith("*/")
                 ):
