@@ -547,6 +547,12 @@ Workflow plan 不會啟動外部 CLI。Leader 應使用 Grok 原生 `spawn_subag
 | `omg-security-reviewer` | `read-only` | OWASP / secrets / 不安全模式 |
 | `omg-qa-tester` / `omg-analyst` | 見 taxonomy | QA 情境 / interview 分析 |
 
+機器可讀外掛 hook 登錄表：[`hooks/registry.json`](../hooks/registry.json)
+（loader `omg_cli/hooks_registry.py`；`omg capabilities` → `hooks_registry` 或
+`omg doctor`）。[`docs/parity/projections/antigravity/hooks/`](./parity/projections/antigravity/hooks/)
+下的 Antigravity 檔案 **只是投影** — 不是已安裝的 AG 外掛，也不是 live AG 證據。
+見 [hooks-lifecycle.md](./hooks-lifecycle.md)。
+
 機器可讀外掛 skill 目錄：[`skills/catalog.json`](../skills/catalog.json)
 （loader `omg_cli/skills_catalog.py`；`omg skill list|show|resolve|resources` 或
 `omg capabilities` 的 `skills_catalog`）。

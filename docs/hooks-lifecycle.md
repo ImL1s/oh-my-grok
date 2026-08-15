@@ -5,7 +5,9 @@ English. **Registry:** [`hooks/registry.json`](../hooks/registry.json)
 
 This is a **first cut** of [#72](https://github.com/ImL1s/oh-my-grok/issues/72).
 It documents host mappings and dispatches in-process. It does **not** claim
-OMC-style lifecycle coverage on Grok Build.
+OMC-style lifecycle coverage on Grok Build. Remaining honesty: no
+UserPromptSubmit inject, timeout is not preemptive, Antigravity files are
+projections (not live AG).
 
 ## Grok honesty
 
@@ -42,7 +44,27 @@ adopt. This does not set `verified`.
 - Advisory hooks fail open. Continuation guard may fail closed without
   writing run state.
 - Compact handoff stores run/session/goal/task ids only — never a transcript.
+- **Timeouts** are cooperative: duration is recorded after the handler
+  returns (`timeout_kind=post_hoc`). Python cannot preempt a stuck handler.
+- **Event journal:** after `dispatch()`, a bounded redacted row is appended
+  under `.omg/state/events/` (`source=omg-hooks-bus`) with a monotonic
+  sequence per workspace. Journal write failures fail open and never crash
+  the session. This is not a `passes` / `verified` stamp.
 
-Antigravity projection:
+## Registry load (fail-closed)
+
+- `HOST_HOOK_ALLOWLIST` maps each canonical event to allowed `host_hook`
+  names. Unknown names fail closed. `host_hook: null` is always allowed
+  (CLI wrapper / reconciled).
+- Production load requires bundled security ids: `omg.pretool.deny`,
+  `omg.stop.gate`, `omg.continuation.guard`. Test stubs may pass
+  `allow_incomplete=True`.
+
+## Antigravity projection
+
 [`docs/parity/projections/antigravity/hooks/`](./parity/projections/antigravity/hooks/)
-(**not** live AG evidence).
+contains a README plus a **hooks.json-shaped** document. Copy via
+`install_antigravity_hook_projection(dest)` (later #77 install manifest).
+This is **not** live AG evidence and does **not** mean `agy` loaded hooks.
+`omg doctor` reports the registry inspect tiers; `omg setup` still installs
+Grok plugin hooks.

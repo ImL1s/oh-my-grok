@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from omg_cli.contracts.event_contract import (
 )
 from omg_cli.contracts.path_keys import (
     DATA_FILE_MODE,
+    ContractPathError,
     atomic_write_bytes,
     ensure_managed_dir,
     exclusive_lock,
@@ -31,6 +34,20 @@ from omg_cli.redaction import redact_value
 
 MAX_EVENT_BYTES = 65_536
 MAX_HOOK_IDENTITIES = 4096
+BUS_SOURCE = "omg-hooks-bus"
+
+_BUS_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_BUS_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(lock_path: Path) -> threading.Lock:
+    key = str(Path(lock_path).resolve())
+    with _BUS_THREAD_LOCKS_GUARD:
+        lock = _BUS_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BUS_THREAD_LOCKS[key] = lock
+        return lock
 
 _HOOK_ALIASES = {
     "SessionStart": ("SessionStart", "session_started"),
@@ -112,6 +129,90 @@ def append_runtime_event(root: Path | str, event: Mapping[str, Any]) -> dict[str
         "event_hash": digest,
         "event_identity": event_identity(normalized),
     }
+
+
+@contextmanager
+def _portable_exclusive_lock(lock_path: Path) -> Iterator[None]:
+    """POSIX ``exclusive_lock``; Windows ``msvcrt`` + in-process thread lock."""
+
+    thread_lock = _thread_lock_for(lock_path)
+    with thread_lock:
+        if os.name == "posix":
+            with exclusive_lock(lock_path):
+                yield
+            return
+        import msvcrt
+
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(str(lock_path), flags)
+        handle = os.fdopen(fd, "r+b")
+        try:
+            handle.seek(0)
+            if handle.read(1) == b"":
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        finally:
+            handle.close()
+
+
+def _ensure_bus_store(path: Path) -> None:
+    try:
+        ensure_managed_dir(path)
+    except ContractPathError:
+        if os.name == "posix":
+            raise
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def _append_event_portable(root: Path, event: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return append_runtime_event(root, event)
+    except ContractPathError:
+        if os.name == "posix":
+            raise
+        normalized = validate_lifecycle_event(dict(event))
+        body = canonical_json_bytes(normalized)
+        if len(body) > MAX_EVENT_BYTES:
+            raise ContractValidationError(
+                "normalized lifecycle event exceeds bounded limit"
+            )
+        path = source_journal_path(root, normalized["source"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as handle:
+            handle.write(body + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return {
+            "journal_path": path,
+            "event_hash": sha256_hex(body),
+            "event_identity": event_identity(normalized),
+        }
+
+
+def _write_cursor_portable(path: Path, state: Mapping[str, Any]) -> None:
+    body = canonical_json_bytes(state)
+    try:
+        atomic_write_bytes(path, body, mode=DATA_FILE_MODE, replace=True)
+    except ContractPathError:
+        if os.name == "posix":
+            raise
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(body)
+        tmp.replace(path)
 
 
 def _read_cursor(path: Path, source: str) -> dict[str, Any]:
@@ -256,6 +357,81 @@ def append_hook_event(
         return result
 
 
+def append_bus_event(
+    root: Path | str,
+    *,
+    canonical_event: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+    run_id: str | None = None,
+    session_id: str | None = None,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+) -> dict[str, Any]:
+    """Append one in-process bus observation. Sequence is monotonic per root.
+
+    Fail-closed on payload/schema validation. Callers that must not crash a
+    session (the hook dispatcher) wrap this and fail open.
+    """
+
+    source = BUS_SOURCE
+    root_path = Path(root).resolve()
+    cursor_path = _cursor_path(root_path, source)
+    _ensure_bus_store(cursor_path.parent)
+    lock_path = cursor_path.with_suffix(".lock")
+    identity_id = _safe_event_id(event_id or os.urandom(16).hex(), prefix="bus")
+    run = _safe_event_id(run_id or os.environ.get("OMG_RUN_ID") or "unbound-run", prefix="run")
+    session = _safe_event_id(
+        session_id
+        or os.environ.get("GROK_SESSION_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
+        or "unbound-session",
+        prefix="session",
+    )
+    raw_payload = dict(payload)
+    raw_payload["canonical_event"] = str(canonical_event)
+    raw_payload["timeout_kind"] = "post_hoc"
+    raw_payload["verified"] = False
+    raw_payload.pop("passes", None)
+
+    with _portable_exclusive_lock(lock_path):
+        state = _read_cursor(cursor_path, source)
+        sequence = int(state["last_sequence"]) + 1
+        timestamp = observed_at or _utc_now()
+        source_cursor = f"bus-{sequence}"
+        event = normalize_lifecycle_event(
+            source=source,
+            source_cursor=source_cursor,
+            source_sequence=sequence,
+            event_id=identity_id,
+            event_type=event_type,
+            run_id=run,
+            session_id=session,
+            observed_at=timestamp,
+            payload=raw_payload,
+        )
+        result = _append_event_portable(root_path, event)
+        identities = dict(state["identities"])
+        identities[identity_id] = {
+            "source_sequence": sequence,
+            "source_cursor": source_cursor,
+            "observed_at": timestamp,
+            "event_hash": result["event_hash"],
+        }
+        if len(identities) > MAX_HOOK_IDENTITIES:
+            ordered = sorted(
+                identities.items(),
+                key=lambda pair: (pair[1]["source_sequence"], pair[0]),
+            )[-MAX_HOOK_IDENTITIES:]
+            identities = dict(ordered)
+        state = {**state, "last_sequence": sequence, "identities": identities}
+        _write_cursor_portable(cursor_path, state)
+        result["source_sequence"] = sequence
+        result["event_id"] = identity_id
+        result["duplicate"] = False
+        return result
+
+
 def read_runtime_events(path: Path | str) -> list[dict[str, Any]]:
     source = Path(path)
     if not source.exists():
@@ -287,7 +463,9 @@ def read_all_runtime_events(root: Path | str) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "BUS_SOURCE",
     "MAX_EVENT_BYTES",
+    "append_bus_event",
     "append_hook_event",
     "append_runtime_event",
     "normalize_lifecycle_event",

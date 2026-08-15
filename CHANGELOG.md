@@ -82,6 +82,23 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `docs/parity/projections/antigravity/mcp/` are **not** an installed AG
   plugin and **not** live AG evidence. Does not set `verified`. Refs #73
   (does not close).
+- **#72 lifecycle bus (journal + allowlist):** in-process dispatcher now
+  fail-closes registry load when `host_hook` is outside the event allowlist
+  or when bundled security ids (`omg.pretool.deny`, `omg.stop.gate`,
+  `omg.continuation.guard`) are omitted, disabled, rebound to the wrong
+  event/projection, or have their required `fail_policy` rewritten
+  (continuation stays fail-closed; PreToolUse/Stop stay fail-open;
+  test stubs may pass `allow_incomplete=True`). `dispatch()` appends a bounded redacted
+  JSONL row via `omg_cli/runtime_events.py` with a monotonic
+  per-root sequence; journal write failures fail open. Globally disabled
+  buses (`OMG_DISABLE_HOOKS` / `DISABLE_OMG`) skip journaling. `duration_ms` is
+  always recorded; timeout is **post-hoc** after the synchronous handler
+  returns (Python cannot preempt). Antigravity `hooks.json` + README under
+  `docs/parity/projections/antigravity/hooks/` plus
+  `install_antigravity_hook_projection(dest)` for a later #77 install path
+  — static projection only, not live AG / not `agy` loaded hooks. Does not
+  invent UserPromptSubmit inject. Does not set `verified`. Refs #72
+  (does not close).
 - **#72 lifecycle registry (first cut):** host-neutral hook registry
   `hooks/registry.json` plus in-process dispatcher
   `omg_cli/hooks_registry.py`. Grok mappings are explicit:

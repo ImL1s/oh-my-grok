@@ -8,14 +8,18 @@ from pathlib import Path
 import pytest
 
 from omg_cli.hooks_registry import (
+    BUS_EVENT_TYPES,
     CANONICAL_EVENTS,
     GROK_EVENT_MAP,
+    HOST_HOOK_ALLOWLIST,
     REGISTRY_RELATIVE,
+    TIMEOUT_KIND,
     HooksRegistryError,
     bus_disabled,
     check_antigravity_projection,
     dispatch,
     inspect_hooks_registry,
+    install_antigravity_hook_projection,
     load_hooks_registry,
     resolve_continuation,
     skipped_hook_ids,
@@ -225,7 +229,14 @@ def test_dispatch_spawn_missing_capability_mode_still_denied() -> None:
 
 def test_dispatch_does_not_write_run_state(tmp_path: Path) -> None:
     dispatch("session.start", {"root": str(tmp_path)}, root=ROOT, env={})
-    assert not (tmp_path / ".omg" / "state").exists()
+    state = tmp_path / ".omg" / "state"
+    assert not (state / "passes").exists()
+    assert not (state / "verified").exists()
+    assert not (state / "runs").exists()
+    for path in state.rglob("*"):
+        if path.is_file():
+            assert "passes" not in path.parts
+            assert path.name != "verified"
 
 
 def test_dispatch_fail_open_on_handler_crash() -> None:
@@ -320,6 +331,9 @@ def test_timeout_fail_open() -> None:
     row = next(item for item in result["results"] if item["id"] == "omg.session.start.observe")
     assert row["status"] == "error"
     assert row["fail_open"] is True
+    assert row["timeout_kind"] == "post_hoc"
+    assert isinstance(row["duration_ms"], int)
+    assert row["duration_ms"] >= 1
 
 
 def test_continuation_policies() -> None:
@@ -360,6 +374,39 @@ def test_security_handler_binding_fails_closed(tmp_path: Path) -> None:
             hook["handler"] = "observe"
     _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
     with pytest.raises(HooksRegistryError, match="handler must be"):
+        load_hooks_registry(tmp_path)
+
+
+def test_disabled_security_hook_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.pretool.deny":
+            hook["enabled"] = False
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="must be enabled"):
+        load_hooks_registry(tmp_path)
+    stub = load_hooks_registry(tmp_path, allow_incomplete=True)
+    assert stub.by_id()["omg.pretool.deny"].enabled is False
+
+
+def test_continuation_fail_policy_pin_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.continuation.guard":
+            hook["fail_policy"] = "fail-open"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="fail_policy must be"):
+        load_hooks_registry(tmp_path)
+
+
+def test_rebound_security_hook_event_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.stop.gate":
+            hook["event"] = "idle"
+            hook["host_hook"] = "Stop"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="event must be"):
         load_hooks_registry(tmp_path)
 
 
@@ -448,3 +495,211 @@ def test_hook_cannot_set_verified() -> None:
     )
     row = next(item for item in result["results"] if item["id"] == "omg.session.start.observe")
     assert row["status"] == "error"
+    assert result["verified"] is False
+
+
+def test_host_hook_allowlist_covers_canonical_events() -> None:
+    assert set(HOST_HOOK_ALLOWLIST) == set(CANONICAL_EVENTS)
+    assert set(GROK_EVENT_MAP) == set(CANONICAL_EVENTS)
+
+
+def test_unknown_host_hook_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.pretool.deny":
+            hook["host_hook"] = "NotARealHook"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="host_hook"):
+        load_hooks_registry(tmp_path)
+
+
+def test_reconciled_event_rejects_unknown_host_hook(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    for hook in raw["hooks"]:
+        if hook["id"] == "omg.continuation.guard":
+            hook["host_hook"] = "Stop"
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="host_hook"):
+        load_hooks_registry(tmp_path)
+
+
+def test_missing_continuation_guard_fails_closed(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    raw["hooks"] = [hook for hook in raw["hooks"] if hook["id"] != "omg.continuation.guard"]
+    _write(tmp_path / REGISTRY_RELATIVE, json.dumps(raw))
+    with pytest.raises(HooksRegistryError, match="omg.continuation.guard"):
+        load_hooks_registry(tmp_path)
+    stub = load_hooks_registry(tmp_path, allow_incomplete=True)
+    assert "omg.continuation.guard" not in stub.by_id()
+
+
+def test_dispatch_appends_monotonic_journal(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import BUS_SOURCE, read_runtime_events, source_journal_path
+
+    first = dispatch(
+        "session.start",
+        {"root": str(tmp_path), "run_id": "run-1", "session_id": "sess-1"},
+        root=ROOT,
+        env={},
+    )
+    second = dispatch(
+        "session.start",
+        {"root": str(tmp_path), "run_id": "run-1", "session_id": "sess-1"},
+        root=ROOT,
+        env={},
+    )
+    assert first["journal"]["ok"] is True
+    assert first["journal"]["source_sequence"] == 0
+    assert second["journal"]["source_sequence"] == 1
+    assert first["timeout_kind"] == TIMEOUT_KIND
+    assert isinstance(first["duration_ms"], int)
+    path = source_journal_path(tmp_path, BUS_SOURCE)
+    rows = read_runtime_events(path)
+    assert [row["source_sequence"] for row in rows] == [0, 1]
+    assert all(row["payload"]["timeout_kind"] == "post_hoc" for row in rows)
+    assert all(row["payload"].get("verified") is False for row in rows)
+    assert "duration_ms" in rows[0]["payload"]
+
+
+def test_handler_crash_does_not_corrupt_journal(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import BUS_SOURCE, read_runtime_events, source_journal_path
+
+    def boom(_record, _payload):
+        raise RuntimeError("hook exploded")
+
+    crashed = dispatch(
+        "session.start",
+        {"root": str(tmp_path)},
+        root=ROOT,
+        handlers={"omg.session.start.observe": boom},
+        env={},
+    )
+    assert crashed["ok"] is True
+    assert crashed["verified"] is False
+    path = source_journal_path(tmp_path, BUS_SOURCE)
+    rows = read_runtime_events(path)
+    assert len(rows) == 1
+    assert rows[0]["source_sequence"] == 0
+    follow = dispatch("session.start", {"root": str(tmp_path)}, root=ROOT, env={})
+    assert follow["journal"]["ok"] is True
+    rows = read_runtime_events(path)
+    assert [row["source_sequence"] for row in rows] == [0, 1]
+
+
+def test_journal_write_failure_is_fail_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("omg_cli.runtime_events.append_bus_event", boom)
+    result = dispatch(
+        "session.start",
+        {"root": str(tmp_path)},
+        root=ROOT,
+        env={},
+    )
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert result["journal"]["ok"] is False
+    assert result["journal"]["fail_open"] is True
+    assert not (tmp_path / ".omg" / "state" / "passes").exists()
+    assert not (tmp_path / ".omg" / "state" / "verified").exists()
+
+
+def test_journal_does_not_persist_payload_secrets(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import BUS_SOURCE, source_journal_path
+
+    dispatch(
+        "session.start",
+        {
+            "root": str(tmp_path),
+            "Authorization": "Bearer raw-token",
+            "prompt": "SECRET USER TEXT",
+        },
+        root=ROOT,
+        env={},
+    )
+    text = source_journal_path(tmp_path, BUS_SOURCE).read_text(encoding="utf-8")
+    assert "raw-token" not in text
+    assert "SECRET USER TEXT" not in text
+
+
+def test_disable_and_skip_still_work_with_journal(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import BUS_SOURCE, source_journal_path
+
+    disabled = dispatch(
+        "tool.pre",
+        {"root": str(tmp_path), "toolName": "read_file"},
+        root=ROOT,
+        env={"OMG_DISABLE_HOOKS": "1"},
+    )
+    assert disabled["ok"] is True
+    assert disabled["skipped"] == "disabled"
+    assert disabled["verified"] is False
+    assert "journal" not in disabled
+    assert not source_journal_path(tmp_path, BUS_SOURCE).exists()
+    skipped = dispatch(
+        "tool.pre",
+        {"root": str(tmp_path), "toolName": "read_file"},
+        root=ROOT,
+        env={"OMG_SKIP_HOOKS": "omg.pretool.deny"},
+    )
+    assert skipped["ok"] is True
+    assert any(row["status"] == "skipped" for row in skipped["results"])
+    assert skipped["verified"] is False
+
+
+def test_concurrent_dispatch_sequence(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from omg_cli.runtime_events import BUS_SOURCE, read_runtime_events, source_journal_path
+
+    count = 12
+
+    def go(_index: int) -> dict:
+        return dispatch("session.start", {"root": str(tmp_path)}, root=ROOT, env={})
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(go, index) for index in range(count)]
+        results = [future.result() for future in as_completed(futures)]
+    assert all(row["ok"] is True for row in results)
+    assert all(row["verified"] is False for row in results)
+    ok_journals = [row for row in results if row.get("journal", {}).get("ok")]
+    errors = [row.get("journal") for row in results if not row.get("journal", {}).get("ok")]
+    assert len(ok_journals) == count, errors
+    sequences = sorted(row["journal"]["source_sequence"] for row in ok_journals)
+    assert sequences == list(range(count))
+    rows = read_runtime_events(source_journal_path(tmp_path, BUS_SOURCE))
+    assert sorted(row["source_sequence"] for row in rows) == list(range(count))
+
+
+def test_install_antigravity_hook_projection(tmp_path: Path) -> None:
+    dest = tmp_path / "ag-hooks"
+    dry = install_antigravity_hook_projection(dest, root=ROOT, dry_run=True)
+    assert dry["ok"] is True
+    assert dry["dry_run"] is True
+    assert dry["verified"] is False
+    assert dry["live_ag"] is False
+    assert not dest.exists()
+    applied = install_antigravity_hook_projection(dest, root=ROOT, dry_run=False)
+    assert applied["live_ag"] is False
+    assert applied["verified"] is False
+    assert (dest / "README.md").is_file()
+    assert (dest / "hooks.json").is_file()
+    data = json.loads((dest / "hooks.json").read_text(encoding="utf-8"))
+    assert data["live_ag"] is False
+    assert data["verified"] is False
+    assert "UserPromptSubmit" not in data["hooks"]
+    assert "PreToolUse" in data["hooks"]
+    assert data["kind"] == "static_projection"
+    assert "not proof that agy loaded hooks" in data["note"]
+
+
+def test_bus_event_types_keep_stop_and_tool_failure_nonterminal() -> None:
+    assert BUS_EVENT_TYPES["stop.request"] == "turn_started"
+    assert BUS_EVENT_TYPES["idle"] == "turn_started"
+    assert BUS_EVENT_TYPES["tool.failure"] == "turn_completed"
+    assert BUS_EVENT_TYPES["session.end"] == "agent_closed"
+    assert BUS_EVENT_TYPES["subagent.stop"] == "agent_closed"
+
