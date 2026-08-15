@@ -36,15 +36,18 @@ EXACT_MEDLEY_CAP = "medley.native-exact-model.v1"
 _ADVERTISED_INCOMPATIBLE = "incompatible"
 _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
-# Credential-shaped values. Diagnostic words such as "authorization" in a
-# capability reason are not secrets; secret-named keys with values still fail.
+# Credential-shaped values. Diagnostic words such as "authorization" or
+# "bearer authentication unavailable" in a capability reason are not secrets;
+# secret-named keys with values still fail.
 _VALUE_SECRET_NEEDLES: tuple[str, ...] = (
-    "bearer ",
     "acct_",
     "-----begin ",
     "x-api-key",
 )
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
+_BEARER_RE = re.compile(
+    r"(?i)(?:^|[^a-z0-9])bearer\s+(?:sk-|eyj|[a-z0-9._\-+/=]{20,})"
+)
 _SECRET_KEYS = frozenset(
     {
         "authorization",
@@ -309,20 +312,20 @@ def receipt_for_policy(
 
 
 def apply_receipt_to_view_fields(receipt: Mapping[str, Any]) -> dict[str, Any]:
-    selected = (
+    selected = _nonempty_string(
         receipt.get("selectedCatalogId")
         or receipt.get("selected_catalog_id")
         or receipt.get("selected_model_ref")
     )
-    digest = (
+    digest = _nonempty_string(
         receipt.get("routeDigest")
         or receipt.get("route_digest")
         or receipt.get("route_receipt_digest")
     )
     attempt = receipt.get("attempt")
     return {
-        "selected_model_ref": str(selected).strip() if selected else None,
-        "route_receipt_digest": str(digest).strip() if digest else None,
+        "selected_model_ref": selected,
+        "route_receipt_digest": digest,
         "attempt": int(attempt) if isinstance(attempt, int) else None,
     }
 
@@ -358,7 +361,7 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
         or item.get("selected_catalog_id")
         or item.get("selected_model_ref")
     )
-    if not str(selected or "").strip():
+    if _nonempty_string(selected) is None:
         raise MedleyInspectError(
             "receipt needs a selected catalog id",
             code="E_MEDLEY_INSPECT_SCHEMA",
@@ -387,9 +390,16 @@ def _normalized_secret_key(key: str) -> str:
     return key.strip().lower().replace("-", "_")
 
 
+def _nonempty_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
 def _reject_secrets(text: str, *, label: str) -> None:
     lower = text.lower()
-    if _SK_TOKEN_RE.search(lower):
+    if _SK_TOKEN_RE.search(lower) or _BEARER_RE.search(lower):
         raise MedleyInspectError(
             f"{label} contains forbidden material",
             code="E_MEDLEY_INSPECT_SECRET",

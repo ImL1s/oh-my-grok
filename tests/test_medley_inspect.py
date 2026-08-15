@@ -418,6 +418,62 @@ def test_claimed_sentinel_is_not_a_supported_version(tmp_path: Path) -> None:
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
 
 
+def test_bearer_authentication_prose_is_not_a_secret(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "bearer-prose.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "state": "supported",
+                "version": "v1",
+                "reason": "bearer authentication unavailable",
+            }
+        ],
+        receipts=[],
+    )
+    snap, doc = resolve_host_snapshot(inspect_path=inspect)
+    assert doc is not None
+    assert snap.is_supported("medley.native-route-receipt.v1")
+
+
+def test_bearer_token_value_is_still_secret(tmp_path: Path) -> None:
+    path = tmp_path / "bearer-token.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [],
+                "receipts": [
+                    {"note": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=path)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SECRET"
+
+
+def test_non_string_selected_catalog_id_is_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "catalog-object.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": {"bogus": 1},
+                "route_digest": "a" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
 def test_explicit_unsupported_baseline_is_not_restored(tmp_path: Path) -> None:
     inspect = _write_inspect(
         tmp_path / "baseline.json",
