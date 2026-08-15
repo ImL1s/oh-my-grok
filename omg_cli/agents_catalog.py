@@ -5,9 +5,11 @@ this catalog — do not add a second plugin-agent registry.
 
 Fail-closed: missing catalog, missing agent file, extra uncatalogued
 ``omg-*.md``, duplicate id, ``capability_mode`` outside
-``{read-only, read-write}``, or agent frontmatter that omits or disagrees
-with catalog ``capabilityMode`` / ``permissionMode``. Never ``execute`` /
-``all``.
+``{read-only, read-write}``, or agent frontmatter that omits, aliases, or
+disagrees with catalog ``capabilityMode`` / ``permissionMode``. Grok agent
+files must use those camelCase keys; snake_case aliases are rejected so a
+read-only/plan agent cannot silently fall back to host defaults. Never
+``execute`` / ``all``.
 
 Not a routing runtime. Antigravity ``agent.md`` files are static projections
 only — not an installed AG plugin and not live AG evidence.
@@ -432,20 +434,19 @@ def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
     return fields
 
 
-def _frontmatter_scalar(
+def _frontmatter_canonical(
     fields: dict[str, str],
     *,
     camel: str,
     snake: str,
     agent_id: str,
 ) -> str:
-    camel_val = fields.get(camel)
-    snake_val = fields.get(snake)
-    if camel_val is not None and snake_val is not None and camel_val != snake_val:
+    """Require the Grok camelCase key; reject snake_case aliases."""
+    if snake in fields:
         raise AgentsCatalogError(
-            f"{agent_id}: frontmatter {camel} disagrees with {snake}"
+            f"{agent_id}: frontmatter must use {camel}, not {snake}"
         )
-    value = camel_val if camel_val is not None else snake_val
+    value = fields.get(camel)
     if value is None or not str(value).strip():
         raise AgentsCatalogError(f"{agent_id}: frontmatter missing {camel}")
     value = str(value).strip()
@@ -458,13 +459,13 @@ def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None
     """Reject source frontmatter that omits or disagrees with the catalog posture."""
 
     fields = _parse_agent_frontmatter(text, agent_id=record.id)
-    declared_cap = _frontmatter_scalar(
+    declared_cap = _frontmatter_canonical(
         fields,
         camel="capabilityMode",
         snake="capability_mode",
         agent_id=record.id,
     )
-    declared_perm = _frontmatter_scalar(
+    declared_perm = _frontmatter_canonical(
         fields,
         camel="permissionMode",
         snake="permission_mode",

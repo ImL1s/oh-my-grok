@@ -631,7 +631,8 @@ surface.
 
 Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
 (loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
-`agents_catalog`). Load fail-closes when an agent's frontmatter omits or
+`agents_catalog`). Load fail-closes when an agent's frontmatter omits,
+uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
 must not conceal a more permissive plugin definition). Antigravity
 `agent.md` files under

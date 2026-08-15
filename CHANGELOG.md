@@ -113,7 +113,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ### Fixed
 - **Leftover Codex reviews (#177/#178/#179/#180):** project-local `.omg/state`
   stays confined while leftover writers remain; agent frontmatter must match
-  catalog `capabilityMode`/`permissionMode`; `omg edit plan` uses the apply
+  catalog `capabilityMode`/`permissionMode` (camelCase keys required;
+  snake_case aliases rejected); `omg edit plan` uses the apply
   `O_NOFOLLOW` walk (fail-closed without `dir_fd`) and a size bound before
   load; apply JSON omits local `--input` paths; missing `--input` emits
   `E_HASH_EDIT_USAGE`; leftover `modes.py` run-dir/PRD writers use

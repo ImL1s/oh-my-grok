@@ -268,6 +268,42 @@ def test_projection_renderer_roundtrip(tmp_path: Path) -> None:
     assert check_antigravity_projections(tmp_path) == []
 
 
+def test_frontmatter_snake_capability_mode_alias_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapability_mode: read-write\n"
+        "permissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="must use capabilityMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_snake_permission_mode_alias_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapabilityMode: read-write\n"
+        "permission_mode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="must use permissionMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
 def test_frontmatter_omitted_capability_mode_fails_closed(tmp_path: Path) -> None:
     entry = _agent_entry(
         "omg-executor",

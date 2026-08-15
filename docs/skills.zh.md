@@ -513,7 +513,7 @@ Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subag
 
 机器可读插件 agent 目录：[`agents/catalog.json`](../agents/catalog.json)
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 检视）。
-agent frontmatter 若省略或与目录的 `capabilityMode` / `permissionMode` 不一致则 fail-closed。
+agent frontmatter 若省略、使用 snake_case 别名（`capability_mode` / `permission_mode`），或与目录的 `capabilityMode` / `permissionMode` 不一致则 fail-closed。
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 下的 Antigravity `agent.md` **只是投影** — 不是已安装的 AG 插件，也不是 live AG 证据。
 团队路由地板仍在 `omg_cli/team/roles.py`。Dual-host model policy（#131）透过
