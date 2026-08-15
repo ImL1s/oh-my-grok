@@ -19,6 +19,7 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V1,
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
+    TEAM_OPERATION_CATALOG_V4,
     catalog_document_json,
     serialize_operation_catalog,
 )
@@ -163,7 +164,7 @@ def _clear_crash_hook() -> None:
     tb._crash_hook = None
 
 
-def test_catalog_v1_v2_v3_byte_frozen_and_v4_default() -> None:
+def test_catalog_v1_v2_v3_v4_byte_frozen_and_v5_default() -> None:
     assert (
         catalog_document_json(operations=TEAM_OPERATION_CATALOG_V1, schema_version=1)
         == GOLDEN_V1.read_text(encoding="utf-8")
@@ -176,10 +177,17 @@ def test_catalog_v1_v2_v3_byte_frozen_and_v4_default() -> None:
         catalog_document_json(operations=TEAM_OPERATION_CATALOG_V3, schema_version=3)
         == GOLDEN_V3.read_text(encoding="utf-8")
     )
-    assert CATALOG_SCHEMA_VERSION == 4
-    assert catalog_document_json() == GOLDEN_V4.read_text(encoding="utf-8")
+    assert (
+        catalog_document_json(operations=TEAM_OPERATION_CATALOG_V4, schema_version=4)
+        == GOLDEN_V4.read_text(encoding="utf-8")
+    )
+    assert CATALOG_SCHEMA_VERSION == 5
     assert any(
         op["name"] == "bulk-create-tasks"
+        for op in serialize_operation_catalog()["operations"]
+    )
+    assert any(
+        op["name"] == "enqueue-host-prompt"
         for op in serialize_operation_catalog()["operations"]
     )
 

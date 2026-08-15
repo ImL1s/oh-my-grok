@@ -29,7 +29,7 @@ WORKER_TOPOLOGIES: frozenset[str] = frozenset(
 EXECUTION_SCHEMA = 1
 
 # Jobs-plane providers Team may launch for worker-topology=job.
-JOB_ADMITTED_PROVIDERS: frozenset[str] = frozenset({"fake", "antigravity"})
+JOB_ADMITTED_PROVIDERS: frozenset[str] = frozenset({"fake", "antigravity", "grok"})
 
 # Task / worker status vocabulary for the launch abstraction (team.json).
 STATUS_READY = "ready"
@@ -238,7 +238,7 @@ def resolve_job_provider(provider: str, *, executor: str | None = None) -> str:
         return raw
     raise WorkerLaunchError(
         "worker-topology=job requires a jobs-admitted provider "
-        f"(fake|antigravity); got {provider!r}",
+        f"(fake|antigravity|grok); got {provider!r}",
         code="E_TEAM_JOB_PROVIDER",
     )
 

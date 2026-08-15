@@ -53,6 +53,7 @@ from omg_cli.team.operation_catalog import (
     TEAM_OPERATION_CATALOG_V1,
     TEAM_OPERATION_CATALOG_V2,
     TEAM_OPERATION_CATALOG_V3,
+    TEAM_OPERATION_CATALOG_V4,
     catalog_document_json,
 )
 from omg_cli.team.plane import EXPERIMENTAL_ENV, WORKER_ENV_MARKERS, start_team
@@ -364,6 +365,10 @@ def test_catalog_goldens_unchanged() -> None:
         == GOLDEN_V3.read_text(encoding="utf-8")
     )
     assert GOLDEN_V4.is_file()
+    assert (
+        catalog_document_json(operations=TEAM_OPERATION_CATALOG_V4, schema_version=4)
+        == GOLDEN_V4.read_text(encoding="utf-8")
+    )
 
 
 def test_claim_schema_exact_keys_and_budget() -> None:

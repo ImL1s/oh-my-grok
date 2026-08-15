@@ -33,6 +33,7 @@ from omg_cli.jobs.ownership import (
 from omg_cli.jobs.providers import (
     build_request_snapshot,
     preflight_antigravity,
+    preflight_grok,
     resolve_job_provider,
 )
 from omg_cli.jobs.store import (
@@ -213,6 +214,21 @@ def start_job(
     request_snapshot: dict[str, Any]
     if provider == "antigravity":
         preflight = preflight_antigravity(
+            output_format=output_format,
+            model=model,
+            effort=effort,
+            mode=mode,
+            timeout_s=provider_timeout_s,
+            sleep_s=sleep_s,
+            fail=fail,
+            large_output=large_output,
+            ignore_sigterm=ignore_sigterm,
+        )
+        request_snapshot = build_request_snapshot(
+            provider, preflight=preflight
+        )
+    elif provider == "grok":
+        preflight = preflight_grok(
             output_format=output_format,
             model=model,
             effort=effort,

@@ -7,11 +7,11 @@
 
 | Capability | Category | Classification | Maturity | Marker | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | PR1–PR5 durable jobs plane landed under closed #68. Remaining authenticated Antigravity live evidence and Team job-backed workers are owned by #69. No live promotion. |
+| `jobs.durable_background` | jobs | omg_native | grok=catalogued | catalogued | PR1–PR5 durable jobs plane landed under closed #68. Hermetic grok job provider admitted under #69 (headless --prompt-file; not live). Remaining authenticated Antigravity live evidence and live Team job-backed workers are owned by #69. No live promotion. |
 | `omx.launch.worktree_tmux_hud` | state_memory_observability | omg_native | grok=catalogued | catalogued | HUD/worktree/tmux substitutes exist; OMX launch UX polish and Team v3 remain under #69. |
 | `omx.workflow.deep_interview_ralplan` | runtime_orchestration | omg_native | grok=catalogued | catalogued | Interview + ralplan CLI/skills exist; OMX prometheus-strict / ultragoal canonical chain breadth is partial. |
 | `omx.research.modes` | runtime_orchestration | optional_unclaimed | grok=catalogued | optional_unclaimed | No first-class OMX-style research/autoresearch mode in OMG; ulw/ralph/ralplan/autopilot only. Near-1:1 leftover owned by #79, not #78. |
-| `omx.team.worker_mailbox_question` | team | omg_native | grok=catalogued | catalogued | Worker/mailbox/ask substitutes exist; Team v3 job-backed panes remain under #69. |
+| `omx.team.worker_mailbox_question` | team | omg_native | grok=catalogued | catalogued | Worker/mailbox/ask substitutes exist; live Team v3 job-backed panes remain under #69. Hermetic grok job topology is admitted. |
 | `omx.agents.reviewer_product_catalog` | agents_routing | omg_native | grok=catalogued | catalogued | Machine catalog landed including reviewer roles (#71). OMX product-catalog breadth and dynamic routing remain partial (#131/#79). |
 | `omx.goal.stop_lock_recovery` | runtime_orchestration | omg_native | grok=catalogued | catalogued | Stop gate + recovery exist; Grok Stop pin is capped/fail-open (not OMX infinite stickiness) (#69/#74/#79). |
 | `omx.plugin.setup_update_migrate` | install_update | omg_native | grok=catalogued | catalogued | omg setup/install + guidance rules exist; OMX migrate breadth is not 1:1 (#77). |

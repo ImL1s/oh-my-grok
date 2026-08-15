@@ -3,7 +3,7 @@
     "method": "git_head_clean",
     "observed_revision": "67dddfc05ff29900d8251dcec0ed9dee3c947ffa"
   },
-  "coverage_digest": "b9f80b34252c22f6a1972575415b90b02a2499feb0d36588cee26e7852b37908",
+  "coverage_digest": "eb9a9be91f92fc073a278cbc44c671b444fae419e66cb6a23e42b85fded8eea7",
   "discovered_surfaces": [
     {
       "anchor": "agent:analyst",

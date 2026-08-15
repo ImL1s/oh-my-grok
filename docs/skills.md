@@ -215,7 +215,7 @@ omg accept --yes
 | **Gate** | **Default on.** Kill switch `OMG_DISABLE_TMUX_TEAM=1` (legacy `OMG_EXPERIMENTAL_TMUX_TEAM=0` also disables) |
 | **Skill** | `omg-team` — in-session slash **`/oh-my-grok:omg-team` only**; natural `team N …` |
 | **CLI** | `omg team launch` (argv shorthand `N`/`N:role`+goal → launch; `--io-mode auto\|interactive\|headless`); also `start\|run\|scale\|resume\|status\|collect\|stop\|api\|supervisor\|panes\|capture\|focus\|key\|input\|watch\|view\|hyperplan\|security-research` |
-| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v4 has 39 named ops / 28 implemented — not full OMX catalog parity; see `docs/team-operation-catalog-v4.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
+| **Honesty** | Zero-config = grok panes; `--routing` enables multi-CLI (codex/agy/cursor/gemini) with role floors. **Integration** isolation only (ownership + seal + integrate) — **not** an execution sandbox (see `docs/security-model.md` posture table). `collect` / `run` / `scale` / `resume` never set `verified`. Scaling/resume/ralph are **lifecycle extensions** of the same team plane (no new isolation claims). Shorthand uses **split-pane** topology + seeds team API (P0′ surface; catalog v5 has 42 named ops / 32 implemented — not full OMX catalog parity; see `docs/team-operation-catalog-v5.md`). Live promotion proof: `scripts/live_team_smoke.py --live` → `LIVE_TEAM_SMOKE_OK` (2026-07-30 local; not CI-required). **No bare `/team` slash alias** — 2026-07-25 host probe (`grok inspect` / plugin skill docs): skills are `/name` or `/plugin:name`; no frontmatter to register an unnamespaced `/team` for `omg-team`, and other plugins already expose `team` skills. |
 
 **Canonical shorthand (OMX-like):** `omg team` accepts `N` / `N:role` before the
 goal and normalizes to `launch` (not a separate argparse choice named `3`).
@@ -304,7 +304,7 @@ omg team stop --run RUN
 ```bash
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --plan-only
 omg team start --goal "parallelize A/B" --tasks-json '[{"task_id":"t1","owned_files":["a.py"]},{"task_id":"t2","owned_files":["b.py"]}]' --dry-run
-# job-backed workers via durable Jobs plane (#69 PR4; fake|antigravity):
+# job-backed workers via durable Jobs plane (#69; fake|antigravity|grok):
 omg team start --goal "…" --tasks-json '[{"task_id":"t1","owned_files":["a.py"],"provider":"fake"}]' \
   --worker-topology=job --dry-run
 # multi-CLI (role→provider); floors reject cursor-on-reviewer and unknown roles:
@@ -327,6 +327,10 @@ omg team api catalog
 omg team api replace-worker --input '{"run_id":"RUN","team_id":"t","worker":"t1","mode":"lost","expected_attempt":1,"expected_launch_generation":1,"idempotency_key":"repl-1"}' --json
 omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"t"}' --json
 omg team api bulk-create-tasks --input '{"schema_version":1,"run_id":"RUN","team_id":"t","batch_id":"b1","idempotency_key":"k1","source":{"kind":"fixture","source_id":"s1","digest":"<sha256>"},"tasks":[{"task_key":"root","subject":"s","description":"d","depends_on":[],"requires_code_change":false,"expected_artifact":{"kind":"omg.team.test.artifact","schema_version":1,"required_fields":["summary"]}}]}' --json
+omg team api broadcast --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","body":"hi-all"}' --json
+omg team api enqueue-host-prompt --input '{"run_id":"RUN","team_id":"t","body":"next prompt"}' --json
+omg team api list-host-prompt-queue --input '{"run_id":"RUN","team_id":"t"}' --json
+omg team api reorder-host-prompt-queue --input '{"run_id":"RUN","team_id":"t","order":["hp-00000001","hp-00000000"]}' --json
 omg team status --run RUN --presentation --json
 # Hyperplan V1 hermetic produce + task driver + lane protocol + fixture execute (#69 PR14; compile execution_supported=false):
 omg team hyperplan plan --spec SPEC.json --json
@@ -349,11 +353,12 @@ omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE --
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
 omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
-# P0′ ops + replace-worker + read-presentation-state + bulk-create-tasks; catalog v4 = 39 named / 28 implemented (see docs/team-operation-catalog-v4.md; v1/v2/v3 goldens unchanged)
+# P0′ ops + replace-worker + read-presentation-state + bulk-create-tasks + broadcast + host prompt-queue; catalog v5 = 42 named / 32 implemented (see docs/team-operation-catalog-v5.md; v1–v4 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1
 ```
 
-See also `docs/team.md` for job-backed worker invariants (#69 PR4),
+See also `docs/team.md` for job-backed worker invariants (#69 PR4 + grok jobs),
+`docs/team-operation-catalog-v5.md` for catalog v5,
 `docs/team-hyperplan-v1.md` for Hyperplan V1 hermetic produce + task driver +
 lane worker protocol + fixture execute (#69 PR14), and
 `docs/team-security-research-v1.md` for Security Research V1 (#69 PR14).
@@ -641,7 +646,7 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team panes via `build_launch_envelope` (#67-D; supervisor owns PTY/PID/readiness). Never claims `live_call_ready`. |
 | `omg visual compare` | Visual Contract V1 `compare()` wrapper (#75): reads `--input` JSON and emits a scored/blocked envelope. Callers compare `aggregate` to `threshold`. Never writes `passes`/`verified`, never decodes images, never talks to agents. Capture, overlay/diff, reviewer agents, and visual-Ralph remain later #75 work. See [visual-contract-v1.md](./visual-contract-v1.md). |
 | `omg tools doctor\|serve\|lsp\|ast\|codegraph\|research` | OMG-owned sidecar (#73): semantic LSP / AST-grep / CodeGraph (toy local import/symbol index via `omg tools codegraph index`, **not** SCIP) / opt-in research. **Not** Grok-native LSP (`omg lsp` stays host-owned). **Not** live Antigravity evidence. `omg mcp-server` still forbids `lsp.*`. See [tools-sidecar.md](./tools-sidecar.md). |
-| `omg job start\|status\|wait\|collect\|cancel\|list\|retry\|auto-retry\|gc\|recover` | Durable background jobs (#68 PR1–PR5): `.omg/jobs/<id>/` store, subprocess runner owning `ProviderAdapter.run`, owner lease/heartbeat observation, explicit `recover` → `lost`, explicit `retry --attempt N` with attempt archive, bounded `auto-retry` scheduler tick (automatic class only; one pass, no daemon), terminal `gc --retention-days`, and `omg ask --background` → job_id. `--provider fake` (hermetic) and `--provider antigravity` (fail-closed preflight; stream-json default; evidence artifacts only). Fake-only flags rejected with Antigravity. Authenticated Antigravity execution not claimed. Remaining live/job-backed evidence is owned by #69; closed #68 is historical. See `docs/durable-jobs.md`. |
+| `omg job start\|status\|wait\|collect\|cancel\|list\|retry\|auto-retry\|gc\|recover` | Durable background jobs (#68 PR1–PR5 + #69 grok provider): `.omg/jobs/<id>/` store, subprocess runner owning `ProviderAdapter.run`, owner lease/heartbeat observation, explicit `recover` → `lost`, explicit `retry --attempt N` with attempt archive, bounded `auto-retry` scheduler tick (automatic class only; one pass, no daemon), terminal `gc --retention-days`, and `omg ask --background` → job_id. `--provider fake` (hermetic), `--provider antigravity` (fail-closed preflight; stream-json default; evidence artifacts only), `--provider grok` (fail-closed preflight; headless `--prompt-file` only — not an interactive TTY owner). Fake-only flags rejected with Antigravity and grok. Authenticated Antigravity execution and live grok job smoke are not claimed. Remaining live AG / live job-backed Team evidence is owned by #69; closed #68 is historical. See `docs/durable-jobs.md`. |
 | `omg edit plan\|apply` | Hash-anchored edit CLI (#76): `plan` is read-only; `apply` calls `apply_hash_edit` (re-read, re-plan, atomic replace). Never writes `passes`/`verified`. Does not claim `omo.edit.hash_anchored` host parity. See `docs/hash-edit.md`. |
 
 Workflow planning never launches a foreign CLI. The leader executes plan tasks

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from omg_cli.cli_envelope import emit_data, emit_json, failure, success, wants_json
 from omg_cli.jobs.models import JobStoreError
+from omg_cli.jobs.providers import PUBLIC_PROVIDER_NAMES
 from omg_cli.jobs.recovery import recover_job, recover_jobs
 from omg_cli.jobs.runtime import (
     cancel_job,
@@ -96,13 +97,13 @@ def _cmd_start(args: argparse.Namespace) -> int:
             bool(getattr(args, "ignore_sigterm", False)),
         ]
     )
-    if provider == "antigravity" and fake_flags:
+    if provider in {"antigravity", "grok"} and fake_flags:
         emit_json(
             failure(
                 cmd,
                 "E_JOB_PROVIDER_OPTIONS",
                 "fake-only flags (--sleep/--fail/--large-output/--ignore-sigterm) "
-                "are not allowed with --provider antigravity",
+                f"are not allowed with --provider {provider}",
             )
         )
         return 2
@@ -717,13 +718,13 @@ def register_job_parsers(
     p_start = job_sub.add_parser(
         "start",
         parents=[common],
-        help="start a durable background job (--provider fake|antigravity)",
+        help="start a durable background job (--provider fake|antigravity|grok)",
     )
     p_start.add_argument(
         "--provider",
         required=True,
-        choices=("fake", "antigravity"),
-        help="provider adapter (fake hermetic; antigravity via ProviderAdapter.run)",
+        choices=PUBLIC_PROVIDER_NAMES,
+        help="provider adapter (fake hermetic; antigravity/grok via ProviderAdapter.run)",
     )
     p_start.add_argument(
         "--role",
@@ -905,7 +906,7 @@ def register_job_parsers(
     )
     p_auto.add_argument(
         "--provider",
-        choices=("fake", "antigravity"),
+        choices=PUBLIC_PROVIDER_NAMES,
         default=None,
         help="with --all: filter by provider",
     )
@@ -966,7 +967,7 @@ def register_job_parsers(
     )
     p_recover.add_argument(
         "--provider",
-        choices=("fake", "antigravity"),
+        choices=PUBLIC_PROVIDER_NAMES,
         default=None,
         help="with --all: filter by provider",
     )

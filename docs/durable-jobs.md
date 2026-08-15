@@ -7,21 +7,23 @@ jobs. Evidence stays in job artifacts.
 ## Commands
 
 ```bash
-omg job start --provider fake|antigravity --prompt-file task.md [--attempt-budget N]
+omg job start --provider fake|antigravity|grok --prompt-file task.md [--attempt-budget N]
 omg job status|wait|collect|cancel|list …
 omg job recover JOB_ID [--dry-run]          # reconcile expired/abandoned → lost
-omg job recover --all [--run RUN_ID] [--provider fake|antigravity] [--dry-run]
+omg job recover --all [--run RUN_ID] [--provider fake|antigravity|grok] [--dry-run]
 omg job retry JOB_ID --attempt N            # exact next attempt (explicit)
 omg job auto-retry JOB_ID [--dry-run]       # bounded scheduler tick (one job)
-omg job auto-retry --all [--run RUN_ID] [--provider fake|antigravity] \
+omg job auto-retry --all [--run RUN_ID] [--provider fake|antigravity|grok] \
   [--limit N] [--dry-run]                   # one-pass batch tick (default limit 1, max 32)
 omg job gc --retention-days N               # terminal jobs only
 omg ask fake|agy "…" --background           # thin seam → durable job; returns job_id
 ```
 
-Public start admits `fake` and `antigravity` only. Internal `grok-acp-session`
+Public start admits `fake`, `antigravity`, and `grok`. Internal `grok-acp-session`
 is Team/ACP-sidecar only and cannot be retried or recovered via the public
-`omg job` CLI.
+`omg job` CLI. Grok jobs are **headless** (`grok --prompt-file --cwd
+--output-format plain`); they are not interactive TTY owners and never
+fabricate `TUI_READY` / `PROVIDER_ECHO`.
 
 ## Owner lease / observation (#68 PR4)
 
@@ -112,5 +114,6 @@ Background admits `fake` and `agy` only (maps to jobs `fake` / `antigravity`).
 
 ## Open follow-ups (owned by #69)
 
-Authenticated live Antigravity evidence and Team job-backed workers remain
-open under #69. #68 is closed; do not treat it as a current blocker.
+Authenticated live Antigravity evidence, live grok job smoke, and live
+Team job-backed workers remain open under #69. Hermetic grok job provider
+admission landed; #68 is closed; do not treat it as a current blocker.

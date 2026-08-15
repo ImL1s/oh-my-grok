@@ -136,7 +136,7 @@ def test_catalog_v1_v2_goldens_frozen() -> None:
     assert serialize_operation_catalog(
         operations=TEAM_OPERATION_CATALOG_V3, schema_version=3
     ) == json.loads(GOLDEN_V3.read_text(encoding="utf-8"))
-    assert CATALOG_SCHEMA_VERSION == 4
+    assert CATALOG_SCHEMA_VERSION == 5
     assert len(TEAM_OPERATION_CATALOG_V3) == 38
     assert any(op.name == "read-presentation-state" for op in TEAM_OPERATION_CATALOG_V3)
     assert any(op.name == "bulk-create-tasks" for op in TEAM_OPERATION_CATALOG_V4)

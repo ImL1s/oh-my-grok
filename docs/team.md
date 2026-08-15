@@ -166,14 +166,16 @@ New start/scale also stamp an additive `route` descriptor
 
 - No live Antigravity proof / `live_*` maturity claims
 - No live grok / agy / antigravity / cursor composition auto-workers /
-  job-backed live workers / host prompt-queue consume / model synthesis /
+  live job-backed workers / host-TUI prompt-queue consume / model synthesis /
   PoC running
   (Security Research hermetic result production landed in PR9;
   Hyperplan hermetic result production landed in PR10;
   catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) +
   composition lane worker protocol claim/submit (PR13) + fixture-backed
   composition execution (PR14) landed — compile/produce stay
-  `execution_supported=false`; partial catalog, not full OMX)
+  `execution_supported=false`; catalog v5 implements broadcast + Team-owned
+  host prompt-queue consume (not host-TUI wiring); hermetic grok job
+  provider is admitted — not live grok/AG job smoke; partial catalog, not full OMX)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path
@@ -186,8 +188,9 @@ shared composition task-driver admission/collection + worker-scoped
 claim-lane / submit-lane-result + fixture-backed auto-worker execution
 landed. Compile / produce / admit / collect / claim keep
 `execution_supported=false`. `omg.team.composition_execution_v1` may stamp
-true only with fixture worker evidence. Live providers / job-backed workers
-remain open.
+true only with fixture worker evidence. Live providers / live job-backed
+workers remain open. Hermetic `--worker-topology=job --provider grok` is
+admitted.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json --json

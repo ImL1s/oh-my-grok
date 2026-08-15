@@ -30,6 +30,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `arg0 == 0` (they do not fall through to the poll/raw-TTY branch). Wrapper
   timeout signals the child **process group** (SIGTERM then SIGKILL) with
   bounded WNOHANG reaps. Refs #147 (does not close).
+- **#69 catalog v5 + grok jobs + Team prompt-queue:** default Team catalog is
+  schema v5 (42 named / 32 implemented). `broadcast` is implemented as N
+  durable DMs (leader-only; per-recipient dedupe). Host prompt-queue consume
+  (`enqueue-host-prompt` / `list-host-prompt-queue` /
+  `reorder-host-prompt-queue`) is a Team-owned LEGACY file — not mailbox,
+  not task ACK, not host-TUI wiring (`grok.prompt_queue.*` stay BLOCKED on
+  host probe). Durable Jobs public start admits `--provider grok` (headless
+  `--prompt-file` only; fake-only flags denied; Team `--worker-topology=job`
+  admits grok). v1–v4 goldens unchanged.   Antigravity is not installed here;
+  no live AG / live grok job smoke. Leftover AC remains on issue 69.
+- **Parity coverage_digest after #69 catalog v5 GAPS sync:** refresh OMC/OMX/OmO/Antigravity
+  proof `coverage_digest` values only after gap text for catalog v5 + hermetic
+  grok jobs (no policy/mapping/status changes). Leftover AC remains on issue 69.
 - **#70 Wave B/C skill playbooks + catalog-driven routing:**   29 catalog-only
   canonical skills now have real `skills/omg-*/SKILL.md` playbooks (13 Wave B +
   16 Wave C) plus bundled `resources/contract.json` on every plugin skill

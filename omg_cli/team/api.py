@@ -8,9 +8,9 @@ P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
 shutdown/orphan, events, manifest) are implemented; remaining
 ``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Operation names
 and metadata come from ``omg_cli.team.operation_catalog`` (default schema
-v4; v1–v3 goldens remain frozen). Full OMX catalog parity is intentionally
+v5; v1–v4 goldens remain frozen). Full OMX catalog parity is intentionally
 not claimed — see ``omg team api catalog`` /
-``docs/team-operation-catalog-v4.md``.
+``docs/team-operation-catalog-v5.md``.
 """
 
 from __future__ import annotations
@@ -52,6 +52,12 @@ from omg_cli.team.operation_catalog import (
     TEAM_API_OPERATIONS,
     WORKER_ALLOWED_OPS,
     WORKER_DENIED_OPS,
+)
+from omg_cli.team.prompt_queue import (
+    PromptQueueError,
+    enqueue_host_prompt,
+    list_host_prompt_queue,
+    reorder_host_prompt_queue,
 )
 from omg_cli.team.plane import (
     DISABLE_ENV,
@@ -1093,6 +1099,103 @@ def _op_send_message(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
             details={"error": "mailbox_error"},
         ) from exc
     return _ok("send-message", {"message": message})
+
+
+def _op_broadcast(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Leader-only broadcast as N durable DMs (not a second mailbox store)."""
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    sender = require_safe_id(_require_str(payload, "from_worker"), label="from_worker")
+    body = payload.get("body")
+    if body is None or (isinstance(body, str) and not body.strip()):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "body is required",
+            exit_code=2,
+        )
+    generation = payload.get("generation", 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "generation must be a non-negative integer",
+            exit_code=2,
+        )
+    kind = _optional_str(payload, "kind") or "broadcast"
+    require_safe_id(kind, label="kind")
+    dedupe_key = _optional_str(payload, "dedupe_key")
+    if not dedupe_key:
+        dedupe_key = f"auto-{secrets.token_hex(8)}"
+    require_safe_id(dedupe_key, label="dedupe_key")
+    config = _load_config(root, run_id, team_id)
+    if config is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team_not_found",
+            details={"error": "team_not_found"},
+        )
+    names = [
+        require_safe_id(str(item.get("name") or "").strip(), label="worker")
+        for item in config.get("workers") or []
+        if isinstance(item, Mapping)
+    ]
+    extra = payload.get("to_workers")
+    if extra is not None:
+        if not isinstance(extra, list) or not all(isinstance(item, str) for item in extra):
+            raise TeamApiError(
+                "E_TEAM_API_INVALID_INPUT",
+                "to_workers must be a string array when provided",
+                exit_code=2,
+            )
+        recipients = [
+            require_safe_id(item.strip(), label="to_worker") for item in extra if item.strip()
+        ]
+    else:
+        recipients = [name for name in names if name != sender]
+    recipients = [name for name in recipients if name != sender]
+    # Preserve order, drop duplicates.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in recipients:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    if not ordered:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "broadcast requires at least one recipient worker",
+            exit_code=2,
+        )
+    messages: list[dict[str, Any]] = []
+    try:
+        for recipient in ordered:
+            messages.append(
+                send_message(
+                    root,
+                    run_id=run_id,
+                    team_id=team_id,
+                    sender_id=sender,
+                    recipient_id=recipient,
+                    generation=generation,
+                    kind=kind,
+                    body=body.strip() if isinstance(body, str) else body,
+                    dedupe_key=f"{dedupe_key}--{recipient}",
+                    message_id=_optional_str(payload, "message_id"),
+                )
+            )
+    except (MailboxError, ContractValidationError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "mailbox_error"},
+        ) from exc
+    return _ok(
+        "broadcast",
+        {
+            "recipients": ordered,
+            "count": len(messages),
+            "messages": messages,
+        },
+    )
 
 
 def _op_mailbox_list(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
@@ -2345,8 +2448,69 @@ def _op_read_presentation_state(
     return _ok("read-presentation-state", state)
 
 
+def _op_enqueue_host_prompt(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    body = payload.get("body")
+    kind = _optional_str(payload, "kind")
+    try:
+        entry = enqueue_host_prompt(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            body=body,
+            kind=kind,
+            prompt_id=_optional_str(payload, "prompt_id"),
+        )
+    except PromptQueueError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": getattr(exc, "code", "E_TEAM_PROMPT_QUEUE")},
+        ) from exc
+    return _ok("enqueue-host-prompt", {"entry": entry})
+
+
+def _op_list_host_prompt_queue(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    try:
+        listing = list_host_prompt_queue(root, run_id=run_id, team_id=team_id)
+    except PromptQueueError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": getattr(exc, "code", "E_TEAM_PROMPT_QUEUE")},
+        ) from exc
+    return _ok("list-host-prompt-queue", listing)
+
+
+def _op_reorder_host_prompt_queue(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    order = payload.get("order")
+    if not isinstance(order, list):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "order must be a list of prompt_id strings",
+            exit_code=2,
+        )
+    try:
+        listing = reorder_host_prompt_queue(
+            root, run_id=run_id, team_id=team_id, order=order
+        )
+    except PromptQueueError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": getattr(exc, "code", "E_TEAM_PROMPT_QUEUE")},
+        ) from exc
+    return _ok("reorder-host-prompt-queue", listing)
+
+
 _HANDLERS: dict[str, Handler] = {
     "send-message": _op_send_message,
+    "broadcast": _op_broadcast,
     "mailbox-list": _op_mailbox_list,
     "mailbox-mark-delivered": _op_mailbox_mark_delivered,
     "create-task": _op_create_task,
@@ -2374,6 +2538,9 @@ _HANDLERS: dict[str, Handler] = {
     "read-events": _op_read_events,
     "replace-worker": _op_replace_worker,
     "read-presentation-state": _op_read_presentation_state,
+    "enqueue-host-prompt": _op_enqueue_host_prompt,
+    "list-host-prompt-queue": _op_list_host_prompt_queue,
+    "reorder-host-prompt-queue": _op_reorder_host_prompt_queue,
 }
 
 

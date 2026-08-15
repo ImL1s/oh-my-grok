@@ -2,7 +2,7 @@
 
 Canonical state under ``.omg/jobs/<job-id>/``. Provider execution always goes
 through :class:`~omg_cli.providers.base.ProviderAdapter.run` (no second
-launcher). Public start admits hermetic ``fake`` and ``antigravity``; lease
+launcher). Public start admits ``fake``, ``antigravity``, and ``grok``; lease
 recovery is explicit via ``omg job recover``; bounded auto-retry is a
 caller-driven tick via ``omg job auto-retry`` (no resident daemon).
 """
