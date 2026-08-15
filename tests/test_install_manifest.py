@@ -900,6 +900,70 @@ def test_malformed_hook_json_is_repaired_without_force(
     assert json_path.read_text(encoding="utf-8") == '{"hooks": []}\n'
 
 
+def test_failed_hook_after_quarantine_is_not_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    json_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def fail_after_quarantine(*, home=None, root=None):
+        dest = json_path.with_name("omg-pretool-deny.broken-1.bak")
+        if json_path.exists() or json_path.is_symlink():
+            json_path.replace(dest)
+        return (json_path, "failed:OSError")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", fail_after_quarantine)
+    with pytest.raises(InstallManifestError, match="E_TX"):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+            install_hook=True,
+        )
+    assert not os.path.lexists(json_path)
+    assert (hooks / "omg-pretool-deny.broken-1.bak").is_file()
+
+
+def test_dangling_hook_symlink_is_reconciled_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grokhome"
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True)
+    json_path = hooks / "omg-pretool-deny.json"
+    try:
+        json_path.symlink_to(tmp_path / "missing-hook.json")
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    def repair(*, home=None, root=None):
+        if json_path.is_symlink() or json_path.exists():
+            json_path.unlink()
+        json_path.write_text('{"hooks": []}\n', encoding="utf-8")
+        return (json_path, "repaired")
+
+    monkeypatch.setattr("omg_cli.hook_install.install_global_hook", repair)
+    result = run_scoped_setup(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        here=True,
+        plugin=ROOT,
+        install_hook=True,
+    )
+    assert result["ok"] is True
+    assert json_path.is_file()
+    assert not json_path.is_symlink()
+    assert json_path.read_text(encoding="utf-8") == '{"hooks": []}\n'
+
+
 def test_user_scope_grok_marker_is_not_runtime_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

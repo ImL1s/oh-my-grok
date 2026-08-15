@@ -814,8 +814,12 @@ def _apply_merge_or_install(
             "quarantined-no-source",
             "skipped-no-source",
         }:
-            if "quarantined" in haction:
-                # Quarantine is the fail-safe. Do not republish the JSON.
+            # Quarantine (and the except-path `failed:*` after a successful
+            # rename) must not be undone by rolling the backup onto grok's
+            # `*.json` discovery path. Discard whenever the installer left
+            # the active JSON gone, not only when the action text says
+            # "quarantined".
+            if "quarantined" in haction or not os.path.lexists(target):
                 _discard_backup(backup_dir, ident)
             raise InstallManifestError("E_TX", f"global hook install failed: {haction}")
         label = f"{hpath}: {haction}"
@@ -887,7 +891,7 @@ def apply_manifest(
                     f"refusing to write onto directory occupying managed path: {target}",
                 )
             if merge_kind is not None:
-                if klass == "foreign" and not force:
+                if klass == "foreign" and not force and merge_kind != "hook":
                     _skip_foreign_or_malformed(row, target, klass, skipped)
                     continue
                 if klass == "malformed" and not force and merge_kind != "hook":
@@ -967,7 +971,7 @@ def apply_manifest(
                 "scope": scope,
             },
         )
-        if isinstance(exc, InstallManifestError) and exc.code == "E_TX":
+        if isinstance(exc, InstallManifestError) and exc.code in {"E_TX", "E_PATH"}:
             raise
         raise InstallManifestError(
             "E_TX", f"install transaction rolled back ({type(exc).__name__})"
