@@ -7,17 +7,19 @@ the two install paths cannot drift.
 It installs the self-contained, stdlib-only standalone
 (``hooks/bin/omg_pretool_deny_standalone.py``, produced by
 ``scripts/generate_standalone_hook.py``) into ``$GROK_HOME/hooks/`` and writes the
-discovery JSON pointing at it via ``python3 -I -S <shlex-quoted-abs> || true``.
+discovery JSON pointing at an executable wrapper. grok **1.0.4** ``execvp()``s
+the hook ``command`` string as argv0 (no shell), so a ``python3 … || true``
+line is ``ENOENT`` and fail-opens before PreToolUse can deny.
 
 Why this shape (see docs/security-model.md + the standalone header):
 - The global hook must live under ``$GROK_HOME`` (always readable by grok, not a
   TCC-protected ``~/Documents`` checkout, not tied to one workspace). Pointing it at
   a checkout script that also ``import``s ``omg_cli`` bricked every grok tool call
   (python couldn't ``open()`` it → exit 2 → grok read exit 2 as "explicit deny").
-- ``|| true`` + the standalone's always-exit-0 / JSON-only-deny mean ANY interpreter
-  failure (unreadable script, bad interpreter) fails OPEN, never closed. The path is
-  ``shlex.quote``d so a ``$GROK_HOME`` containing shell metacharacters can't inject an
-  ``exit 2`` (which would re-brick) or arbitrary commands.
+- ``|| true`` lives **inside** the execvp wrapper (not in the JSON command
+  string) so interpreter rc 2 still fail-opens. Paths in the wrapper are
+  ``shlex.quote``d so a ``$GROK_HOME`` with shell metacharacters cannot inject
+  ``exit 2``.
 
 Transactional invariants (never leave a broken hook active):
 - **Stage → smoke → publish.** The candidate standalone is written to a temp file
@@ -27,7 +29,7 @@ Transactional invariants (never leave a broken hook active):
 - **No hook > broken hook.** Any noncanonical managed JSON on a failed/absent install
   is quarantined to a non-``.json`` name (grok discovers ``*.json``); quarantine is
   verified to have removed the active file.
-- The JSON is published LAST, pointing only at the smoke-verified script.
+- The JSON is published LAST, pointing only at the wrapper path.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -43,6 +46,7 @@ from pathlib import Path
 
 HOOK_JSON_NAME = "omg-pretool-deny.json"
 STANDALONE_BASENAME = "omg_pretool_deny_standalone.py"
+WRAPPER_BASENAME = "omg_pretool_deny"
 MATCHER = "run_terminal_command|Bash|Shell|spawn_subagent|Task"
 
 _PY_IN_CMD_RE = re.compile(r"""["']([^"']+\.py)["']|(\S+\.py)""")
@@ -78,19 +82,34 @@ def committed_standalone(root: Path | None = None) -> Path:
     return (root or _repo_root()) / "hooks" / "bin" / STANDALONE_BASENAME
 
 
-def launcher_command(installed_py: Path) -> str:
-    """Shell command grok runs for the hook.
+def python3_executable() -> str:
+    """Absolute python3 grok's empty hook PATH may not find as ``python3``."""
+    found = shutil.which("python3")
+    if found:
+        try:
+            return str(Path(found).resolve())
+        except OSError:
+            return found
+    return "/usr/bin/python3"
 
-    ``-I -S`` = isolated + no-site: no PYTHONPATH / user-site / sibling-module /
-    sitecustomize injection (the standalone is stdlib-only, so this is safe and
-    hermetic). ``|| true`` normalizes ANY interpreter/startup failure (rc != 0,
-    especially rc 2 = python "can't open file", which collides with grok's
-    "explicit deny") to rc 0 → fail-open. Deny is carried by the standalone's
-    stdout ``{"decision":"deny"}`` (honored regardless of exit code). The path is
-    ``shlex.quote``d so a ``$GROK_HOME`` with shell metacharacters cannot break out
-    of the argument to inject ``exit 2`` or run arbitrary commands.
-    """
-    return f"python3 -I -S {shlex.quote(str(installed_py))} || true"
+
+def wrapper_path_for(installed_py: Path) -> Path:
+    return installed_py.parent / WRAPPER_BASENAME
+
+
+def render_wrapper(installed_py: Path, python3: str | None = None) -> str:
+    """POSIX wrapper grok 1.0.4 can ``execvp``. ``|| true`` stays inside the script."""
+    py = python3 or python3_executable()
+    return (
+        "#!/bin/sh\n"
+        "# oh-my-grok PreToolUse launcher. grok 1.0.4 execvp()s this path (no shell).\n"
+        f"{shlex.quote(py)} -I -S {shlex.quote(str(installed_py))} \"$@\" || true\n"
+    )
+
+
+def launcher_command(installed_py: Path) -> str:
+    """Path grok execvp()s. Must be a single absolute executable (no argv / ``|| true``)."""
+    return str(wrapper_path_for(installed_py))
 
 
 def _hook_json_obj(installed_py: Path) -> dict:
@@ -145,7 +164,7 @@ def _atomic_write(path: Path, data: str, *, mode: int) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     ok = False
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
@@ -160,12 +179,17 @@ def _atomic_write(path: Path, data: str, *, mode: int) -> None:
                 pass
 
 
-def _stage_file(final: Path, data: str, *, mode: int) -> Path:
-    """Write *data* to a temp file in final's dir and return it — NOT yet published."""
+def _stage_file(final: Path, data: str | bytes, *, mode: int) -> Path:
+    """Write *data* to a temp file in final's dir and return it — NOT yet published.
+
+    Bytes are written verbatim so a Windows-checkout CRLF standalone still matches
+    ``committed_standalone().read_bytes()`` for isolation smoke argv review.
+    """
+    blob = data if isinstance(data, bytes) else data.encode("utf-8")
     final.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(final.parent), prefix=f".{final.name}.stage.", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(data)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(blob)
         fh.flush()
         os.fsync(fh.fileno())
     os.chmod(tmp, mode)
@@ -271,14 +295,18 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
     src = committed_standalone(root)
     json_path = hooks_dir / HOOK_JSON_NAME
     installed_py = hooks_dir / STANDALONE_BASENAME
+    installed_wrapper = wrapper_path_for(installed_py)
 
     if not installed_py.is_absolute():  # canonical grok_home is absolute; guard anyway
         return json_path, "failed:NonAbsolutePath"
 
     canonical_json = render_hook_json(installed_py)
+    canonical_wrapper = render_wrapper(installed_py)
     prior_json = _safe_read_text(json_path)
     prior_py = _safe_read_bytes(installed_py)
+    prior_wrapper = _safe_read_bytes(installed_wrapper)
     prior_sig = _lstat_sig(installed_py)
+    prior_wrapper_sig = _lstat_sig(installed_wrapper)
     prior_json_sig = _lstat_sig(json_path)
     # lexists (not is_file): a symlink json — even a DANGLING one grok would try to
     # discover — counts as present, so it can be treated as dangerous and quarantined.
@@ -295,11 +323,11 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         return json_path, "skipped-no-source"
 
     try:
-        content = src.read_text(encoding="utf-8")
-        compile(content, str(src), "exec")  # reject a corrupt/truncated source
+        raw = src.read_bytes()
+        compile(raw, str(src), "exec")  # reject a corrupt/truncated source
         # STAGE the candidate, SMOKE it, and only then publish — a deny-for-benign
         # candidate (deny JSON at rc 0, which || true cannot neutralize) never goes live.
-        staged = _stage_file(installed_py, content, mode=0o755)
+        staged = _stage_file(installed_py, raw, mode=0o755)
         try:
             _smoke(staged)
         except Exception:
@@ -309,6 +337,7 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
                 pass
             raise
         os.replace(staged, installed_py)
+        _atomic_write(installed_wrapper, canonical_wrapper, mode=0o755)
         _atomic_write(json_path, canonical_json, mode=0o644)
     except Exception as e:  # noqa: BLE001
         # Publish failed → a noncanonical (dangerous) json must never stay active.
@@ -324,12 +353,14 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
         return json_path, "created"
     now_py = _safe_read_bytes(installed_py)
     now_sig = _lstat_sig(installed_py)
+    now_wrapper = _safe_read_bytes(installed_wrapper)
+    now_wrapper_sig = _lstat_sig(installed_wrapper)
     now_json_sig = _lstat_sig(json_path)
-    # A TRUE no-op requires BOTH files unchanged in content AND type/mode (lstat), so a
-    # repaired mode/symlink on either the script or the json is reported, not hidden.
+    # A TRUE no-op requires ALL files unchanged in content AND type/mode (lstat).
     same_script = (prior_py == now_py) and (prior_sig == now_sig)
+    same_wrapper = (prior_wrapper == now_wrapper) and (prior_wrapper_sig == now_wrapper_sig)
     same_json = (prior_json == canonical_json) and (prior_json_sig == now_json_sig)
-    if same_json and same_script:
+    if same_json and same_script and same_wrapper:
         return json_path, "unchanged"
     if prior_json == canonical_json:
         return json_path, "repaired"  # content was canonical; bytes/mode/type of a file changed
@@ -354,13 +385,14 @@ def remove_global_hook(*, home: Path | None = None) -> list[str]:
         except OSError:
             json_gone = False
     if json_gone:
-        pypath = hooks_dir / STANDALONE_BASENAME
-        if pypath.is_file():
-            try:
-                pypath.unlink()
-                removed.append(str(pypath))
-            except OSError:
-                pass
+        for name in (WRAPPER_BASENAME, STANDALONE_BASENAME):
+            pypath = hooks_dir / name
+            if pypath.is_file():
+                try:
+                    pypath.unlink()
+                    removed.append(str(pypath))
+                except OSError:
+                    pass
     return removed
 
 

@@ -470,14 +470,12 @@ def _is_reviewed_python_launch(
 
 
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Doctor hook smoke: exact canonical ``/bin/sh -c`` launcher plus lstat+digest.
+    """Doctor hook smoke: grok 1.0.4 execvp()s the wrapper path (no shell).
 
-    Authorizes only ``("/bin/sh", "-c", launcher_command(final_path))`` when that
-    direct canonical final path is a regular non-symlink file (``os.lstat``) and
-    ``sha256`` of those bytes equals the committed standalone.
+    Authorizes only ``(launcher_command(final_path),)`` when the committed
+    standalone at ``$GROK_HOME/hooks/<standalone>`` is a regular non-symlink
+    file (``os.lstat``) and ``sha256`` of those bytes matches committed.
     """
-    if raw != "/bin/sh" or len(args) != 3:
-        return False
     gh = _usable_grok_home(grok_home)
     if gh is None:
         return False
@@ -485,8 +483,8 @@ def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Pa
         from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
 
         expected_path = gh / "hooks" / STANDALONE_BASENAME
-        expected = ("/bin/sh", "-c", launcher_command(expected_path))
-        if tuple(str(a) for a in args) != expected:
+        expected_cmd = launcher_command(expected_path)
+        if len(args) != 1 or str(args[0]) != expected_cmd or raw != expected_cmd:
             return False
         st = os.lstat(expected_path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
@@ -662,6 +660,11 @@ def _child_will_exec_isolation_inode(
     argv0 = str(args[0])
     # /bin/sh is not isolation-owned; hook argv stays a shape+digest review.
     if argv0 == "/bin/sh":
+        return True
+    # grok 1.0.4 execvp()s the wrapper path; already shape+digest reviewed.
+    from omg_cli.hook_install import WRAPPER_BASENAME
+
+    if os.path.isabs(argv0) and Path(argv0).name == WRAPPER_BASENAME:
         return True
     if _argv0_has_separator(argv0) and not os.path.isabs(argv0):
         return False

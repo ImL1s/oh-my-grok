@@ -54,15 +54,21 @@ def test_generator_rejects_late_toplevel_import():
 
 # ---------------------------------------------------------------- B3: shlex.quote injection
 def test_launcher_neutralizes_shell_injection_path():
-    from omg_cli.hook_install import launcher_command
+    from omg_cli.hook_install import render_wrapper
 
     evil = Path('/tmp/a"; exit 2; #/x.py')  # would break naive double-quotes → inject exit 2
-    cmd = launcher_command(evil)
-    assert "|| true" in cmd
-    # Running it must NOT exit 2 from the injected `exit 2`: the path is a single
-    # nonexistent arg → python rc 2 → `|| true` → rc 0. If injection succeeded, rc 2.
-    r = subprocess.run(["/bin/sh", "-c", cmd], input="{}", capture_output=True, text=True, timeout=10)
-    assert r.returncode == 0, f"injection not neutralized: {cmd!r}"
+    body = render_wrapper(evil, "/usr/bin/python3")
+    assert "|| true" in body
+    import tempfile, os, subprocess
+    fd, tmp = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    try:
+        Path(tmp).write_text(body, encoding="utf-8", newline="\n")
+        os.chmod(tmp, 0o755)
+        r = subprocess.run([tmp], input="{}", capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, f"injection not neutralized: {body!r} rc={r.returncode}"
+    finally:
+        os.unlink(tmp)
 
 
 # ---------------------------------------------------------------- B2: stage → smoke → publish

@@ -88,12 +88,17 @@ def build_canary_plan(
         "whether shell tool existed, any marker evidence."
     )
 
+    # grok 1.0.4 PreToolUse spawn ENOENTs when --cwd is a 9p/drvfs mount
+    # (WSL /mnt/d/…). Use the isolated temp work dir (typically /tmp), never
+    # the product checkout — that also stops the model quoting deny.py from
+    # the tree and calling it a host deny.
+    grok_cwd = str(work_dir)
     parent_argv = [
         "grok",
         "-p",
         parent_prompt,
         "--cwd",
-        str(project_root),
+        grok_cwd,
         "--output-format",
         "plain",
     ]
@@ -102,7 +107,7 @@ def build_canary_plan(
         "-p",
         child_prompt,
         "--cwd",
-        str(project_root),
+        grok_cwd,
         "--output-format",
         "plain",
     ]
@@ -112,6 +117,8 @@ def build_canary_plan(
         "mode": "dry",
         "ts_utc": _utc_now(),
         "work_dir": str(work_dir),
+        "project_root": str(project_root),
+        "grok_cwd": grok_cwd,
         "shim_path": str(shim),
         "marker_path": str(marker),
         "path_prefix": path_prefix,
@@ -183,7 +190,7 @@ def run_live(out_path: Path | None, *, timeout: float = 120.0) -> int:
         try:
             proc = subprocess.run(
                 argv,
-                cwd=str(ROOT),
+                cwd=str(work),
                 env=env,
                 capture_output=True,
                 text=True,

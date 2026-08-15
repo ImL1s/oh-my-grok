@@ -683,15 +683,17 @@ def test_standalone_readwrite_herestring_and_budget():
 
 # ------------------------------------------------- ORIGINAL regression: fail-open launcher
 def test_launcher_fails_open_when_script_unreadable(tmp_path):
-    """`python3 -I -S "<missing>" || true` must exit 0 with NO deny — the exact
-    class (python rc 2 == grok explicit-deny) that bricked every tool call."""
-    from omg_cli.hook_install import launcher_command
+    """Wrapper ``|| true`` must exit 0 with NO deny when the standalone is missing."""
+    from omg_cli import hook_install as hi
 
-    missing = tmp_path / "nope.py"  # does not exist -> python exits 2
-    cmd = launcher_command(missing)
-    assert "-I -S" in cmd and "|| true" in cmd
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    py = gh / "hooks" / hi.STANDALONE_BASENAME
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    py.unlink()
+    assert wrapper.is_file() and os.access(wrapper, os.X_OK)
     proc = subprocess.run(
-        ["/bin/sh", "-c", cmd],
+        [str(wrapper)],
         input='{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}',
         capture_output=True, text=True, timeout=10,
     )
@@ -709,7 +711,21 @@ def test_install_creates_then_unchanged(tmp_path):
     py = gh / "hooks" / hi.STANDALONE_BASENAME
     assert py.is_file() and os.access(py, os.X_OK)
     cmd = json.loads(jpath.read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "-I -S" in cmd and "|| true" in cmd and str(gh.resolve()) in str(Path(py).resolve())
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    assert cmd == str(wrapper)
+    assert wrapper.is_file() and os.access(wrapper, os.X_OK)
+    body = wrapper.read_text(encoding="utf-8")
+    assert body.startswith("#!/bin/sh\n")
+    assert "-I -S" in body and "|| true" in body
+    assert "\r" not in body
+    # grok 1.0.4 execvp()s the command string as argv0.
+    deny = subprocess.run(
+        [cmd],
+        input='{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}',
+        capture_output=True, text=True, timeout=10,
+    )
+    assert deny.returncode == 0
+    assert json.loads(deny.stdout)["decision"] == "deny"
     _, action2 = hi.install_global_hook(home=gh)
     assert action2 == "unchanged"
 
