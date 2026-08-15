@@ -20,9 +20,35 @@ This file is a static parity projection of the Grok plugin agent
 not live AG evidence, and does not mean `agy` install or
 `/agents` discovery works. Dual-host routing (#131) is not this file.
 
-- Catalog: `agents/catalog.json`
+- Catalog: `agents/catalog.json` (generated from `agents/catalog.yaml`)
 - capability_mode: `read-only` (never `execute`/`all`)
 - spawn_policy: `leaf` (depth=1 leaf vs parent)
+
+## Bounded context handoff
+
+Do **not** paste the full leader conversation or transcript.
+Ids, paths, and decisions only.
+
+- Agent: `omg-security-reviewer`
+- capability_mode: `read-only` (never `execute`/`all`)
+- permission_mode: `plan`
+- tier: `reviewer`
+- spawn_policy: `leaf` (depth=1 unless parent)
+- Mission: (parent supplies a bounded mission; do not paste full leader history)
+
+### Artifacts (paths only)
+- (none)
+
+### Decisions already taken
+- (none)
+
+### Result schema
+```json
+{"verdict":"APPROVE|REQUEST_CHANGES","findings":[{"severity":"blocker|major|minor","file":"...","line":1,"evidence":"..."}]}
+```
+
+### Independence
+You cannot self-approve, self-stamp verified, or mutate `.omg/state/` passes/verified. Parent / `omg` CLI owns gates.
 
 # omg-security-reviewer — Security lane (read-only leaf)
 

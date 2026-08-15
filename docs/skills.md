@@ -651,15 +651,21 @@ passes task-ID-bound receipts to `omg workflow run`. See
 
 | Agent | Typical `capability_mode` | Role |
 |-------|---------------------------|------|
-| `omg-orchestrator` | leader | Decompose + coordinate |
-| `omg-executor` | `read-write` (no shell) | Implement |
+| `omg-orchestrator` | leader (`read-write`) | Decompose + coordinate (alias: sisyphus) |
+| `omg-executor` | `read-write` (no shell) | Implement (alias: hephaestus) |
+| `omg-explore` | `read-only` | Quick/explore-high mapping (alias: explore → plugin agent; Grok built-in `explore` remains a #131 profile) |
+| `omg-planner` / `omg-product-manager` | `read-only` | Plan / product scope |
+| `omg-tracer` / `omg-scientist` | `read-only` | Path trace / ultrabrain analysis |
+| `omg-document-specialist` | `read-only` | Librarian / research (alias: librarian) |
+| `omg-build-fixer` / `omg-git-master` / `omg-code-simplifier` | `read-write` (no shell) | Build-fix / git-via-parent / bounded simplify (no self-approve) |
 | `omg-debugger` | `read-write` (no shell) | Root-cause / regression / build-fix |
 | `omg-designer` | `read-write` (no shell) | UI/UX implementation |
 | `omg-writer` | `read-write` (no shell) | README / API docs / comments |
 | `omg-test-engineer` | `read-write` (no shell) | Test strategy / coverage / flaky hardening |
 | `omg-critic` / `omg-verifier` | `read-only` | Challenge / evidence |
-| `omg-code-reviewer` / `omg-architect` | `read-only` | Structured review lanes |
-| `omg-security-reviewer` | `read-only` | OWASP / secrets / unsafe patterns |
+| `omg-code-reviewer` / `omg-architect` | `read-only` | Structured review lanes (aliases: style/quality/api-reviewer) |
+| `omg-security-reviewer` | `read-only` | OWASP / secrets / unsafe patterns (alias: security-reviewer-high) |
+| `omg-vision` | `read-only` | Visual review — cannot edit |
 | `omg-qa-tester` / `omg-analyst` | see taxonomy | QA scenarios / interview analysis |
 
 Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog.json)
@@ -669,16 +675,23 @@ Machine-readable plugin skill catalog: [`skills/catalog.json`](../skills/catalog
 are **projections only**. The 45 Grok plugin playbooks are the in-session
 surface (Wave B/C included). They are **not** a live smoke.
 
-Machine-readable plugin agent catalog: [`agents/catalog.json`](../agents/catalog.json)
-(loader `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
-`agents_catalog`). Load fail-closes when an agent's frontmatter omits,
+Machine-readable plugin agent catalog: [`agents/catalog.yaml`](../agents/catalog.yaml)
+(generated [`agents/catalog.json`](../agents/catalog.json); loader
+`omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
+`agents_catalog`). **23** `omg-*` plugin agents. YAML is the source of truth;
+`--check` on `scripts/generate_agents_catalog.py` fails on JSON/projection
+drift. Load fail-closes when an agent's frontmatter omits,
 uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
 must not conceal a more permissive plugin definition). Agent markdown is
-opened with `O_NOFOLLOW|O_NONBLOCK` and read through that pinned descriptor. Antigravity
+opened with `O_NOFOLLOW|O_NONBLOCK` and read through that pinned descriptor. Category
+routing (`quick` / `deep` / `ultrabrain` / `visual-engineering` / `research` /
+`review`) is deterministic and inspectable; reviewer/verifier/planner cannot
+receive `read-write`. Antigravity
 `agent.md` files under
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
-are **projections only** — not an installed AG plugin and not live AG evidence.
+are **projections only** — not an installed AG plugin and not live AG evidence
+(Antigravity is not installed in this slice; live AG smoke remains a gap).
 Team routing floors remain in `omg_cli/team/roles.py`. Dual-host model policy
 (#131) consumes this catalog via `agents/model_policies.json` and
 `omg agents list|explain` (Grok baseline shipped; Medley exact/receipts remain
