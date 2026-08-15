@@ -1,4 +1,4 @@
-"""Fail-closed plugin skill catalog (#70 Wave A) — not a routing runtime."""
+"""Fail-closed plugin skill catalog (#70 Wave B/C) — routing from catalog."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ import pytest
 from omg_cli.skills_catalog import (
     ALLOWED_CAPABILITY_MODES,
     ANTIGRAVITY_PROJECTION_ROOT,
+    CATALOG_DOC_LOCALES,
     CATALOG_RELATIVE,
     CONTINUATION_OWNERS,
     FORBIDDEN_CAPABILITY_MODES,
     HOST_NATIVE_PROTECTED,
     PLUGIN_SKILL_COUNT,
     PROJECTION_BANNER_NEEDLES,
+    ROUTING_PRIORITY_HEAD,
     SkillsCatalogError,
     check_antigravity_projections,
     check_catalog_markdown,
@@ -23,10 +25,12 @@ from omg_cli.skills_catalog import (
     is_informational_question,
     load_skills_catalog,
     plugin_root,
+    render_workflow_routing,
     required_capability_diagnostics,
     resolve_continuation,
     resolve_skill_resource,
     resolve_trigger,
+    routing_order,
     write_antigravity_projections,
     write_catalog_markdown,
 )
@@ -82,6 +86,20 @@ def _stub_skill(root: Path, skill_id: str) -> None:
         root / "skills" / skill_id / "SKILL.md",
         f"---\nname: {skill_id}\n---\n# {skill_id}\n",
     )
+    _write(
+        root / "skills" / skill_id / "resources" / "contract.json",
+        json.dumps(
+            {
+                "id": skill_id,
+                "capability_mode": "read-only",
+                "continuation": "none",
+                "conflict_policy": "artifact_only",
+                "artifacts": [".omg/artifacts/"],
+                "evidence_rule": "never set verified",
+            }
+        )
+        + "\n",
+    )
 
 
 def _plugin_entry(skill_id: str) -> dict:
@@ -103,7 +121,7 @@ def _plugin_entry(skill_id: str) -> dict:
         "triggers": [],
         "pipeline_next": [],
         "required_capabilities": [],
-        "resources": [],
+        "resources": ["resources/contract.json"],
         "projections": {
             "grok": {
                 "kind": "plugin_skill",
@@ -118,15 +136,17 @@ def _plugin_entry(skill_id: str) -> dict:
 
 
 def _write_catalog(root: Path, skills: list[dict]) -> None:
+    plugin_n = sum(1 for item in skills if item.get("file"))
     payload = {
         "schema": "omg-skills-catalog/v1",
         "kind": "read_only_machine_catalog",
+        "plugin_skill_count": plugin_n,
         "skills": skills,
     }
     _write(root / CATALOG_RELATIVE, json.dumps(payload, indent=2) + "\n")
 
 
-def test_repo_catalog_has_16_plugin_skills_and_classifies_minimum_set() -> None:
+def test_repo_catalog_plugin_count_and_classifies_minimum_set() -> None:
     catalog = load_skills_catalog(ROOT)
     plugin_ids = [record.id for record in catalog.plugin_skills]
     disk = sorted(
@@ -252,6 +272,15 @@ def test_empty_resource_allowlist_rejects_undeclared(tmp_path: Path) -> None:
         )
 
 
+def test_plugin_skill_empty_resources_fails_closed(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    entry = _plugin_entry("omg-using")
+    entry["resources"] = []
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(SkillsCatalogError, match="resource"):
+        load_skills_catalog(tmp_path, require_projections=False)
+
+
 def test_resource_nul_rejected(tmp_path: Path) -> None:
     _stub_skill(tmp_path, "omg-using")
     with pytest.raises(SkillsCatalogError, match="NUL"):
@@ -344,7 +373,8 @@ def test_doctor_skills_check_consumes_catalog() -> None:
     name, ok, detail = check_skills_omg_prefix()
     assert name == "skills omg-*"
     assert ok is True
-    assert "16 plugin skill" in detail
+    assert "plugin skill" in detail
+    assert str(PLUGIN_SKILL_COUNT) in detail
 
 
 def test_projections_and_catalog_markdown_match_committed() -> None:
@@ -419,7 +449,183 @@ def test_write_helpers_are_idempotent(tmp_path: Path) -> None:
     _write_catalog(tmp_path, [_plugin_entry("omg-using")])
     written = write_antigravity_projections(tmp_path)
     assert any(path.endswith("omg-using/SKILL.md") for path in written)
-    doc = write_catalog_markdown(tmp_path)
-    assert doc.endswith("skills-catalog.md")
+    docs = write_catalog_markdown(tmp_path)
+    assert any(path.endswith("skills-catalog.md") for path in docs)
+    assert any(path.endswith("skills-catalog.zh.md") for path in docs)
+    assert any(path.endswith("skills-catalog.zh-TW.md") for path in docs)
     catalog = load_skills_catalog(tmp_path, require_projections=True)
     assert catalog.plugin_skills[0].id == "omg-using"
+
+
+_WAVE_BC = (
+    "omg-best-practice-research",
+    "omg-trace",
+    "omg-deep-dive",
+    "omg-external-context",
+    "omg-tdd",
+    "omg-build-fix",
+    "omg-security-review",
+    "omg-visual-verdict",
+    "omg-deepinit",
+    "omg-project-session-manager",
+    "omg-mcp-setup",
+    "omg-configure-notifications",
+    "omg-skill",
+    "omg-prometheus-strict",
+    "omg-hyperplan",
+    "omg-autoresearch",
+    "omg-autoresearch-goal",
+    "omg-parallel-research",
+    "omg-self-improve",
+    "omg-writer-memory",
+    "omg-visual-ralph",
+    "omg-ai-slop-cleaner",
+    "omg-comment-checker",
+    "omg-security-research",
+    "omg-design",
+    "omg-release",
+    "omg-git-master",
+    "omg-ralph-init",
+    "omg-ecomode",
+)
+
+
+def test_wave_bc_plugin_skills_have_playbooks_projections_resources() -> None:
+    catalog = load_skills_catalog(ROOT)
+    assert len(catalog.plugin_skills) == PLUGIN_SKILL_COUNT
+    by_id = catalog.by_id()
+    for skill_id in _WAVE_BC:
+        record = by_id[skill_id]
+        assert record.file == f"skills/{skill_id}/SKILL.md"
+        assert record.implementation_status == "configured"
+        assert record.verified is False
+        assert record.live_verification == "unproven"
+        assert (ROOT / record.file).is_file()
+        assert record.resources
+        for rel in record.resources:
+            path = resolve_skill_resource(ROOT, skill_id, rel, catalog=catalog)
+            assert path.is_file()
+            assert not path.is_symlink()
+        proj = ROOT / record.projections["antigravity"].path
+        assert proj.is_file()
+        assert not proj.is_symlink()
+        text = (ROOT / record.file).read_text(encoding="utf-8")
+        assert "name:" in text
+        assert "description:" in text
+        assert "HARD RULES" in text
+        assert "spawn_subagent" in text
+        assert "capability_mode" in text
+        assert "omg cancel" in text
+        assert "verified" in text.lower()
+
+
+def test_every_plugin_skill_declares_a_resource() -> None:
+    catalog = load_skills_catalog(ROOT)
+    for record in catalog.plugin_skills:
+        assert record.resources, record.id
+        assert record.verified is False
+
+
+def test_render_workflow_routing_priority_and_new_triggers() -> None:
+    catalog = load_skills_catalog(ROOT)
+    text = render_workflow_routing(catalog)
+    assert "cancel" in text
+    assert "ralplan" in text
+    assert "autopilot" in text
+    assert "Priority when several keywords match" in text
+    assert ROUTING_PRIORITY_HEAD[0] == "omg-cancel"
+    ordered_ids = [record.id for record in routing_order(catalog)]
+    assert ordered_ids[: len(ROUTING_PRIORITY_HEAD)] == list(ROUTING_PRIORITY_HEAD)
+    head_set = set(ROUTING_PRIORITY_HEAD)
+    leftover = [
+        record.id
+        for record in routing_order(catalog)
+        if record.id in CONTINUATION_OWNERS and record.id not in head_set
+    ]
+    assert leftover == sorted(CONTINUATION_OWNERS - head_set)
+    assert "hyperplan" in text
+    assert "visual verdict" in text or "visual-verdict" in text
+    assert "tdd" in text
+    assert "UserPromptSubmit" in text
+
+
+def test_informational_question_still_none_for_new_triggers() -> None:
+    catalog = load_skills_catalog(ROOT)
+    assert resolve_trigger(catalog, "what is hyperplan?") is None
+    assert resolve_trigger(catalog, "how does tdd work") is None
+    hit = resolve_trigger(catalog, "hyperplan the auth slice")
+    assert hit is not None and hit.id == "omg-hyperplan"
+
+
+def test_host_native_plan_still_alias() -> None:
+    catalog = load_skills_catalog(ROOT)
+    assert catalog.by_id()["plan"].kind == "alias"
+    assert catalog.resolve("plan").id == "omg-ralplan"
+    assert not (ROOT / "skills" / "plan").exists()
+    assert not (ROOT / "skills" / "omg-plan").exists()
+
+
+def test_plugin_skill_count_mismatch_fails_closed(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    entry = _plugin_entry("omg-using")
+    payload = {
+        "schema": "omg-skills-catalog/v1",
+        "kind": "read_only_machine_catalog",
+        "plugin_skill_count": 99,
+        "skills": [entry],
+    }
+    _write(tmp_path / CATALOG_RELATIVE, json.dumps(payload) + "\n")
+    with pytest.raises(SkillsCatalogError, match="plugin_skill_count"):
+        load_skills_catalog(tmp_path, require_projections=False)
+
+
+def test_prune_reports_and_removes_obsolete_projection(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    _write_catalog(tmp_path, [_plugin_entry("omg-using")])
+    write_antigravity_projections(tmp_path)
+    extra = tmp_path / ANTIGRAVITY_PROJECTION_ROOT / "obsolete" / "SKILL.md"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("stale\n", encoding="utf-8")
+    errors = check_antigravity_projections(tmp_path)
+    assert any("uncatalogued projection" in item for item in errors)
+    write_antigravity_projections(tmp_path)
+    assert not extra.is_file()
+    assert check_antigravity_projections(tmp_path) == []
+
+
+def test_write_refuses_symlink_dest(tmp_path: Path) -> None:
+    _stub_skill(tmp_path, "omg-using")
+    _write_catalog(tmp_path, [_plugin_entry("omg-using")])
+    write_antigravity_projections(tmp_path)
+    dest = tmp_path / ANTIGRAVITY_PROJECTION_ROOT / "omg-using" / "SKILL.md"
+    target = tmp_path / "outside.md"
+    target.write_text("nope\n", encoding="utf-8")
+    dest.unlink()
+    try:
+        dest.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks not available")
+    with pytest.raises(SkillsCatalogError, match="symlink"):
+        write_antigravity_projections(tmp_path)
+
+
+def test_localized_catalog_docs_check() -> None:
+    errors = check_catalog_markdown(ROOT)
+    assert errors == []
+    for rel in CATALOG_DOC_LOCALES.values():
+        path = ROOT / rel
+        assert path.is_file(), rel
+        text = path.read_text(encoding="utf-8")
+        assert "verified" in text.lower()
+        assert "live" in text.lower()
+
+
+def test_catalog_never_sets_verified_true() -> None:
+    catalog = load_skills_catalog(ROOT)
+    raw = json.loads((ROOT / CATALOG_RELATIVE).read_text(encoding="utf-8"))
+    assert raw["plugin_skill_count"] == PLUGIN_SKILL_COUNT
+    for record in catalog.skills:
+        assert record.verified is False
+    for item in raw["skills"]:
+        if "verified" in item:
+            assert item["verified"] is False

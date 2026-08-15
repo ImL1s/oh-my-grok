@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#70 Wave B/C skill playbooks + catalog-driven routing:** 29 catalog-only
+  canonical skills now have real `skills/omg-*/SKILL.md` playbooks (13 Wave B +
+  16 Wave C) plus bundled `resources/contract.json` on every plugin skill
+  (45 total). Grok `<workflow_routing>` is generated from `skills/catalog.json`
+  triggers/aliases (no UserPromptSubmit injector; no second skill list).
+  Localized catalog tables: `docs/parity/skills-catalog.zh.md` and
+  `skills-catalog.zh-TW.md`. Projection writes are atomic/no-follow and prune
+  obsolete AG files. **Not** live-verified; Antigravity files remain
+  projections; `live_verification` stays `unproven`. Does not set `verified`.
+  Refs #70 (does not close — no live smoke).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

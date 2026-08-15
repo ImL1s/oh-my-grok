@@ -4,13 +4,18 @@ English | [简体中文](./skills.zh.md) | [繁體中文](./skills.zh-TW.md)
 
 English: [`skills.md`](./skills.md)
 
-**16 个 in-session skills**，路径：[`skills/omg-*/SKILL.md`](../skills/)。  
+**45 个 in-session skills**，路径：[`skills/omg-*/SKILL.md`](../skills/)
+（原 16 + Wave B 13 + Wave C 16）。  
 概念类似 OMC skill zoo，执行面是 **Grok-native**：playbook + `omg` CLI 盖章。
+**不是** live-verified。Antigravity 文件仍是**投影**。
 
 机器目录（别名、分类、pipeline、续跑策略）：[`skills/catalog.json`](../skills/catalog.json) ·
-生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md)。
+生成表 [`docs/parity/skills-catalog.md`](./parity/skills-catalog.md) ·
+[简体](./parity/skills-catalog.zh.md) ·
+[繁體](./parity/skills-catalog.zh-TW.md)。
 检视：`omg skill list|show|resolve|resources`（永不写 `verified`）。
-仅目录项已分类。Antigravity 投影**不是**已安装 AG 插件。
+Grok `<workflow_routing>` 由此 catalog 生成（无 UserPromptSubmit 注入）。
+Antigravity 投影**不是**已安装 AG 插件。
 
 > **两种表面（类似 OMC 的 CLI vs `/skill`）**  
 > - **终端机 CLI：** shell 里跑 `omg …`（状态、accept、modes）。  
@@ -60,8 +65,44 @@ English: [`skills.md`](./skills.md)
 | hud、statusline | `omg-hud` | `omg hud` | 一行状态 |
 | lsp、symbols | `omg-lsp` | `omg lsp *` | 检查 host-owned `.lsp.json`；无语意 proxy |
 
-**多关键字同时出现时的优先序**（见 `omg-using`）：  
-`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`。
+**多关键字同时出现时的优先序**（catalog 驱动；与 Grok 规则相同）：  
+`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`，然后其余 continuation owner，然后其它。
+
+### Wave B/C 选择器（configured playbook — 非 live-verified）
+
+| 何时 | Skill | 诚实 CLI |
+|------|-------|----------|
+| 规划前最佳实践简报 | `omg-best-practice-research` | `omg ask`（顾问） |
+| 追踪 / lifecycle 投影 | `omg-trace` | `omg tracker status\|project\|reconcile` |
+| Deep-dive 调研 | `omg-deep-dive` | 仅制品 |
+| 吸入外部事实 | `omg-external-context` | `omg memory *` |
+| 红绿一条切片 | `omg-tdd` | `omg qa *`（永不 verified） |
+| 修好损坏的 build | `omg-build-fix` | `omg qa *` |
+| 对 diff 做安全车道 | `omg-security-review` | `omg review` / `omg dual-review` |
+| 给 visual envelope 打分 | `omg-visual-verdict` | `omg visual compare`（仅 compare；无 capture/Ralph） |
+| 深度工作区 init | `omg-deepinit` | `omg setup`（`init-deep` 别名） |
+| 具名 session | `omg-project-session-manager` | `omg session allocate\|route`（`psm` 别名） |
+| MCP 注册 | `omg-mcp-setup` | `omg mcp-install` |
+| 通知队列 | `omg-configure-notifications` | `omg notify status\|send\|process` |
+| 检视 skill 目录 | `omg-skill` | `omg skill list\|show\|resolve\|resources` |
+| 更严的计划闸 | `omg-prometheus-strict` | `omg ralplan` |
+| Team Hyperplan | `omg-hyperplan` | `omg team hyperplan`（Team #69；fixture execute） |
+| 有界调研循环 | `omg-autoresearch` | 制品；可选 `omg ask` |
+| 对着 goal ledger 调研 | `omg-autoresearch-goal` | `omg goal *` |
+| 平行调研扇出 | `omg-parallel-research` | 可选 `omg ask`（`sciomc` 别名） |
+| 改进写下来 | `omg-self-improve` | 仅制品 — **没有** learning loop |
+| 写作者笔记 | `omg-writer-memory` | `omg memory *` / `omg note` |
+| 问 visual 持久循环 | `omg-visual-ralph` | 仅 `omg visual compare`；循环仍是 `omg ralph` |
+| 清 AI slop | `omg-ai-slop-cleaner` | 制品报告；改文件用 `omg edit plan\|apply`（无 `comments` 子命令） |
+| 注释审计 | `omg-comment-checker` | 制品报告（`omg edit` 无 comments 子命令） |
+| Team security-research | `omg-security-research` | `omg team security-research`（Team #69） |
+| UI 切片 | `omg-design` | `omg-designer` spawn；无额外 CLI |
+| 发布检查单 | `omg-release` | `omg parity *`（本 skill 永不 verified） |
+| Git 卫生 | `omg-git-master` | 宿主 git；无 `omg git` 孪生 |
+| 搭 ralph PRD | `omg-ralph-init` | 然后 `omg ralph` |
+| 低 token 姿态 | `omg-ecomode` | 无 CLI 孪生；`capability_mode` none |
+
+Host-native 名字（`plan`、`goal`、`loop`、`compact`、`help`、`agents`、`mcp`、`skills`、`plugin`）保持别名/宿主所有 — 永不做成插件目录。`ulw-loop` 仍是别名。
 
 ---
 
@@ -509,7 +550,7 @@ Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subag
 （loader `omg_cli/skills_catalog.py`；`omg skill list|show|resolve|resources` 或
 `omg capabilities` 的 `skills_catalog`）。
 [`docs/parity/projections/antigravity/skills/`](./parity/projections/antigravity/skills/)
-下的 Antigravity `SKILL.md` **只是投影**。Grok 仍只有 16 个 in-session playbook。
+下的 Antigravity `SKILL.md` **只是投影**。Grok 现有 45 个 in-session playbook（**不是** live-verified）。
 
 机器可读插件 agent 目录：[`agents/catalog.json`](../agents/catalog.json)
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 检视）。
@@ -541,6 +582,12 @@ Grok 内建（`explore`、`plan`、`general-purpose`）是政策 profiles，不�
 | omg-ask | `ask` | 否 |
 | omg-cancel | `cancel` | 否 |
 | omg-wiki / hud / lsp | wiki / hud / lsp | 否 |
+| omg-skill | `skill list\|show\|resolve\|resources` | **永不** |
+| omg-visual-verdict / visual-ralph | `visual compare` | **永不** |
+| omg-hyperplan / security-research | `team hyperplan` / `team security-research` | **永不** |
+| omg-mcp-setup | `mcp-install` | **永不** |
+| omg-configure-notifications | `notify *` | **永不** |
+| omg-writer-memory | `memory *` / `note` | **永不** |
 | *（MCP 表面）* | `mcp-server` / `mcp-install` | **永不**（结构性拒绝） |
 
 ---

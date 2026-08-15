@@ -1,0 +1,10 @@
+{
+  "id": "omg-build-fix",
+  "capability_mode": "read-write",
+  "continuation": "none",
+  "conflict_policy": "adopt_existing",
+  "artifacts": [
+    ".omg/artifacts/"
+  ],
+  "evidence_rule": "never set verified; only omg CLI writes passes/verified"
+}

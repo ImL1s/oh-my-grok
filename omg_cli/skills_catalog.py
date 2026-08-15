@@ -1,22 +1,26 @@
-"""Read-only plugin skill catalog (#70 Wave A).
+"""Read-only plugin skill catalog (#70 Wave A + Wave B/C playbooks).
 
 Single registry for in-session ``skills/omg-*/SKILL.md`` plus classified
-aliases and catalog-only workflows. Dual-host routing must consume this
-catalog — do not add a second skill list.
+aliases. Dual-host routing must consume this catalog — do not add a second
+skill list. Grok has no UserPromptSubmit injector; ``<workflow_routing>``
+in the global rules file is rendered from this catalog.
 
 Fail-closed: missing catalog, missing plugin SKILL.md, extra uncatalogued
 plugin dirs, duplicate ids/aliases, host-native shadowing, unsafe resource
-paths, or ``verified: true`` without live evidence (this slice never sets
-verified).
+paths, empty plugin ``resources``, ``plugin_skill_count`` mismatch, or
+``verified: true`` without live evidence (this slice never sets verified).
 
-Not a Grok UserPromptSubmit injector. Antigravity SKILL.md files are static
-projections only — not an installed AG plugin and not live AG evidence.
+Antigravity SKILL.md files are static projections only — not an installed
+AG plugin and not live AG evidence. Playbooks without live smoke stay
+``configured``, not ``verified``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -25,7 +29,7 @@ SCHEMA = "omg-skills-catalog/v1"
 KIND = "read_only_machine_catalog"
 CATALOG_RELATIVE = "skills/catalog.json"
 ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/skills"
-PLUGIN_SKILL_COUNT = 16
+PLUGIN_SKILL_COUNT = 45
 
 ALLOWED_CLASSIFICATIONS = frozenset(
     {
@@ -70,6 +74,18 @@ CONTINUATION_OWNERS = frozenset(
         "omg-team",
         "omg-ralplan",
     }
+)
+
+# Keyword collision priority documented in rules + docs/skills.md.
+# cancel > ralplan > autopilot > ultragoal > ralph > ulw, then remaining
+# continuation owners, then other plugin skills.
+ROUTING_PRIORITY_HEAD = (
+    "omg-cancel",
+    "omg-ralplan",
+    "omg-autopilot",
+    "omg-ultragoal",
+    "omg-ralph",
+    "omg-ultrawork",
 )
 
 # Same-run evidence contribution that must not start a second loop.
@@ -541,6 +557,10 @@ def _parse_skill(value: Any, *, index: int) -> SkillRecord:
     resources = _str_tuple(obj.get("resources"), label=f"{label}.resources")
     for rel in resources:
         _posix_relative(rel, label=f"{label}.resources")
+    if file_path is not None and not resources:
+        raise SkillsCatalogError(
+            f"{skill_id}: plugin skills must declare at least one resource"
+        )
     return SkillRecord(
         id=skill_id,
         kind="canonical",
@@ -647,6 +667,14 @@ def load_skills_catalog(
     disk_dirs = list_plugin_skill_dirs(base)
     disk_ids = {path.name for path in disk_dirs}
     plugin_ids = {record.id for record in records if record.file is not None}
+    declared_count = raw.get("plugin_skill_count")
+    if not isinstance(declared_count, int) or isinstance(declared_count, bool):
+        raise SkillsCatalogError("catalog.plugin_skill_count must be an integer")
+    if declared_count != len(plugin_ids):
+        raise SkillsCatalogError(
+            f"catalog.plugin_skill_count {declared_count} != "
+            f"{len(plugin_ids)} plugin skills"
+        )
     missing = sorted(plugin_ids - disk_ids)
     extra = sorted(disk_ids - plugin_ids)
     if missing:
@@ -700,7 +728,8 @@ def inspect_skills_catalog(root: Path | None = None) -> dict[str, Any]:
             "classification": "native_substitute",
             "error": str(exc),
             "note": (
-                "read-only skill catalog; not routing runtime; "
+                "read-only skill catalog; Grok <workflow_routing> is rendered "
+                "from this catalog (not a UserPromptSubmit injector); "
                 "AG files are projections only"
             ),
         }
@@ -720,10 +749,11 @@ def inspect_skills_catalog(root: Path | None = None) -> dict[str, Any]:
         "catalog_count": len(catalog.skills),
         "skills": [record.to_inspect_row() for record in catalog.skills],
         "note": (
-            "read-only skill catalog; not routing runtime; "
+            "read-only skill catalog; Grok <workflow_routing> is rendered from "
+            "this catalog (not a UserPromptSubmit injector). "
             "Antigravity SKILL.md files are static projections only "
             "(not an installed AG plugin, not live AG evidence). "
-            "A playbook without runtime backing is configured, not verified."
+            "A playbook without live smoke is configured, not verified."
         ),
     }
 
@@ -939,6 +969,163 @@ def render_antigravity_projections(
     return out
 
 
+def routing_order(catalog: SkillsCatalog) -> tuple[SkillRecord, ...]:
+    """Plugin skills in documented keyword-collision priority."""
+    by_id = catalog.by_id()
+    ordered: list[SkillRecord] = []
+    seen: set[str] = set()
+    for skill_id in ROUTING_PRIORITY_HEAD:
+        record = by_id.get(skill_id)
+        if record is not None and record.kind == "canonical":
+            ordered.append(record)
+            seen.add(skill_id)
+    for skill_id in sorted(CONTINUATION_OWNERS - seen):
+        record = by_id.get(skill_id)
+        if record is not None and record.kind == "canonical":
+            ordered.append(record)
+            seen.add(skill_id)
+    others = [
+        record
+        for record in catalog.plugin_skills
+        if record.id not in seen
+    ]
+    others.sort(key=lambda item: item.id)
+    ordered.extend(others)
+    return tuple(ordered)
+
+
+def render_workflow_routing(catalog: SkillsCatalog) -> str:
+    """Inner text of ``<workflow_routing>`` generated from catalog triggers.
+
+    Source of truth is ``skills/catalog.json`` — do not keep a second skill list.
+    Informational questions stay suppressed via ``resolve_trigger``.
+    """
+    lines = [
+        "Keyword routing is generated from `skills/catalog.json` (triggers + aliases).",
+        "Grok has no UserPromptSubmit injector — this rules section is the router.",
+        "Dual-host: Antigravity projections consume the same catalog; they are",
+        "not an installed AG plugin and not live AG evidence.",
+        "Informational questions (`what is ralph?`, `how does autopilot work?`)",
+        "do **not** activate a skill.",
+        "",
+        "Priority when several keywords match:",
+        "`cancel` > `ralplan` > `autopilot` > `ultragoal` > `ralph` > `ulw`,",
+        "then remaining continuation owners (`pipeline`, `ultraqa`, `team`),",
+        "then other plugin skills.",
+        "",
+        "Continuation owners (exactly one may run): "
+        + ", ".join(f"`{name}`" for name in sorted(CONTINUATION_OWNERS))
+        + ".",
+        "",
+        "| Triggers / aliases | Skill | CLI twin | Conflict |",
+        "|--------------------|-------|----------|----------|",
+    ]
+    for record in routing_order(catalog):
+        names: list[str] = []
+        for raw in (
+            record.id.removeprefix("omg-"),
+            *record.aliases,
+            *record.triggers,
+        ):
+            token = raw.strip()
+            if token and token not in names:
+                names.append(token)
+        triggers = ", ".join(f"`{name}`" for name in names[:10]) or f"`{record.id}`"
+        cli = record.cli_twin or "—"
+        conflict = (
+            "continuation owner"
+            if record.continuation == "owner"
+            else record.conflict_policy
+        )
+        lines.append(
+            f"| {triggers} | `{record.id}` | `{cli}` | `{conflict}` |"
+        )
+    return "\n".join(lines)
+
+
+def _refuse_symlink_dest(path: Path) -> None:
+    """Refuse to follow or replace a symlink destination."""
+    if path.is_symlink():
+        raise SkillsCatalogError(
+            f"refusing symlink dest: {path.as_posix()}"
+        )
+    if (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and path.exists()
+    ):
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        try:
+            fd = os.open(path, flags)
+            os.close(fd)
+        except OSError as exc:
+            raise SkillsCatalogError(
+                f"refusing dest (O_NOFOLLOW): {path.as_posix()}: {exc}"
+            ) from exc
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Same-dir temp + ``os.replace``. Refuses symlink dest; POSIX O_NOFOLLOW."""
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        _refuse_symlink_dest(dest)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(dest.parent),
+        prefix=f".{dest.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, dest)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _prune_obsolete_projections(root: Path, keep: set[str]) -> list[str]:
+    """Remove projection files not in *keep*. Always keep README.md. No follow."""
+    skills_root = root / ANTIGRAVITY_PROJECTION_ROOT
+    if not skills_root.is_dir() or skills_root.is_symlink():
+        return []
+    removed: list[str] = []
+    keep = set(keep)
+    keep.add(f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md")
+    files = sorted(
+        (path for path in skills_root.rglob("*") if path.is_file()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    )
+    for path in files:
+        if path.is_symlink():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel not in keep:
+            path.unlink()
+            removed.append(rel)
+    dirs = sorted(
+        (path for path in skills_root.rglob("*") if path.is_dir()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    )
+    for path in dirs:
+        if path == skills_root or path.is_symlink():
+            continue
+        try:
+            next(path.iterdir())
+        except StopIteration:
+            path.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 def _projection_readme() -> str:
     return """# Antigravity skill projections
 
@@ -953,8 +1140,12 @@ These files are **not**:
 - a Grok UserPromptSubmit injector
 
 They are generated from `skills/catalog.json` plus `skills/omg-*/SKILL.md` by
-`scripts/generate_antigravity_skill_projections.py`. Only the 16 Grok plugin
-skills are projected. Catalog-only / alias / deferred workflows have no AG file.
+`scripts/generate_antigravity_skill_projections.py`. Dual-host **routing**
+consumes the same catalog: Grok global rules fill `<workflow_routing>` from
+triggers/aliases; these AG files are projections of the playbook body only.
+
+Catalog-only / alias / excluded rows have no AG file. Playbooks without live
+smoke stay `configured`, not `verified`.
 
 Regenerate:
 
@@ -966,18 +1157,16 @@ python scripts/generate_antigravity_skill_projections.py --check
 
 
 def write_antigravity_projections(root: Path) -> list[str]:
-    """Write committed AG projections. Returns relative paths written."""
+    """Write committed AG projections (atomic, no-follow). Prunes obsolete files."""
     rendered = render_antigravity_projections(root)
     written: list[str] = []
     for rel, text in rendered.items():
-        path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="\n")
+        _atomic_write_text(root / rel, text)
         written.append(rel)
-    readme = root / ANTIGRAVITY_PROJECTION_ROOT / "README.md"
-    readme.parent.mkdir(parents=True, exist_ok=True)
-    readme.write_text(_projection_readme(), encoding="utf-8", newline="\n")
-    written.append(f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md")
+    readme_rel = f"{ANTIGRAVITY_PROJECTION_ROOT}/README.md"
+    _atomic_write_text(root / readme_rel, _projection_readme())
+    written.append(readme_rel)
+    _prune_obsolete_projections(root, set(written))
     written.sort()
     return written
 
@@ -991,6 +1180,9 @@ def check_antigravity_projections(root: Path) -> list[str]:
     rendered[readme_rel] = expected_readme
     for rel, text in sorted(rendered.items()):
         path = root / rel
+        if path.is_symlink():
+            errors.append(f"symlink dest {rel}")
+            continue
         if not path.is_file():
             errors.append(f"missing {rel}")
             continue
@@ -998,7 +1190,7 @@ def check_antigravity_projections(root: Path) -> list[str]:
         if actual.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
             errors.append(f"stale {rel}")
     skills_root = root / ANTIGRAVITY_PROJECTION_ROOT
-    if skills_root.is_dir():
+    if skills_root.is_dir() and not skills_root.is_symlink():
         found = {
             path.relative_to(root).as_posix()
             for path in skills_root.rglob("*")
@@ -1010,24 +1202,127 @@ def check_antigravity_projections(root: Path) -> list[str]:
     return errors
 
 
-def render_catalog_markdown(catalog: SkillsCatalog) -> str:
-    """Generate the English catalog table (docs/parity/skills-catalog.md)."""
+_CATALOG_DOC_COPY = {
+    "en": {
+        "title": "# Skill parity catalog",
+        "generated": (
+            "Generated from [`skills/catalog.json`](../../skills/catalog.json). "
+            "Do not hand-edit this table."
+        ),
+        "wave": (
+            "**#70 Wave B/C:** Grok plugin playbooks (original 16 plus Wave B/C). "
+            "Catalog rows are **not** live-verified and must not set `verified`. "
+            "Dual-host routing consumes this catalog: Grok rules "
+            "`<workflow_routing>` is generated from triggers/aliases."
+        ),
+        "ag": (
+            "Antigravity files under "
+            "`docs/parity/projections/antigravity/skills/` are **projections only**."
+        ),
+        "header": (
+            "| ID | Kind | Classification | Owner | CLI twin | Status | Live | Continuation |"
+        ),
+        "sep": "|----|------|----------------|-------|----------|--------|------|--------------|",
+        "host_h": "## Host-native protection",
+        "host_p": (
+            "These names cannot be Grok plugin directories and cannot silently "
+            "replace host slash commands:"
+        ),
+        "host_alias": (
+            "`plan` and `goal` exist only as **aliases** (`host_native_protected`) "
+            "resolving to `omg-ralplan` / `omg-ultragoal`."
+        ),
+        "cont_h": "## Continuation authority",
+        "cont_one": "Exactly one of: ",
+        "cont_p": (
+            "Conflicts resolve to `refuse`, `adopt_existing`, or `artifact_only` "
+            "(`omg_cli.skills_catalog.resolve_continuation`). Cancel/using always "
+            "adopt. Wiki/HUD/LSP/ask are artifact-only under an active loop."
+        ),
+    },
+    "zh": {
+        "title": "# Skill 对等目录",
+        "generated": (
+            "由 [`skills/catalog.json`](../../skills/catalog.json) 生成。请勿手改此表。"
+        ),
+        "wave": (
+            "**#70 Wave B/C：** Grok 插件 playbook（原 16 个 + Wave B/C）。"
+            "目录项 **不是** live-verified，禁止把 `verified` 设为 true。"
+            "双宿主路由共用同一份 catalog：Grok 规则文件的 `<workflow_routing>` "
+            "由 triggers/aliases 生成。"
+        ),
+        "ag": (
+            "`docs/parity/projections/antigravity/skills/` 下的 Antigravity 文件"
+            "**只是投影**。"
+        ),
+        "header": (
+            "| ID | 类型 | 分类 | 所有者 | CLI 孪生 | 状态 | Live | 续跑 |"
+        ),
+        "sep": "|----|------|------|--------|----------|------|------|------|",
+        "host_h": "## Host-native 保护",
+        "host_p": "这些名字不能成为 Grok 插件目录，也不能静默替换宿主 slash 命令：",
+        "host_alias": (
+            "`plan` 与 `goal` 仅为 **别名**（`host_native_protected`），"
+            "解析到 `omg-ralplan` / `omg-ultragoal`。"
+        ),
+        "cont_h": "## 续跑权",
+        "cont_one": "同时只能有一个：",
+        "cont_p": (
+            "冲突解析为 `refuse`、`adopt_existing` 或 `artifact_only`。"
+            "cancel/using 一律 adopt。循环进行中 wiki/HUD/LSP/ask 仅写制品。"
+        ),
+    },
+    "zh-TW": {
+        "title": "# Skill 對等目錄",
+        "generated": (
+            "由 [`skills/catalog.json`](../../skills/catalog.json) 生成。請勿手改此表。"
+        ),
+        "wave": (
+            "**#70 Wave B/C：** Grok 外掛 playbook（原 16 個 + Wave B/C）。"
+            "目錄列 **不是** live-verified，禁止把 `verified` 設為 true。"
+            "雙宿主路由共用同一份 catalog：Grok 規則檔的 `<workflow_routing>` "
+            "由 triggers/aliases 生成。"
+        ),
+        "ag": (
+            "`docs/parity/projections/antigravity/skills/` 下的 Antigravity 檔案"
+            "**只是投影**。"
+        ),
+        "header": (
+            "| ID | 種類 | 分類 | 擁有者 | CLI 孿生 | 狀態 | Live | 續跑 |"
+        ),
+        "sep": "|----|------|------|--------|----------|------|------|------|",
+        "host_h": "## Host-native 保護",
+        "host_p": "這些名字不能成為 Grok 外掛目錄，也不能靜默取代宿主 slash 命令：",
+        "host_alias": (
+            "`plan` 與 `goal` 僅為 **別名**（`host_native_protected`），"
+            "解析到 `omg-ralplan` / `omg-ultragoal`。"
+        ),
+        "cont_h": "## 續跑權",
+        "cont_one": "同時只能有一個：",
+        "cont_p": (
+            "衝突解析為 `refuse`、`adopt_existing` 或 `artifact_only`。"
+            "cancel/using 一律 adopt。循環進行中 wiki/HUD/LSP/ask 只寫製品。"
+        ),
+    },
+}
+
+
+def render_catalog_markdown(catalog: SkillsCatalog, locale: str = "en") -> str:
+    """Generate a catalog table (docs/parity/skills-catalog*.md)."""
+    copy = _CATALOG_DOC_COPY.get(locale)
+    if copy is None:
+        raise SkillsCatalogError(f"unsupported catalog locale {locale!r}")
     lines = [
-        "# Skill parity catalog",
+        copy["title"],
         "",
-        "Generated from [`skills/catalog.json`](../../skills/catalog.json). "
-        "Do not hand-edit this table.",
+        copy["generated"],
         "",
-        "**Wave A first cut (#70):** inventory + loader + aliases + resource "
-        "confinement + continuation policy. The 16 Grok plugin playbooks stay "
-        "the in-session surface. Catalog-only rows are classified; they are "
-        "**not** live-verified and must not set `verified`.",
+        copy["wave"],
         "",
-        "Antigravity files under "
-        "`docs/parity/projections/antigravity/skills/` are **projections only**.",
+        copy["ag"],
         "",
-        "| ID | Kind | Classification | Owner | CLI twin | Status | Live | Continuation |",
-        "|----|------|----------------|-------|----------|--------|------|--------------|",
+        copy["header"],
+        copy["sep"],
     ]
     for record in catalog.skills:
         cli = record.cli_twin or "—"
@@ -1040,24 +1335,20 @@ def render_catalog_markdown(catalog: SkillsCatalog) -> str:
     lines.extend(
         [
             "",
-            "## Host-native protection",
+            copy["host_h"],
             "",
-            "These names cannot be Grok plugin directories and cannot silently "
-            "replace host slash commands:",
+            copy["host_p"],
             "",
             ", ".join(f"`{name}`" for name in sorted(HOST_NATIVE_PROTECTED)),
             "",
-            "`plan` and `goal` exist only as **aliases** (`host_native_protected`) "
-            "resolving to `omg-ralplan` / `omg-ultragoal`.",
+            copy["host_alias"],
             "",
-            "## Continuation authority",
+            copy["cont_h"],
             "",
-            "Exactly one of: "
+            copy["cont_one"]
             + ", ".join(f"`{name}`" for name in sorted(CONTINUATION_OWNERS)),
             "",
-            "Conflicts resolve to `refuse`, `adopt_existing`, or `artifact_only` "
-            "(`omg_cli.skills_catalog.resolve_continuation`). Cancel/using always "
-            "adopt. Wiki/HUD/LSP/ask are artifact-only under an active loop.",
+            copy["cont_p"],
             "",
         ]
     )
@@ -1065,32 +1356,45 @@ def render_catalog_markdown(catalog: SkillsCatalog) -> str:
 
 
 CATALOG_DOC_RELATIVE = "docs/parity/skills-catalog.md"
+CATALOG_DOC_LOCALES: Mapping[str, str] = {
+    "en": CATALOG_DOC_RELATIVE,
+    "zh": "docs/parity/skills-catalog.zh.md",
+    "zh-TW": "docs/parity/skills-catalog.zh-TW.md",
+}
 
 
-def write_catalog_markdown(root: Path) -> str:
+def write_catalog_markdown(root: Path) -> list[str]:
     catalog = load_skills_catalog(root, require_projections=False)
-    text = render_catalog_markdown(catalog)
-    path = root / CATALOG_DOC_RELATIVE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return CATALOG_DOC_RELATIVE
+    written: list[str] = []
+    for locale, rel in CATALOG_DOC_LOCALES.items():
+        text = render_catalog_markdown(catalog, locale=locale)
+        _atomic_write_text(root / rel, text)
+        written.append(rel)
+    return written
 
 
 def check_catalog_markdown(root: Path) -> list[str]:
     catalog = load_skills_catalog(root, require_projections=False)
-    expected = render_catalog_markdown(catalog)
-    path = root / CATALOG_DOC_RELATIVE
-    if not path.is_file():
-        return [f"missing {CATALOG_DOC_RELATIVE}"]
-    actual = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-    if actual != expected.replace("\r\n", "\n"):
-        return [f"stale {CATALOG_DOC_RELATIVE}"]
-    return []
+    errors: list[str] = []
+    for locale, rel in CATALOG_DOC_LOCALES.items():
+        expected = render_catalog_markdown(catalog, locale=locale)
+        path = root / rel
+        if path.is_symlink():
+            errors.append(f"symlink dest {rel}")
+            continue
+        if not path.is_file():
+            errors.append(f"missing {rel}")
+            continue
+        actual = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if actual != expected.replace("\r\n", "\n"):
+            errors.append(f"stale {rel}")
+    return errors
 
 
 __all__ = [
     "ALLOWED_CAPABILITY_MODES",
     "ANTIGRAVITY_PROJECTION_ROOT",
+    "CATALOG_DOC_LOCALES",
     "CATALOG_DOC_RELATIVE",
     "CATALOG_RELATIVE",
     "CONTINUATION_OWNERS",
@@ -1098,6 +1402,7 @@ __all__ = [
     "HOST_NATIVE_PROTECTED",
     "KIND",
     "PLUGIN_SKILL_COUNT",
+    "ROUTING_PRIORITY_HEAD",
     "SCHEMA",
     "HostProjection",
     "SkillRecord",
@@ -1112,6 +1417,7 @@ __all__ = [
     "list_plugin_skill_dirs",
     "load_skills_catalog",
     "plugin_root",
+    "render_workflow_routing",
     "required_capability_diagnostics",
     "resolve_continuation",
     "resolve_skill_resource",
@@ -1119,6 +1425,7 @@ __all__ = [
     "render_antigravity_skill_md",
     "render_antigravity_projections",
     "render_catalog_markdown",
+    "routing_order",
     "strip_markdown_frontmatter",
     "write_antigravity_projections",
     "write_catalog_markdown",
