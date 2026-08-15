@@ -35,6 +35,9 @@ REQUIRED = [
     "docs/RELEASE.md",
     "docs/RELEASE.zh.md",
     "docs/RELEASE.zh-TW.md",
+    "docs/parity/skills-catalog.md",
+    "docs/parity/skills-catalog.zh.md",
+    "docs/parity/skills-catalog.zh-TW.md",
     "skills/omg-using/SKILL.md",
     "skills/omg-autopilot/SKILL.md",
 ]
@@ -274,10 +277,19 @@ def main() -> int:
         if needle not in text:
             errors.append(f"{rel}: missing marker {needle!r}")
     errors.extend(check_routing_docs())
-    # 16 skills
-    skills = sorted(p.name for p in (ROOT / "skills").iterdir() if p.is_dir())
-    if len(skills) != 16:
-        errors.append(f"expected 16 skills, got {len(skills)}: {skills}")
+    # Plugin skill dirs (Wave B/C count lives in omg_cli.skills_catalog)
+    sys.path.insert(0, str(ROOT))
+    from omg_cli.skills_catalog import PLUGIN_SKILL_COUNT
+
+    skills = sorted(
+        p.name
+        for p in (ROOT / "skills").iterdir()
+        if p.is_dir() and p.name.startswith("omg-")
+    )
+    if len(skills) != PLUGIN_SKILL_COUNT:
+        errors.append(
+            f"expected {PLUGIN_SKILL_COUNT} skills, got {len(skills)}: {skills}"
+        )
     # No legacy zh-Hant *filenames*; mention in policy prose is OK.
     for path in ROOT.rglob("*.md"):
         rel = path.relative_to(ROOT).as_posix()

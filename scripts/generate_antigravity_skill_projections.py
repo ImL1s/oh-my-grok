@@ -51,11 +51,12 @@ def main(argv: list[str] | None = None) -> int:
             print("antigravity_skill_projections_ok")
             return 0
         written = write_antigravity_projections(root)
-        doc = write_catalog_markdown(root)
+        docs = write_catalog_markdown(root)
         for rel in written:
             print(rel)
-        print(doc)
-        print(f"wrote {len(written)} projection file(s) + catalog markdown")
+        for rel in docs:
+            print(rel)
+        print(f"wrote {len(written)} projection file(s) + {len(docs)} catalog markdown")
         return 0
     except SkillsCatalogError as exc:
         print(f"generate antigravity skill projections: {exc}", file=sys.stderr)

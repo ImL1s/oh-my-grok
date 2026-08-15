@@ -20,7 +20,7 @@ not live AG evidence, and does not mean `agy` skill discovery works.
 
 Route users and sessions into the correct oh-my-grok workflow. This skill does **not** implement features; it loads the right playbook and points at install/health tools.
 
-**Human catalog (all 16 skills):** `docs/skills.md` · `docs/skills.zh.md` · `docs/skills.zh-TW.md`  
+**Human catalog (45 in-session skills, Wave B/C included):** `docs/skills.md` · `docs/skills.zh.md` · `docs/skills.zh-TW.md`  
 **Docs index:** `docs/README.md` · `docs/README.zh.md` · `docs/README.zh-TW.md` · user README: `docs/readme/README.zh-TW.md` · `docs/readme/README.zh.md`
 
 ## HARD RULES (non-negotiable)

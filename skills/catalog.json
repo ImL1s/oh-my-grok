@@ -1,8 +1,8 @@
 {
   "schema": "omg-skills-catalog/v1",
   "kind": "read_only_machine_catalog",
-  "note": "Single skill registry for oh-my-grok (#70 Wave A). 16 Grok plugin skills remain the in-session surface. Aliases/catalog-only rows are classified; none are live-verified. Antigravity SKILL.md files are static projections only. Do not add a second skill list. Never execute/all capability_mode.",
-  "plugin_skill_count": 16,
+  "note": "Single skill registry for oh-my-grok (#70 Wave B/C). 45 Grok plugin skills are the in-session surface. Aliases remain aliases. Dual-host routing consumes this catalog (Grok <workflow_routing> is generated from triggers/aliases). None are live-verified. Antigravity SKILL.md files are static projections only. Never execute/all capability_mode.",
+  "plugin_skill_count": 45,
   "host_native_protected": [
     "plan",
     "goal",
@@ -43,7 +43,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -89,7 +91,9 @@
         "omg-ultraqa"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -130,7 +134,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -172,7 +178,9 @@
         "omg-ralplan"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -214,7 +222,9 @@
         "omg-ultraqa"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -254,7 +264,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -294,7 +306,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -333,7 +347,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -374,7 +390,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -416,7 +434,9 @@
         "omg-autopilot"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -456,7 +476,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -497,7 +519,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -538,7 +562,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -581,7 +607,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -621,7 +649,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -661,7 +691,9 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
           "kind": "plugin_skill",
@@ -678,7 +710,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-best-practice-research/SKILL.md",
       "aliases": [
         "best-practice-research"
       ],
@@ -695,20 +727,26 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "best practice research",
+        "best practices research",
+        "research best practices"
+      ],
       "pipeline_next": [
         "omg-ralplan"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-best-practice-research/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-best-practice-research/SKILL.md"
         }
       }
     },
@@ -717,7 +755,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-autoresearch/SKILL.md",
       "aliases": [
         "autoresearch"
       ],
@@ -731,31 +769,34 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "autoresearch"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-autoresearch/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-autoresearch/SKILL.md"
         }
-      },
-      "deferred_issue": 70
+      }
     },
     {
       "id": "omg-autoresearch-goal",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-autoresearch-goal/SKILL.md",
       "aliases": [
         "autoresearch-goal"
       ],
@@ -769,31 +810,35 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "autoresearch goal",
+        "autoresearch-goal"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-autoresearch-goal/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-autoresearch-goal/SKILL.md"
         }
-      },
-      "deferred_issue": 70
+      }
     },
     {
       "id": "omg-external-context",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-external-context/SKILL.md",
       "aliases": [
         "external-context"
       ],
@@ -810,18 +855,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "external context",
+        "bring in context"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-external-context/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-external-context/SKILL.md"
         }
       }
     },
@@ -830,7 +880,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-trace/SKILL.md",
       "aliases": [
         "trace"
       ],
@@ -847,20 +897,26 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "omg trace",
+        "trace workflow",
+        "trace the run"
+      ],
       "pipeline_next": [
         "omg-deep-interview"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-trace/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-trace/SKILL.md"
         }
       }
     },
@@ -869,7 +925,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-deep-dive/SKILL.md",
       "aliases": [
         "deep-dive"
       ],
@@ -886,20 +942,25 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "deep dive",
+        "deep-dive"
+      ],
       "pipeline_next": [
         "omg-deep-interview"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-deep-dive/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-deep-dive/SKILL.md"
         }
       }
     },
@@ -908,7 +969,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-parallel-research/SKILL.md",
       "aliases": [],
       "sources": [
         {
@@ -923,18 +984,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "parallel research",
+        "sciomc"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-parallel-research/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-parallel-research/SKILL.md"
         }
       }
     },
@@ -943,7 +1009,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-prometheus-strict/SKILL.md",
       "aliases": [
         "prometheus-strict"
       ],
@@ -957,31 +1023,35 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "refuse",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "prometheus strict",
+        "prometheus-strict"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-prometheus-strict/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-prometheus-strict/SKILL.md"
         }
-      },
-      "deferred_issue": 70
+      }
     },
     {
       "id": "omg-hyperplan",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "team",
-      "file": null,
+      "file": "skills/omg-hyperplan/SKILL.md",
       "aliases": [
         "hyperplan"
       ],
@@ -995,31 +1065,34 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "refuse",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "hyperplan"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-hyperplan/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-hyperplan/SKILL.md"
         }
-      },
-      "deferred_issue": 69
+      }
     },
     {
       "id": "omg-design",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-design/SKILL.md",
       "aliases": [
         "design"
       ],
@@ -1036,18 +1109,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "omg design",
+        "design pass"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-design/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-design/SKILL.md"
         }
       }
     },
@@ -1056,7 +1134,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-tdd/SKILL.md",
       "aliases": [
         "tdd"
       ],
@@ -1073,20 +1151,26 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "tdd",
+        "test driven",
+        "red green refactor"
+      ],
       "pipeline_next": [
         "omg-ultraqa"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-tdd/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-tdd/SKILL.md"
         }
       }
     },
@@ -1095,7 +1179,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-build-fix/SKILL.md",
       "aliases": [
         "build-fix"
       ],
@@ -1112,20 +1196,26 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "build-fix",
+        "fix the build",
+        "broken build"
+      ],
       "pipeline_next": [
         "omg-ultraqa"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-build-fix/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-build-fix/SKILL.md"
         }
       }
     },
@@ -1134,7 +1224,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-security-review/SKILL.md",
       "aliases": [
         "security-review"
       ],
@@ -1151,20 +1241,25 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "security review",
+        "security-review"
+      ],
       "pipeline_next": [
         "omg-dual-review"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-security-review/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-security-review/SKILL.md"
         }
       }
     },
@@ -1173,7 +1268,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-visual-verdict/SKILL.md",
       "aliases": [
         "visual-verdict"
       ],
@@ -1183,35 +1278,39 @@
           "name": "visual-verdict"
         }
       ],
-      "cli_twin": null,
+      "cli_twin": "visual",
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "visual verdict",
+        "visual compare"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-visual-verdict/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-visual-verdict/SKILL.md"
         }
-      },
-      "deferred_issue": 75
+      }
     },
     {
       "id": "omg-visual-ralph",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-visual-ralph/SKILL.md",
       "aliases": [
         "visual-ralph"
       ],
@@ -1221,35 +1320,39 @@
           "name": "visual-ralph"
         }
       ],
-      "cli_twin": "ralph",
+      "cli_twin": "visual",
       "capability_mode": "read-write",
       "continuation": "none",
       "conflict_policy": "refuse",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "visual ralph",
+        "visual-ralph"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-visual-ralph/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-visual-ralph/SKILL.md"
         }
-      },
-      "deferred_issue": 75
+      }
     },
     {
       "id": "omg-ai-slop-cleaner",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-ai-slop-cleaner/SKILL.md",
       "aliases": [
         "ai-slop-cleaner"
       ],
@@ -1263,31 +1366,36 @@
       "capability_mode": "read-write",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "ai slop",
+        "slop cleaner",
+        "ai-slop-cleaner"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-ai-slop-cleaner/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ai-slop-cleaner/SKILL.md"
         }
-      },
-      "deferred_issue": 76
+      }
     },
     {
       "id": "omg-comment-checker",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-comment-checker/SKILL.md",
       "aliases": [
         "comment-checker"
       ],
@@ -1301,31 +1409,35 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "comment checker",
+        "comment-checker"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-comment-checker/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-comment-checker/SKILL.md"
         }
-      },
-      "deferred_issue": 76
+      }
     },
     {
       "id": "omg-security-research",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "team",
-      "file": null,
+      "file": "skills/omg-security-research/SKILL.md",
       "aliases": [
         "security-research"
       ],
@@ -1339,31 +1451,35 @@
       "capability_mode": "read-only",
       "continuation": "none",
       "conflict_policy": "refuse",
-      "implementation_status": "deferred",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "security research",
+        "security-research"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-security-research/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-security-research/SKILL.md"
         }
-      },
-      "deferred_issue": 69
+      }
     },
     {
       "id": "omg-deepinit",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-deepinit/SKILL.md",
       "aliases": [
         "deepinit"
       ],
@@ -1380,18 +1496,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "deepinit",
+        "deep init"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-deepinit/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-deepinit/SKILL.md"
         }
       }
     },
@@ -1400,7 +1521,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-project-session-manager/SKILL.md",
       "aliases": [
         "project-session-manager"
       ],
@@ -1417,18 +1538,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "project session manager",
+        "session manager"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-project-session-manager/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-project-session-manager/SKILL.md"
         }
       }
     },
@@ -1437,7 +1563,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-mcp-setup/SKILL.md",
       "aliases": [
         "mcp-setup"
       ],
@@ -1454,18 +1580,24 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "mcp setup",
+        "mcp-setup",
+        "install mcp"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-mcp-setup/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-mcp-setup/SKILL.md"
         }
       }
     },
@@ -1474,7 +1606,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-configure-notifications/SKILL.md",
       "aliases": [
         "configure-notifications"
       ],
@@ -1491,18 +1623,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "configure notifications",
+        "setup notifications"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-configure-notifications/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-configure-notifications/SKILL.md"
         }
       }
     },
@@ -1511,7 +1648,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-release/SKILL.md",
       "aliases": [
         "release"
       ],
@@ -1528,27 +1665,32 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "omg release",
+        "release checklist"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-release/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-release/SKILL.md"
         }
       }
     },
     {
       "id": "omg-self-improve",
       "kind": "canonical",
-      "classification": "excluded",
-      "runtime_owner": "none",
-      "file": null,
+      "classification": "omg_native",
+      "runtime_owner": "omg-cli",
+      "file": "skills/omg-self-improve/SKILL.md",
       "aliases": [
         "self-improve"
       ],
@@ -1559,34 +1701,38 @@
         }
       ],
       "cli_twin": null,
-      "capability_mode": "none",
+      "capability_mode": "read-only",
       "continuation": "none",
-      "conflict_policy": "none",
-      "implementation_status": "excluded",
-      "live_verification": "none",
+      "conflict_policy": "artifact_only",
+      "implementation_status": "configured",
+      "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "self improve",
+        "self-improve"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-self-improve/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-self-improve/SKILL.md"
         }
-      },
-      "exclude_reason": "No OMG learning loop; would overclaim runtime self-modification. Use docs/PRs, not an in-session skill."
+      }
     },
     {
       "id": "omg-skill",
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-skill/SKILL.md",
       "aliases": [
         "skill"
       ],
@@ -1609,15 +1755,17 @@
       ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-skill/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-skill/SKILL.md"
         }
       }
     },
@@ -1626,7 +1774,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-writer-memory/SKILL.md",
       "aliases": [
         "writer-memory"
       ],
@@ -1643,27 +1791,32 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "writer memory",
+        "writer-memory"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-writer-memory/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-writer-memory/SKILL.md"
         }
       }
     },
     {
       "id": "omg-git-master",
       "kind": "canonical",
-      "classification": "host_owned",
+      "classification": "omg_native",
       "runtime_owner": "host",
-      "file": null,
+      "file": "skills/omg-git-master/SKILL.md",
       "aliases": [
         "git-master"
       ],
@@ -1677,21 +1830,26 @@
       "capability_mode": "read-write",
       "continuation": "none",
       "conflict_policy": "artifact_only",
-      "implementation_status": "catalogued",
+      "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "git master",
+        "git-master"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-git-master/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-git-master/SKILL.md"
         }
       }
     },
@@ -1700,7 +1858,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-ralph-init/SKILL.md",
       "aliases": [
         "ralph-init"
       ],
@@ -1717,20 +1875,25 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "ralph init",
+        "ralph-init"
+      ],
       "pipeline_next": [
         "omg-ralph"
       ],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-ralph-init/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ralph-init/SKILL.md"
         }
       }
     },
@@ -1739,7 +1902,7 @@
       "kind": "canonical",
       "classification": "omg_native",
       "runtime_owner": "omg-cli",
-      "file": null,
+      "file": "skills/omg-ecomode/SKILL.md",
       "aliases": [
         "ecomode"
       ],
@@ -1756,18 +1919,23 @@
       "implementation_status": "configured",
       "live_verification": "unproven",
       "verified": false,
-      "triggers": [],
+      "triggers": [
+        "ecomode",
+        "eco mode"
+      ],
       "pipeline_next": [],
       "required_capabilities": [],
-      "resources": [],
+      "resources": [
+        "resources/contract.json"
+      ],
       "projections": {
         "grok": {
-          "kind": "catalog_only",
-          "path": ""
+          "kind": "plugin_skill",
+          "path": "skills/omg-ecomode/SKILL.md"
         },
         "antigravity": {
-          "kind": "none",
-          "path": ""
+          "kind": "skill_md_projection",
+          "path": "docs/parity/projections/antigravity/skills/omg-ecomode/SKILL.md"
         }
       }
     },
