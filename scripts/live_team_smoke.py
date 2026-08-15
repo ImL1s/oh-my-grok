@@ -84,6 +84,7 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
     sys.path.insert(0, str(ROOT))
     from omg_cli.team.interactive import (
         GROK_INTERACTIVE_SEED_PROMPT,
+        capture_contains_provider_echo,
         capture_contains_tui_ready,
     )
     from omg_cli.team.operator import input_worker
@@ -156,19 +157,18 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             )
             _write_evidence(evidence)
             return _fail(evidence["reason"])
-        seed_marker = f"PROVIDER_ECHO:{GROK_INTERACTIVE_SEED_PROMPT}"
         seed_deadline = time.monotonic() + 45.0
         last = capture
         while time.monotonic() < seed_deadline:
             last = _tmux_capture(session, pane_id) if session else ""
             if not last:
                 last = (_tmux("capture-pane", "-p", "-t", pane_id).stdout or "")
-            if seed_marker in last:
+            if capture_contains_provider_echo(last, GROK_INTERACTIVE_SEED_PROMPT):
                 evidence["seed_echo"] = True
                 break
             time.sleep(1.0)
         evidence["capture_preview"] = last[-2000:]
-        if f"PROVIDER_ECHO:{token}" in last:
+        if capture_contains_provider_echo(last, token):
             evidence["reason"] = "PROVIDER_ECHO appeared before operator send"
             _write_evidence(evidence)
             return _fail(evidence["reason"])
@@ -189,13 +189,13 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             last = _tmux_capture(session, pane_id) if session else ""
             if not last:
                 last = (_tmux("capture-pane", "-p", "-t", pane_id).stdout or "")
-            if f"PROVIDER_ECHO:{token}" in last:
+            if capture_contains_provider_echo(last, token):
                 echoed = True
                 break
             time.sleep(1.0)
         evidence["provider_echo"] = echoed
         evidence["capture_preview"] = last[-2000:]
-        bare_only = token in last and f"PROVIDER_ECHO:{token}" not in last
+        bare_only = token in last and not capture_contains_provider_echo(last, token)
         if bare_only or not echoed:
             extra = ""
             if evidence.get("seed_echo"):

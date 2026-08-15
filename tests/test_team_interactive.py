@@ -16,6 +16,7 @@ from omg_cli.team.interactive import (
     GROK_INTERACTIVE_SEED_PROMPT,
     INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
+    capture_contains_provider_echo,
     capture_contains_tui_ready,
     grok_interactive_argv,
     make_interactive_nonce,
@@ -471,6 +472,22 @@ def test_tui_ready_marker_is_exact_line_only() -> None:
     assert not capture_contains_tui_ready(f"{marker}EVIL\n", nonce)
     assert not capture_contains_tui_ready("TUI_READY:other\n", nonce)
     assert not capture_contains_tui_ready("", nonce)
+
+
+def test_provider_echo_allows_optional_space_not_local_composer() -> None:
+    token = "OMG147-LIVE-01548eed17fe"
+    assert capture_contains_provider_echo(f"PROVIDER_ECHO:{token}\n", token)
+    assert capture_contains_provider_echo(f"PROVIDER_ECHO: {token}\n", token)
+    assert capture_contains_provider_echo(
+        "Thought for 0.8s\nPROVIDER_ECHO: OMG147-LIVE-01548eed17fe\n❯\n",
+        token,
+    )
+    assert not capture_contains_provider_echo(f"❯ {token}\n", token)
+    assert not capture_contains_provider_echo(f"PROVIDER_ECHO:{token}EVIL\n", token)
+    assert not capture_contains_provider_echo(
+        f"PROVIDER_ECHO:\n{token}\n", token
+    )
+    assert not capture_contains_provider_echo("", token)
 
 
 def test_sanitize_tty_payload_drops_csi_and_empty() -> None:

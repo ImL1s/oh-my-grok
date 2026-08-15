@@ -390,6 +390,30 @@ def capture_contains_tui_ready(text: str, nonce: str) -> bool:
     return False
 
 
+def capture_contains_provider_echo(text: str, payload: str) -> bool:
+    """True when a capture line is ``PROVIDER_ECHO:`` + optional space + *payload*.
+
+    Local composer echo of *payload* (no prefix) is insufficient. Extra suffix
+    after the payload is refused. Newline between colon and payload is refused.
+    Optional ASCII space/tab after the colon is allowed — grok 1.0.4 may insert
+    one even when rules say ``followed immediately``.
+    """
+    if not isinstance(text, str) or not isinstance(payload, str):
+        return False
+    token = payload.strip()
+    if not token or "\n" in token or "\r" in token:
+        return False
+    prefix = "PROVIDER_ECHO:"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :].lstrip(" \t")
+        if rest == token:
+            return True
+    return False
+
+
 def wait_for_interactive_tui_ready(
     workers: Sequence[Mapping[str, Any]],
     *,

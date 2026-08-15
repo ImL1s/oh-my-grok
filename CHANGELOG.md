@@ -19,8 +19,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   literal CR after a bounded settle (two pulses on grok) so composer text is
   not paste-coalesced with Enter. `PROVIDER_ECHO` is still child-produced,
   never wrapper-faked. `LIVE_TEAM_INTERACTIVE_TTY_OK` is claimed only after
-  unique stdin→pane echo — not from the positional seed alone. Refs #147
-  (does not close unless that live marker is honestly earned).
+  unique stdin→pane echo — not from the positional seed alone. One WSL live
+  launch (`team-smoke-20260815T164235Z.json`) submitted `OMG147-LIVE-01548eed17fe`
+  through `team input --submit`; grok thought and replied
+  `PROVIDER_ECHO: <token>` (space after colon). The first smoke matcher
+  required zero space and false-negatived (exit 1); the matcher now allows
+  optional ASCII space/tab. That artifact earns `LIVE_TEAM_INTERACTIVE_TTY_OK`.
+  Default/`auto` stay headless. Resize/Ctrl-C/scale live AC remains open.
+  Refs #147 (does not close).
 - **#147 grok 1.0.4 interactive TUI_READY wrapper:** `--io-mode interactive`
   grok panes `exec` `python -m omg_cli.team.interactive_wrapper` on the pane
   TTY (not the Team supervisor). The wrapper prints `TUI_READY:<nonce>` only
