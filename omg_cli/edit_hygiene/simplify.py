@@ -262,6 +262,21 @@ def run_simplify(
             raise SimplifyRecursion(
                 "apply-edits requires a prior assignment for this stage"
             )
+        recorded = guard.get("paths")
+        if not isinstance(recorded, list):
+            raise SimplifyRecursion(
+                "apply-edits paths must match the recorded assignment"
+            )
+        try:
+            assigned_paths = [posix_relpath(str(item)) for item in recorded]
+        except WorkspacePathError as exc:
+            raise SimplifyRecursion(
+                "apply-edits paths must match the recorded assignment"
+            ) from exc
+        if assigned_paths != kept:
+            raise SimplifyRecursion(
+                "apply-edits paths must match the recorded assignment"
+            )
     else:
         if same_stage and status in {"assigned", "applied"}:
             raise SimplifyRecursion("simplifier already ran for this stage")

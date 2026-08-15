@@ -535,6 +535,53 @@ def test_simplify_apply_edits_must_stay_in_paths(
     assert (project / "outside.py").read_text(encoding="utf-8") == "alpha"
 
 
+def test_simplify_apply_edits_paths_must_match_assignment(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "a.py").write_text("alpha", encoding="utf-8")
+    (project / "b.py").write_text("alpha", encoding="utf-8")
+    rc = main(["--json", "edit", "simplify", "--paths", "a.py", "--enable"])
+    assert rc == 1
+    assert _code(_out(capsys)) == "E_SIMPLIFY_ASSIGNMENT"
+    desc = project / "edits.json"
+    desc.write_text(json.dumps([_descriptor("b.py")]), encoding="utf-8")
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "b.py",
+            "--enable",
+            "--apply-edits",
+            str(desc),
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_RECURSION"
+    assert (project / "a.py").read_text(encoding="utf-8") == "alpha"
+    assert (project / "b.py").read_text(encoding="utf-8") == "alpha"
+
+
+def test_write_edit_artifact_refuses_symlinked_dir(project: Path) -> None:
+    from omg_cli.edit_hygiene.artifacts import write_edit_artifact
+    from omg_cli.edit_hygiene.workspace import WorkspacePathError
+
+    leaked = project / "leaked-edit"
+    leaked.mkdir()
+    dest = project / ".omg" / "artifacts"
+    dest.mkdir(parents=True, exist_ok=True)
+    edit_dir = dest / "edit"
+    try:
+        edit_dir.symlink_to(leaked, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not available")
+    with pytest.raises(WorkspacePathError, match="symlink"):
+        write_edit_artifact(project, {"kind": "omg.edit.artifact.v1", "note": "x"})
+    assert list(leaked.iterdir()) == []
+
+
 def test_apply_refuses_read_only_task_capability(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

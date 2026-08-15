@@ -324,7 +324,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         return 0
     except HashEditCliUsageError as exc:
         return _emit_failure(COMMAND_APPLY, exc, usage=True)
-    except (HashEditError, EditHygieneError) as exc:
+    except (HashEditError, EditHygieneError, WorkspacePathError) as exc:
         return _emit_failure(COMMAND_APPLY, exc)
 
 

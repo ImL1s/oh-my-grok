@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from omg_cli.redaction import redact_value
+from omg_cli.edit_hygiene.workspace import write_confined_text
 
 ARTIFACT_KIND: Final[str] = "omg.edit.artifact.v1"
 _STRIP_KEYS: Final[frozenset[str]] = frozenset(
@@ -61,7 +62,5 @@ def write_edit_artifact(root: Path, payload: dict[str, Any]) -> str:
     safe["digest"] = digest
     rendered = json.dumps(safe, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     rel = f".omg/artifacts/edit/{digest}.json"
-    dest = Path(root) / ".omg" / "artifacts" / "edit" / f"{digest}.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(rendered, encoding="utf-8", newline="\n")
+    write_confined_text(root, rel, rendered)
     return rel
