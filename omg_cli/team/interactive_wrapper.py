@@ -288,13 +288,15 @@ def _wait_for_stdin_ready(pid: int, tty: str, *, timeout_s: float | None) -> boo
 
 
 def _forward_signal(pid: int, signum: int) -> None:
+    """Signal the child process group first, then the leader pid."""
+    try:
+        os.killpg(pid, signum)
+    except OSError:
+        pass
     try:
         os.kill(pid, signum)
     except OSError:
-        try:
-            os.killpg(pid, signum)
-        except OSError:
-            pass
+        pass
 
 
 def _reap_child_bounded(pid: int, *, grace_s: float | None = None) -> None:
@@ -313,10 +315,6 @@ def _reap_child_bounded(pid: int, *, grace_s: float | None = None) -> None:
             break
         time.sleep(_POLL_S)
     _forward_signal(pid, signal.SIGKILL)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except OSError:
-        pass
     kill_deadline = time.monotonic() + _KILL_GRACE_S
     while time.monotonic() < kill_deadline:
         try:
