@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -54,15 +56,20 @@ def test_generator_rejects_late_toplevel_import():
 
 # ---------------------------------------------------------------- B3: shlex.quote injection
 def test_launcher_neutralizes_shell_injection_path():
-    from omg_cli.hook_install import launcher_command
+    from omg_cli.hook_install import render_wrapper
 
     evil = Path('/tmp/a"; exit 2; #/x.py')  # would break naive double-quotes → inject exit 2
-    cmd = launcher_command(evil)
-    assert "|| true" in cmd
-    # Running it must NOT exit 2 from the injected `exit 2`: the path is a single
-    # nonexistent arg → python rc 2 → `|| true` → rc 0. If injection succeeded, rc 2.
-    r = subprocess.run(["/bin/sh", "-c", cmd], input="{}", capture_output=True, text=True, timeout=10)
-    assert r.returncode == 0, f"injection not neutralized: {cmd!r}"
+    body = render_wrapper(evil, "/usr/bin/python3")
+    assert "|| true" in body
+    fd, tmp = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    try:
+        Path(tmp).write_text(body, encoding="utf-8", newline="\n")
+        os.chmod(tmp, 0o755)
+        r = subprocess.run([tmp], input="{}", capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, f"injection not neutralized: {body!r} rc={r.returncode}"
+    finally:
+        os.unlink(tmp)
 
 
 # ---------------------------------------------------------------- B2: stage → smoke → publish
@@ -133,6 +140,26 @@ def test_doctor_rejects_noncanonical_command(tmp_path, monkeypatch):
     assert ok is False and "canonical" in detail
 
 
+def test_doctor_rejects_mutated_wrapper_that_still_delegates(tmp_path, monkeypatch):
+    """Codex P2: wrapper bytes must match render_wrapper, not just probe output."""
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from omg_cli import doctor, hook_install as hi
+
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    body = wrapper.read_text(encoding="utf-8")
+    wrapper.write_text(body + "# extra side-effect line\n", encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    name, ok, detail = doctor.check_global_pretool_hook()
+    assert ok is False, detail
+    assert "render_wrapper" in detail
+    _, level, fresh = doctor.check_global_pretool_hook_freshness()
+    assert level == "warn"
+    assert "wrapper" in fresh.lower()
+
+
 # --- Codex re-verify round: 4 remaining blockers ---
 
 def test_install_quarantine_left_active_reported(tmp_path, monkeypatch):
@@ -155,6 +182,30 @@ def test_install_quarantine_left_active_reported(tmp_path, monkeypatch):
     monkeypatch.setattr(hi, "_quarantine", lambda p: (p, False))
     _p, a = hi.install_global_hook(home=gh, root=tmp_path / "badrepo")
     assert a == "failed:QuarantineLeftActive", a
+
+
+def test_install_quarantines_canonical_json_when_wrapper_write_fails(tmp_path, monkeypatch):
+    """Codex P2: canonical JSON pointing at a missing wrapper must not stay active."""
+    from omg_cli import hook_install as hi
+
+    gh = tmp_path / ".grok"
+    _p, action = hi.install_global_hook(home=gh)
+    assert action == "created"
+    jpath = gh / "hooks" / hi.HOOK_JSON_NAME
+    assert jpath.is_file()
+    real_atomic = hi._atomic_write
+
+    def boom(path, data, *, mode):
+        if path.name == hi.WRAPPER_BASENAME:
+            raise OSError("injected wrapper write failure")
+        return real_atomic(path, data, mode=mode)
+
+    monkeypatch.setattr(hi, "_atomic_write", boom)
+    (gh / "hooks" / hi.WRAPPER_BASENAME).write_text("# stale\n", encoding="utf-8")
+    _p, a = hi.install_global_hook(home=gh)
+    assert a.startswith("failed"), a
+    assert not jpath.is_file()
+    assert any(p.name.startswith("omg-pretool-deny.broken-") for p in (gh / "hooks").iterdir())
 
 
 def test_generator_rejects_import_alias():

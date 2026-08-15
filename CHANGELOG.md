@@ -111,6 +111,33 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **Grok 1.0.4 PreToolUse execvp:** grok 1.0.4 `execvp()`s the hook
+  `command` string as argv0 (no shell). The previous
+  `python3 -I -S "<abs>" || true` launcher was `ENOENT`, fail-opened, then
+  headless `-p` hit `PermissionCancelled` so live canary never saw a deny
+  (`DENIED_PARTIAL`). Install an executable `$GROK_HOME/hooks/omg_pretool_deny`
+  wrapper (LF shebang, absolute python3, `|| true` inside) and point JSON at
+  that path. Doctor smokes via execvp, not `/bin/sh -c`. Live canary passes
+  `--cwd` at the isolated temp work dir (typically `/tmp`), not the product
+  checkout: grok 1.0.4 also ENOENTs hook spawn when `--cwd` is a 9p/drvfs
+  mount (WSL `/mnt/d/…`), and a checkout cwd lets the model quote `deny.py`.
+  `deny.py` unchanged. Live team smoke `--live` passes `--yolo` so grok
+  1.0.4 headless can run `claim-task` (otherwise `PermissionCancelled`,
+  board stays `pending`, `mailbox_ack=0`). Board ids were already in the
+  spawn prompt after #190. Doctor compares wrapper bytes to
+  `render_wrapper`; setup receipts and uninstall rollback include the
+  wrapper so a failed uninstall cannot restore JSON that points at a
+  missing executable. `python3_executable()` prefers a durable system
+  interpreter (`/usr/bin/python3`, Homebrew/local `bin/python3`) over the
+  caller's venv `PATH`, and does not `Path.resolve()` through Cellar
+  inodes.   Staging smoke uses that same interpreter (not a bare `python3`
+  on PATH). Isolation tests authorize that durable interpreter for
+  staged smoke (inode + argv), not only a bare `python3` on PATH, and
+  hash wrapper bytes before authorizing execvp. Exact-idempotent setup
+  publishes a new receipt when hook reconciliation changes receipt-owned
+  wrapper/JSON/standalone bytes, so uninstall does not treat a repaired
+  wrapper as foreign drift.
+  Refs #79 (does not close).
 - **Live WSL evidence (2026-08-15):** PATH `omg` shebang stays LF across
   Windows autocrlf (`bin/omg` / `scripts/*.sh` `eol=lf` plus installer CR
   strip). Project-root **and** state-root discovery fail-close on unrelated

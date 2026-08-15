@@ -683,15 +683,17 @@ def test_standalone_readwrite_herestring_and_budget():
 
 # ------------------------------------------------- ORIGINAL regression: fail-open launcher
 def test_launcher_fails_open_when_script_unreadable(tmp_path):
-    """`python3 -I -S "<missing>" || true` must exit 0 with NO deny — the exact
-    class (python rc 2 == grok explicit-deny) that bricked every tool call."""
-    from omg_cli.hook_install import launcher_command
+    """Wrapper ``|| true`` must exit 0 with NO deny when the standalone is missing."""
+    from omg_cli import hook_install as hi
 
-    missing = tmp_path / "nope.py"  # does not exist -> python exits 2
-    cmd = launcher_command(missing)
-    assert "-I -S" in cmd and "|| true" in cmd
+    gh = tmp_path / ".grok"
+    hi.install_global_hook(home=gh)
+    py = gh / "hooks" / hi.STANDALONE_BASENAME
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    py.unlink()
+    assert wrapper.is_file() and os.access(wrapper, os.X_OK)
     proc = subprocess.run(
-        ["/bin/sh", "-c", cmd],
+        [str(wrapper)],
         input='{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}',
         capture_output=True, text=True, timeout=10,
     )
@@ -709,7 +711,21 @@ def test_install_creates_then_unchanged(tmp_path):
     py = gh / "hooks" / hi.STANDALONE_BASENAME
     assert py.is_file() and os.access(py, os.X_OK)
     cmd = json.loads(jpath.read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "-I -S" in cmd and "|| true" in cmd and str(gh.resolve()) in str(Path(py).resolve())
+    wrapper = gh / "hooks" / hi.WRAPPER_BASENAME
+    assert cmd == str(wrapper)
+    assert wrapper.is_file() and os.access(wrapper, os.X_OK)
+    body = wrapper.read_text(encoding="utf-8")
+    assert body.startswith("#!/bin/sh\n")
+    assert "-I -S" in body and "|| true" in body
+    assert "\r" not in body
+    # grok 1.0.4 execvp()s the command string as argv0.
+    deny = subprocess.run(
+        [cmd],
+        input='{"tool_name":"run_terminal_command","tool_input":{"command":"claude -p x"}}',
+        capture_output=True, text=True, timeout=10,
+    )
+    assert deny.returncode == 0
+    assert json.loads(deny.stdout)["decision"] == "deny"
     _, action2 = hi.install_global_hook(home=gh)
     assert action2 == "unchanged"
 
@@ -761,8 +777,10 @@ def test_remove_deletes_json_then_py(tmp_path):
     hi.install_global_hook(home=gh)
     removed = hi.remove_global_hook(home=gh)
     assert any(hi.HOOK_JSON_NAME in r for r in removed)
+    assert any(hi.WRAPPER_BASENAME in r for r in removed)
     assert any(hi.STANDALONE_BASENAME in r for r in removed)
     assert not (gh / "hooks" / hi.HOOK_JSON_NAME).is_file()
+    assert not (gh / "hooks" / hi.WRAPPER_BASENAME).is_file()
     assert not (gh / "hooks" / hi.STANDALONE_BASENAME).is_file()
 
 
@@ -774,3 +792,79 @@ def test_grok_home_honors_env(tmp_path, monkeypatch):
     monkeypatch.delenv("GROK_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     assert hi.grok_home() == tmp_path / ".grok"
+
+
+def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeypatch):
+    """Do not bake a Homebrew Cellar inode into the persistent wrapper."""
+    from omg_cli import hook_install as hi
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cellar = tmp_path / "Cellar" / "python@3.12" / "3.12.11" / "bin" / "python3"
+    cellar.parent.mkdir(parents=True)
+    cellar.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    cellar.chmod(0o755)
+    stable = bin_dir / "python3"
+    try:
+        stable.symlink_to(cellar)
+    except OSError:
+        pytest.skip("symlink python3 fixture unavailable")
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", ())
+
+    def _which(name, *args, **kwargs):
+        return str(stable) if name == "python3" else None
+
+    monkeypatch.setattr(hi.shutil, "which", _which)
+    got = hi.python3_executable()
+    assert got == os.path.abspath(str(stable))
+    assert "Cellar" not in got
+    assert os.path.realpath(got) == os.path.realpath(cellar)
+
+
+def test_python3_executable_prefers_durable_system_path(monkeypatch, tmp_path):
+    """Install/doctor must not pin the caller's venv python3."""
+    from omg_cli import hook_install as hi
+
+    durable = tmp_path / "usr" / "bin" / "python3"
+    durable.parent.mkdir(parents=True)
+    durable.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    durable.chmod(0o755)
+    venv_py = tmp_path / "venv" / "bin" / "python3"
+    venv_py.parent.mkdir(parents=True)
+    (tmp_path / "venv" / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    venv_py.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(durable),))
+    monkeypatch.setattr(hi.shutil, "which", lambda name, *a, **k: str(venv_py) if name == "python3" else None)
+    assert hi.python3_executable() == str(durable)
+
+
+def test_smoke_uses_selected_wrapper_interpreter(tmp_path, monkeypatch):
+    """Staging smoke must invoke the same interpreter the wrapper will execvp."""
+    from omg_cli import hook_install as hi
+
+    durable = tmp_path / "opt" / "python3"
+    durable.parent.mkdir(parents=True)
+    durable.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    durable.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(durable),))
+    seen: list[list[str]] = []
+    real_run = hi.subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and len(argv) >= 3 and list(argv[1:3]) == ["-I", "-S"]:
+            seen.append([str(x) for x in argv])
+            payload = str(kwargs.get("input") or "")
+            decision = "deny" if ("claude" in payload or "spawn_subagent" in payload) else "allow"
+            return subprocess.CompletedProcess(
+                list(argv), 0, stdout=json.dumps({"decision": decision}) + "\n", stderr=""
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(hi.subprocess, "run", fake_run)
+    gh = tmp_path / ".grok"
+    _path, action = hi.install_global_hook(home=gh)
+    assert action == "created", action
+    assert seen and all(row[0] == str(durable) for row in seen)
+    wrapper = (gh / "hooks" / hi.WRAPPER_BASENAME).read_text(encoding="utf-8")
+    assert str(durable) in wrapper

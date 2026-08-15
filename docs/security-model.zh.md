@@ -177,7 +177,7 @@ python3 scripts/canary_pretool.py --live
 自洽 standalone（`hooks/bin/omg_pretool_deny_standalone.py`，由 `scripts/generate_standalone_hook.py` 从 `omg_cli/deny.py` + `_common.hook_disabled` 产生，并由 CI `--check` 防漂移）用分层 fail-**open** 阶梯关闭此问题：
 
 1. **Wire 契约** — grok 不论 exit code 都会尊重 stdout `{"decision":"deny"}`，并把非 `{0,2}` 的 exit 当 fail-open。因此 standalone **只**用 stdout JSON 表达 deny，且 **永远 exit 0** — 非零 exit（尤其是 2）绝不能来自我们。
-2. **Launcher** — 安装成 `python3 -I -S "<abs>" || true`。`-I -S` 隔离直译器（无 `PYTHONPATH`／user-site／sibling-module 注入）；`|| true` 把任何直译器／启动失败（例如 rc 2“打不开档”）正规成 rc 0 → fail-open。
+2. **Launcher** — 安装成 `$GROK_HOME/hooks/omg_pretool_deny` 可执行 wrapper（grok **1.0.4** 把 JSON `command` 当 argv0 `execvp`，`python3 … || true` 会 ENOENT 后 fail-open）。wrapper shebang 为 LF；内部跑 `<abs-python3> -I -S "<abs-standalone>" || true`。`-I -S` 隔离直译器；`|| true` 仍把 python rc 2 正规成 fail-open。grok 1.0.4 在 session `--cwd` 为 9p/drvfs（WSL `/mnt/d/…`）时同样 spawn ENOENT；live canary 用隔离临时目录，不用产品 checkout。
 3. **In-code** — 整段 `try/except`，任何错误预设 allow。
 4. **doctor** — realpath 必须在 `$GROK_HOME` 下 + 真的 `open()` + 行为性子行程 smoke（allow `ls`、allow 第一方 `omg team` 裸命令与路径前缀、deny `claude`、deny 未加 scope 的 `spawn_subagent`）+ installed-vs-committed hash（过期则 WARN；`--strict` 失败）。仍把 `omg team` 当成外部 CLI 的旧 hook 会硬失败，修复命令是 `omg install-hook`。不要信任 `os.access`（它查 permission bits，不是 TCC）。
 

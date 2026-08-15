@@ -235,7 +235,9 @@ def run_uninstall(
     (guidance.uninstall_global_rules preserves non-OMG content).
     """
     gh = _grok_home(home).expanduser().resolve()
-    hook = gh / "hooks" / "omg-pretool-deny.json"
+    from omg_cli.hook_install import managed_hook_paths
+
+    hook, hook_wrapper, hook_py = managed_hook_paths(home=gh)
     rules = gh / "rules" / "omg.md"
     home_root = Path(os.environ.get("HOME") or Path.home()).expanduser().resolve()
     link = home_root / ".local" / "bin" / "omg"
@@ -278,7 +280,8 @@ def run_uninstall(
         print("omg uninstall: dry run (no changes). Would remove:")
         print("  - grok plugin uninstall oh-my-grok --confirm")
         print(f"  - global hook json (if present): {hook}")
-        print(f"  - global hook standalone (if present): {hook.with_name('omg_pretool_deny_standalone.py')}")
+        print(f"  - global hook wrapper (if present): {hook_wrapper}")
+        print(f"  - global hook standalone (if present): {hook_py}")
         print(f"  - OMG managed block in rules (if present): {rules}")
         if receipt is not None:
             print(f"  - receipt-owned immutable stage: {receipt['installed']['stage_realpath']}")
@@ -313,7 +316,7 @@ def run_uninstall(
                 for row in receipt.get("owned_inventory", [])
                 if isinstance(row, dict) and row.get("kind") == "global_hook"
             }
-            for managed in (hook, hook.with_name("omg_pretool_deny_standalone.py")):
+            for managed in (hook, hook_wrapper, hook_py):
                 expected_file = owned_hooks.get(str(managed))
                 if managed.is_file() and (
                     managed.is_symlink()
@@ -356,7 +359,8 @@ def run_uninstall(
             )
             return 1
 
-    managed_paths = (hook, hook.with_name("omg_pretool_deny_standalone.py"), rules)
+    hook_paths = (hook, hook_wrapper, hook_py)
+    managed_paths = (*hook_paths, rules)
     managed_snapshots: list[_ManagedFileSnapshot] = []
     plugin_snapshot: _PluginSnapshot | None = None
     pointer_targets: dict[Path, str] = {}
@@ -460,7 +464,7 @@ def run_uninstall(
             }
             import hashlib
 
-            for managed in (hook, hook.with_name("omg_pretool_deny_standalone.py")):
+            for managed in hook_paths:
                 expected_hook_identity = owned.get(str(managed))
                 if managed.is_file() and (
                     managed.is_symlink()
@@ -470,7 +474,7 @@ def run_uninstall(
                 ):
                     return rollback(f"global hook changed concurrently: {managed}")
         removed = remove_global_hook(home=gh)
-        if receipt is not None and any(os.path.lexists(path) for path in managed_paths[:2]):
+        if receipt is not None and any(os.path.lexists(path) for path in hook_paths):
             raise OSError("receipt-owned global hook removal was incomplete")
         if removed:
             for r in removed:

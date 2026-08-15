@@ -175,6 +175,30 @@ def test_parent_host_child_capability_isolation_pass():
     assert r["child_capability_isolation"] is True
 
 
+def test_canary_plan_uses_work_dir_as_grok_cwd(tmp_path: Path) -> None:
+    """Live canary must not pass the product checkout as grok --cwd.
+
+    grok 1.0.4 fails to spawn PreToolUse (ENOENT, fail-open) when --cwd is a
+    9p/drvfs path. The isolated temp work dir is the session cwd.
+    """
+    import importlib.util
+
+    path = ROOT / "scripts" / "canary_pretool.py"
+    spec = importlib.util.spec_from_file_location("canary_pretool", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    work = tmp_path / "omg-canary-work"
+    work.mkdir()
+    plan = mod.build_canary_plan(work_dir=work, project_root=ROOT)
+    parent_cwd = plan["parent_argv"][plan["parent_argv"].index("--cwd") + 1]
+    child_cwd = plan["child_argv"][plan["child_argv"].index("--cwd") + 1]
+    assert parent_cwd == str(work)
+    assert child_cwd == str(work)
+    assert plan["grok_cwd"] == str(work)
+    assert parent_cwd != str(ROOT)
+
+
 def test_canary_parent_prompt_asks_verbatim_host_reason() -> None:
     """Harness asks for the exact deny.py line; classifier stays strict."""
     text = (ROOT / "scripts" / "canary_pretool.py").read_text(encoding="utf-8")
@@ -200,3 +224,9 @@ def test_live_team_smoke_setup_here() -> None:
     assert "setup" in text
     assert "--here" in text
     assert "OMG_PROJECT_ROOT" in text
+
+
+def test_live_team_smoke_live_passes_yolo() -> None:
+    """Headless grok 1.0.4 cannot claim without bypassPermissions."""
+    text = (ROOT / "scripts" / "live_team_smoke.py").read_text(encoding="utf-8")
+    assert '"--force", "--detach", "--yolo"' in text

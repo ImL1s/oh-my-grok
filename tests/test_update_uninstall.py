@@ -456,6 +456,8 @@ def test_receipt_owned_uninstall_preserves_user_rules_and_project_state(tmp_path
     assert not os.path.lexists(grok_home / "omg" / "current-receipt")
     assert not os.path.lexists(home / ".local" / "bin" / "omg")
     assert not (grok_home / "hooks" / "omg-pretool-deny.json").exists()
+    assert not (grok_home / "hooks" / "omg_pretool_deny").exists()
+    assert not (grok_home / "hooks" / "omg_pretool_deny_standalone.py").exists()
     assert "keep user text byte-for-byte" in rules.read_text(encoding="utf-8")
     assert OMG_START not in rules.read_text(encoding="utf-8")
     assert project_state.read_text(encoding="utf-8") == "keep\n"
@@ -715,11 +717,12 @@ def test_receipt_uninstall_rolls_back_managed_files_on_unlink_failure(
     receipt_pointer = grok_home / "omg" / "current-receipt"
     cli_pointer = home / ".local" / "bin" / "omg"
     hook_json = grok_home / "hooks" / "omg-pretool-deny.json"
+    hook_wrapper = grok_home / "hooks" / "omg_pretool_deny"
     hook_py = grok_home / "hooks" / "omg_pretool_deny_standalone.py"
     rules = grok_home / "rules" / "omg.md"
     snapshots = {
         path: (path.read_bytes(), path.stat().st_mode & 0o777)
-        for path in (hook_json, hook_py, rules)
+        for path in (hook_json, hook_wrapper, hook_py, rules)
     }
     failed_path = hook_py if failure_surface == "hook" else rules
     real_unlink = Path.unlink
@@ -773,6 +776,7 @@ def test_receipt_uninstall_cli_unlink_failure_is_hard_and_restores_plugin(
     cli_pointer = home / ".local" / "bin" / "omg"
     managed = (
         grok_home / "hooks" / "omg-pretool-deny.json",
+        grok_home / "hooks" / "omg_pretool_deny",
         grok_home / "hooks" / "omg_pretool_deny_standalone.py",
         grok_home / "rules" / "omg.md",
     )

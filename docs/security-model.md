@@ -322,10 +322,15 @@ this with a layered fail-**open** ladder:
    exit code*, and treats any non-`{0,2}` exit as fail-open. So the standalone
    signals deny ONLY via stdout JSON and **always exits 0** — a nonzero exit
    (especially 2) can never come from us.
-2. **Launcher** — installed as `python3 -I -S "<abs>" || true`. `-I -S` isolates
-   the interpreter (no `PYTHONPATH` / user-site / sibling-module injection);
-   `|| true` normalizes any interpreter/startup failure (e.g. rc 2 "can't open
-   file") to rc 0 → fail-open.
+2. **Launcher** — installed as an executable wrapper at
+   `$GROK_HOME/hooks/omg_pretool_deny` (grok **1.0.4** `execvp()`s the JSON
+   `command` string as argv0 — a `python3 … || true` line is `ENOENT` and
+   fail-opens). The wrapper shebang is LF; it runs
+   `<abs-python3> -I -S "<abs-standalone>" || true`. `-I -S` isolates the
+   interpreter; `|| true` inside the wrapper still fail-opens python rc 2.
+   grok 1.0.4 also fails to spawn that wrapper (`ENOENT`, fail-open) when the
+   session `--cwd` is a 9p/drvfs mount (WSL `/mnt/d/…`); the live canary uses
+   an isolated temp cwd, not the product checkout.
 3. **In-code** — whole-body `try/except` defaults to allow on any error.
 4. **doctor** — realpath-under-`$GROK_HOME` + real `open()` + a behavioral
    subprocess smoke (allow `ls`, allow first-party `omg team` bare and

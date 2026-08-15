@@ -268,6 +268,42 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _refresh_owned_hook_identities(
+    owned: list[dict[str, Any]],
+    *,
+    hook_json: Path,
+    hook_wrapper: Path,
+    hook_py: Path,
+) -> list[dict[str, Any]]:
+    """Replace receipt hook identities with live bytes after reconciliation.
+
+    Exact-idempotent setup may repair a drifted wrapper without reinstalling
+    the plugin. Uninstall compares live hashes to receipt-owned identities;
+    keeping the old receipt would treat the repaired wrapper as foreign drift.
+    """
+    identities: dict[str, str] = {}
+    for path in (hook_json, hook_wrapper, hook_py):
+        try:
+            if path.is_file() and not path.is_symlink():
+                identities[str(path)] = _sha256_file(path)
+        except OSError:
+            continue
+    refreshed = [dict(row) for row in owned]
+    seen: set[str] = set()
+    for row in refreshed:
+        path = str(row.get("path") or "")
+        if path in identities:
+            row["identity"] = identities[path]
+            row["kind"] = "global_hook"
+            seen.add(path)
+    for path, ident in identities.items():
+        if path not in seen:
+            refreshed.append(
+                {"path": path, "kind": "global_hook", "identity": ident}
+            )
+    return refreshed
+
+
 def _safe_package_rel(relative: str) -> str:
     pure = PurePosixPath(relative)
     if pure.is_absolute() or ".." in pure.parts or str(pure) != relative:
@@ -1594,10 +1630,16 @@ def install_package(
         if receipt_snapshot["kind"] == "foreign":
             raise InstallError("foreign receipt pointer is preserved")
 
-        hook_json = grok_path / "hooks" / "omg-pretool-deny.json"
-        hook_py = grok_path / "hooks" / "omg_pretool_deny_standalone.py"
+        from omg_cli.hook_install import HOOK_JSON_NAME, STANDALONE_BASENAME, WRAPPER_BASENAME
+
+        hook_json = grok_path / "hooks" / HOOK_JSON_NAME
+        hook_wrapper = grok_path / "hooks" / WRAPPER_BASENAME
+        hook_py = grok_path / "hooks" / STANDALONE_BASENAME
         rules = grok_path / "rules" / "omg.md"
-        global_snapshots = [_file_snapshot(path) for path in (hook_json, hook_py, rules, rules.with_suffix(".md.bak"))]
+        global_snapshots = [
+            _file_snapshot(path)
+            for path in (hook_json, hook_wrapper, hook_py, rules, rules.with_suffix(".md.bak"))
+        ]
 
         prior_rows = _read_plugin_inventory(runner, commands)
         prior_plugin_path: Path | None = None
@@ -1679,25 +1721,12 @@ def install_package(
                     # reuse or re-attest a receipt that would misstate runtime.
                     bound_plugin_path = None
                 if bound_plugin_path is not None:
-                    if _exact_idempotent_receipt_reusable(
-                        receipt,
-                        mode=mode,
-                        probe_status=probe_status,
-                        asset_evidence=asset_evidence,
-                    ):
-                        return {
-                            "ok": True,
-                            "status": "already_installed",
-                            "stage_path": str(stage),
-                            "receipt_path": str(receipt_path),
-                            "receipt_hash": receipt["receipt_hash"],
-                            "package_digest": identity["digest"],
-                        }
-
                     # Bytes + host path match but authority differs (mode
-                    # promotion, missing release evidence, or a stricter probe
-                    # status).  Re-attest without host uninstall/install and
-                    # publish a new receipt bound to the live host path.
+                    # promotion, missing release evidence, a stricter probe
+                    # status, or hook reconciliation that changed receipt-owned
+                    # wrapper/JSON/standalone bytes).  Re-attest without host
+                    # uninstall/install and publish a new receipt bound to the
+                    # live host path.
                     prior_status = receipt.get("status")
                     if isinstance(prior_status, str) and prior_status in _INSTALL_STATUS_RANK:
                         status_value = _stricter_install_status(prior_status, probe_status)
@@ -1721,6 +1750,31 @@ def install_package(
                                 "identity": str(identity["digest"]),
                             }
                         )
+                    hook_repaired = hook_action != "unchanged"
+                    if hook_repaired:
+                        reattest_owned = _refresh_owned_hook_identities(
+                            reattest_owned,
+                            hook_json=hook_json,
+                            hook_wrapper=hook_wrapper,
+                            hook_py=hook_py,
+                        )
+                    if (
+                        not hook_repaired
+                        and _exact_idempotent_receipt_reusable(
+                            receipt,
+                            mode=mode,
+                            probe_status=probe_status,
+                            asset_evidence=asset_evidence,
+                        )
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "already_installed",
+                            "stage_path": str(stage),
+                            "receipt_path": str(receipt_path),
+                            "receipt_hash": receipt["receipt_hash"],
+                            "package_digest": identity["digest"],
+                        }
                     reattest_tid = uuid.uuid4().hex
                     reattest_material = _receipt_material(
                         transaction_id=reattest_tid,
@@ -1845,6 +1899,7 @@ def install_package(
                 [
                     {"path": str(candidate_plugin_path), "kind": "host_plugin", "identity": str(identity["digest"])},
                     {"path": str(hook_json), "kind": "global_hook", "identity": _sha256_file(hook_json)},
+                    {"path": str(hook_wrapper), "kind": "global_hook", "identity": _sha256_file(hook_wrapper)},
                     {"path": str(hook_py), "kind": "global_hook", "identity": _sha256_file(hook_py)},
                     {
                         "path": str(rules),

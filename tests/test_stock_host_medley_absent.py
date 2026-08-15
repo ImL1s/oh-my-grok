@@ -57,11 +57,13 @@ from tests.stock_host_medley_absent_support import (
     _StockHostMedleyImportBlocker,
     _allowlisted_env,
     _allowed_subprocess_argv,
+    _durable_wrapper_python3,
     _install_fake_grok,
     _install_network_denial,
     _install_subprocess_guard,
     _is_reviewed_hook_shell_argv,
     _is_reviewed_python_argv,
+    _is_reviewed_python_launch,
     _link_python,
     _runtime_sys_path,
     assert_blocker_raises,
@@ -756,72 +758,74 @@ def test_guarded_subprocess_rejects_executable_and_launch_overrides(
     assert "0.2.121" in (reviewed.stdout or "")
 
 
+def _install_reviewed_hook_pair(grok_home: Path) -> Path:
+    from omg_cli.hook_install import (
+        STANDALONE_BASENAME,
+        WRAPPER_BASENAME,
+        committed_standalone,
+        render_wrapper,
+    )
+
+    hooks = grok_home / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    installed = hooks / STANDALONE_BASENAME
+    installed.write_bytes(committed_standalone().read_bytes())
+    wrapper = hooks / WRAPPER_BASENAME
+    wrapper.write_text(render_wrapper(installed), encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    return installed
+
+
 def test_reviewed_hook_shell_argv_accepts_exact_launcher_tuple(
     tmp_path, monkeypatch
 ) -> None:
-    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+    from omg_cli.hook_install import launcher_command
 
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
-    hooks = grok_home / "hooks"
-    hooks.mkdir()
-    installed = hooks / STANDALONE_BASENAME
-    installed.write_bytes(committed_standalone().read_bytes())
+    installed = _install_reviewed_hook_pair(grok_home)
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     expected = launcher_command(installed)
-    args = ["/bin/sh", "-c", expected]
-    assert _is_reviewed_hook_shell_argv(args, "/bin/sh", grok_home) is True
+    args = [expected]
+    assert _is_reviewed_hook_shell_argv(args, expected, grok_home) is True
     assert _allowed_subprocess_argv(args, tmp_path / "bin", grok_home) is True
 
 
 def test_reviewed_hook_shell_argv_rejects_injections_and_lookalikes(
     tmp_path, monkeypatch
 ) -> None:
-    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+    from omg_cli.hook_install import launcher_command
 
     grok_home = tmp_path / "grok"
     grok_home.mkdir()
-    hooks = grok_home / "hooks"
-    hooks.mkdir()
-    installed = hooks / STANDALONE_BASENAME
-    installed.write_bytes(committed_standalone().read_bytes())
+    installed = _install_reviewed_hook_pair(grok_home)
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     expected = launcher_command(installed)
-    valid = ["/bin/sh", "-c", expected]
+    valid = [expected]
     bin_dir = tmp_path / "bin"
 
     # Later denials are exact-argv isolation, not a missing installed hook.
-    assert _is_reviewed_hook_shell_argv(valid, "/bin/sh", grok_home) is True
+    assert _is_reviewed_hook_shell_argv(valid, expected, grok_home) is True
     assert _allowed_subprocess_argv(valid, bin_dir, grok_home) is True
 
-    assert expected.endswith(" || true")
-    quoted_path = expected[len("python3 -I -S ") : -len(" || true")]
+    wrong_path = [launcher_command(grok_home / "other" / "x.py")]
+    assert _is_reviewed_hook_shell_argv(wrong_path, wrong_path[0], grok_home) is False, "wrong path"
+    assert _is_reviewed_hook_shell_argv(valid, expected, grok_home) is True, "valid after wrong path"
 
-    wrong_path = ["/bin/sh", "-c", launcher_command(grok_home / "hooks" / "other.py")]
-    assert _is_reviewed_hook_shell_argv(wrong_path, "/bin/sh", grok_home) is False, "wrong path"
-    assert _is_reviewed_hook_shell_argv(valid, "/bin/sh", grok_home) is True, "valid after wrong path"
-
-    usr_bin_sh = ["/usr/bin/sh", "-c", expected]
-    assert _is_reviewed_hook_shell_argv(usr_bin_sh, "/usr/bin/sh", grok_home) is False, "usr bin sh"
-    bash = ["/bin/bash", "-c", expected]
-    assert _is_reviewed_hook_shell_argv(bash, "/bin/bash", grok_home) is False, "bash"
+    assert _is_reviewed_hook_shell_argv(["/bin/sh", "-c", expected], "/bin/sh", grok_home) is False, "legacy sh -c"
+    assert _is_reviewed_hook_shell_argv(["/usr/bin/sh", "-c", expected], "/usr/bin/sh", grok_home) is False, "usr bin sh"
+    assert _is_reviewed_hook_shell_argv(["/bin/bash", "-c", expected], "/bin/bash", grok_home) is False, "bash"
 
     cases: list[tuple[str, list[str]]] = [
-        ("prefix true", ["/bin/sh", "-c", "true; " + expected]),
-        ("prefix echo", ["/bin/sh", "-c", "echo hi; " + expected]),
-        ("suffix", ["/bin/sh", "-c", expected + "; echo pwned"]),
-        ("semicolon appended", ["/bin/sh", "-c", expected + ";"]),
-        ("semicolon inside", ["/bin/sh", "-c", expected.replace(" || true", "; || true")]),
-        ("newline", ["/bin/sh", "-c", expected + "\necho pwned"]),
-        ("cmd subst suffix", ["/bin/sh", "-c", expected + " $(echo pwned)"]),
-        ("cmd subst path", ["/bin/sh", "-c", expected.replace(quoted_path, "$(echo pwned)")]),
-        ("backticks", ["/bin/sh", "-c", expected + " `echo pwned`"]),
-        ("missing || true", ["/bin/sh", "-c", expected[: -len(" || true")]]),
-        ("extra || true", ["/bin/sh", "-c", expected + " || true"]),
+        ("two args", [expected, "pwned"]),
+        ("sh -c", ["/bin/sh", "-c", expected]),
+        ("suffix", [expected + "; echo pwned"]),
+        ("extra true", [expected + " || true"]),
+        ("newline", [expected + "\necho pwned"]),
     ]
     for label, argv in cases:
         assert _is_reviewed_hook_shell_argv(argv, str(argv[0]), grok_home) is False, label
-        assert _is_reviewed_hook_shell_argv(valid, "/bin/sh", grok_home) is True, f"valid after {label}"
+        assert _is_reviewed_hook_shell_argv(valid, expected, grok_home) is True, f"valid after {label}"
 
 
 def test_reviewed_hook_shell_argv_rejects_bad_installed_hook(
@@ -835,11 +839,11 @@ def test_reviewed_hook_shell_argv_rejects_bad_installed_hook(
     hooks.mkdir()
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     installed = hooks / STANDALONE_BASENAME
-    args = ["/bin/sh", "-c", launcher_command(installed)]
+    args = [launcher_command(installed)]
     bin_dir = tmp_path / "bin"
 
     def reject(label: str) -> None:
-        assert _is_reviewed_hook_shell_argv(args, "/bin/sh", grok_home) is False, label
+        assert _is_reviewed_hook_shell_argv(args, args[0], grok_home) is False, label
         assert _allowed_subprocess_argv(args, bin_dir, grok_home) is False, label
 
     reject("missing")
@@ -866,6 +870,23 @@ def test_reviewed_hook_shell_argv_rejects_bad_installed_hook(
     reject("stale bytes")
 
 
+def test_reviewed_hook_shell_argv_rejects_mutated_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    from omg_cli.hook_install import WRAPPER_BASENAME, launcher_command
+
+    grok_home = tmp_path / "grok"
+    grok_home.mkdir()
+    installed = _install_reviewed_hook_pair(grok_home)
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    wrapper = grok_home / "hooks" / WRAPPER_BASENAME
+    wrapper.write_text("#!/bin/sh\necho pwned\n", encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    args = [launcher_command(installed)]
+    assert _is_reviewed_hook_shell_argv(args, args[0], grok_home) is False
+    assert _allowed_subprocess_argv(args, tmp_path / "bin", grok_home) is False
+
+
 def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> None:
     from omg_cli.hook_install import STANDALONE_BASENAME, _stage_file, committed_standalone
 
@@ -877,12 +898,53 @@ def test_reviewed_python_argv_accepts_real_stage_file(tmp_path, monkeypatch) -> 
     bin_dir.mkdir()
     staged = _stage_file(
         grok_home / "hooks" / STANDALONE_BASENAME,
-        committed_standalone().read_text(encoding="utf-8"),
+        committed_standalone().read_bytes(),
         mode=0o644,
     )
     argv = ["python3", "-I", "-S", str(staged)]
     assert _is_reviewed_python_argv(argv, "python3", grok_home) is True
     assert _allowed_subprocess_argv(argv, bin_dir, grok_home) is True
+    durable = _durable_wrapper_python3()
+    if durable:
+        durable_argv = [durable, "-I", "-S", str(staged)]
+        assert _is_reviewed_python_argv(durable_argv, durable, grok_home) is False
+        assert _is_reviewed_python_launch(durable_argv, durable, bin_dir, grok_home) is True
+        assert _allowed_subprocess_argv(durable_argv, bin_dir, grok_home) is True
+
+
+def test_guarded_popen_allows_durable_python3_stage_smoke(monkeypatch, tmp_path) -> None:
+    """P1: staging smoke argv0 is the durable interpreter, not isolation python3."""
+    iso = _isolate_stock_host(monkeypatch, tmp_path)
+    from omg_cli.hook_install import STANDALONE_BASENAME, _stage_file, committed_standalone
+
+    hooks = iso.grok_home / "hooks"
+    hooks.mkdir()
+    staged = _stage_file(
+        hooks / STANDALONE_BASENAME,
+        committed_standalone().read_bytes(),
+        mode=0o644,
+    )
+    durable = _durable_wrapper_python3()
+    if not durable:
+        pytest.skip("no durable python3 interpreter")
+    proc = subprocess.run(
+        [durable, "-I", "-S", str(staged)],
+        input='{"tool_name":"run_terminal_command","tool_input":{"command":"ls"}}',
+        capture_output=True,
+        text=True,
+        cwd=tempfile.gettempdir(),
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        timeout=10,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    with pytest.raises(PermissionError, match="subprocess denied"):
+        subprocess.run(
+            [durable, "-c", "print(1)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def test_reviewed_python_argv_rejects_unrelated_and_lookalikes(
@@ -1083,13 +1145,11 @@ def test_isolation_leaves_posix_spawn_unpatched_and_popen_works(
 
 
 def _install_isolation_hook(iso: _StockHostIsolation) -> tuple[Path, str]:
-    from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+    from omg_cli import hook_install as hi
 
-    hooks = iso.grok_home / "hooks"
-    hooks.mkdir(parents=True, exist_ok=True)
-    installed = hooks / STANDALONE_BASENAME
-    installed.write_bytes(committed_standalone().read_bytes())
-    return installed, launcher_command(installed)
+    hi.install_global_hook(home=iso.grok_home)
+    installed = iso.grok_home / "hooks" / hi.STANDALONE_BASENAME
+    return installed, hi.launcher_command(installed)
 
 
 def test_live_hook_shell_injections_raise_permission_error(
@@ -1097,7 +1157,7 @@ def test_live_hook_shell_injections_raise_permission_error(
 ) -> None:
     iso = _isolate_stock_host(monkeypatch, tmp_path)
     installed, expected = _install_isolation_hook(iso)
-    valid = ["/bin/sh", "-c", expected]
+    valid = [expected]
     allowed = subprocess.run(
         valid,
         input="",
@@ -1107,19 +1167,12 @@ def test_live_hook_shell_injections_raise_permission_error(
     )
     assert allowed.returncode == 0, allowed.stderr
 
-    quoted_path = expected[len("python3 -I -S ") : -len(" || true")]
     cases: list[tuple[str, list[str]]] = [
+        ("sh -c wrapper", ["/bin/sh", "-c", expected]),
         ("prefix true", ["/bin/sh", "-c", "true; " + expected]),
-        ("prefix echo", ["/bin/sh", "-c", "echo hi; " + expected]),
-        ("suffix", ["/bin/sh", "-c", expected + "; echo pwned"]),
-        ("semicolon appended", ["/bin/sh", "-c", expected + ";"]),
-        ("semicolon inside", ["/bin/sh", "-c", expected.replace(" || true", "; || true")]),
-        ("newline", ["/bin/sh", "-c", expected + "\necho pwned"]),
-        ("cmd subst suffix", ["/bin/sh", "-c", expected + " $(echo pwned)"]),
-        ("cmd subst path", ["/bin/sh", "-c", expected.replace(quoted_path, "$(echo pwned)")]),
-        ("backticks", ["/bin/sh", "-c", expected + " `echo pwned`"]),
-        ("missing || true", ["/bin/sh", "-c", expected[: -len(" || true")]]),
-        ("extra || true", ["/bin/sh", "-c", expected + " || true"]),
+        ("two args", [expected, "pwned"]),
+        ("suffix", [expected + "; echo pwned"]),
+        ("extra true", [expected + " || true"]),
         ("usr bin sh", ["/usr/bin/sh", "-c", expected]),
         ("bash", ["/bin/bash", "-c", expected]),
     ]
@@ -1135,7 +1188,7 @@ def test_live_hook_shell_injections_raise_permission_error(
 def test_live_hook_and_grok_path_cwd_retarget_denied(monkeypatch, tmp_path) -> None:
     iso = _isolate_stock_host(monkeypatch, tmp_path)
     _installed, expected = _install_isolation_hook(iso)
-    hook_argv = ["/bin/sh", "-c", expected]
+    hook_argv = [expected]
     grok_argv = ["grok", "version"]
     denied = "subprocess denied"
 

@@ -649,7 +649,10 @@ def main() -> int:
             cmd.append("--dry-run")
         else:
             # Non-interactive smoke: owned detached session + supersede active.
-            cmd.extend(["--force", "--detach"])
+            # grok 1.0.4 headless PermissionCancels run_terminal_command unless
+            # bypassPermissions is set, so claim-task never runs (board stays
+            # pending, mailbox_ack=0). --yolo maps to that. deny.py unchanged.
+            cmd.extend(["--force", "--detach", "--yolo"])
 
         print("CMD:", " ".join(cmd))
         proc = _run(cmd, cwd=cwd, env=env)

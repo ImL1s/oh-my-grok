@@ -206,6 +206,8 @@ class _IsolationExecIdentity(NamedTuple):
     grok_digest: bytes
     python3_digest: bytes
     path_snapshot: str
+    # Absolute durable wrapper interpreter (not isolation-owned). Empty if none.
+    durable_python3: str
 
 
 class _StockHostMedleyImportBlocker(importlib.abc.MetaPathFinder):
@@ -442,6 +444,29 @@ def _is_isolation_python_identity_argv(args: Sequence[object], raw: str) -> bool
     return raw == "python3" and len(args) == 2 and str(args[1]) == "--isolation-identity"
 
 
+def _durable_wrapper_python3() -> str:
+    """Absolute interpreter ``hook_install`` embeds; empty if not a live file.
+
+    Install staging smoke uses this path (not a bare ``python3`` on PATH). Do
+    not ``realpath``: Homebrew's stable launcher must stay the Cellar-facing
+    name, matching ``python3_executable()``.
+    """
+    try:
+        from omg_cli.hook_install import python3_executable
+
+        selected = python3_executable()
+    except Exception:
+        return ""
+    if not selected or not os.path.isabs(selected):
+        return ""
+    try:
+        if os.path.isfile(selected) and os.access(selected, os.X_OK):
+            return os.path.normpath(selected)
+    except OSError:
+        return ""
+    return ""
+
+
 def _python_argv0_as_bare(raw: str, bin_dir: Path) -> str | None:
     """Map isolation python wrapper argv0 to the bare name, else None."""
     if raw == "python3":
@@ -452,14 +477,17 @@ def _python_argv0_as_bare(raw: str, bin_dir: Path) -> str | None:
         if os.path.realpath(raw) == os.path.realpath(bin_dir / "python3"):
             return "python3"
     except OSError:
-        return None
+        pass
+    durable = _durable_wrapper_python3()
+    if durable and os.path.normpath(raw) == durable:
+        return "python3"
     return None
 
 
 def _is_reviewed_python_launch(
     args: Sequence[object], raw: str, bin_dir: Path, grok_home: Path
 ) -> bool:
-    """Bare or absolute isolation python3 plus reviewed stage / identity argv."""
+    """Bare, isolation-owned, or durable wrapper python3 plus reviewed argv."""
     if _python_argv0_as_bare(raw, bin_dir) is None:
         return False
     rest = tuple(args[1:])
@@ -470,32 +498,50 @@ def _is_reviewed_python_launch(
 
 
 def _is_reviewed_hook_shell_argv(args: Sequence[object], raw: str, grok_home: Path) -> bool:
-    """Doctor hook smoke: exact canonical ``/bin/sh -c`` launcher plus lstat+digest.
+    """Doctor hook smoke: grok 1.0.4 execvp()s the wrapper path (no shell).
 
-    Authorizes only ``("/bin/sh", "-c", launcher_command(final_path))`` when that
-    direct canonical final path is a regular non-symlink file (``os.lstat``) and
-    ``sha256`` of those bytes equals the committed standalone.
+    Authorizes only ``(launcher_command(final_path),)`` when both the committed
+    standalone and the execvp wrapper at ``$GROK_HOME/hooks/`` are regular
+    non-symlink files (``os.lstat``) and their bytes match committed /
+    ``render_wrapper``.
     """
-    if raw != "/bin/sh" or len(args) != 3:
-        return False
     gh = _usable_grok_home(grok_home)
     if gh is None:
         return False
     try:
-        from omg_cli.hook_install import STANDALONE_BASENAME, committed_standalone, launcher_command
+        from omg_cli.hook_install import (
+            STANDALONE_BASENAME,
+            WRAPPER_BASENAME,
+            committed_standalone,
+            launcher_command,
+            render_wrapper,
+        )
 
         expected_path = gh / "hooks" / STANDALONE_BASENAME
-        expected = ("/bin/sh", "-c", launcher_command(expected_path))
-        if tuple(str(a) for a in args) != expected:
+        wrapper_path = gh / "hooks" / WRAPPER_BASENAME
+        expected_cmd = launcher_command(expected_path)
+        if (
+            len(args) != 1
+            or str(args[0]) != expected_cmd
+            or raw != expected_cmd
+            or str(wrapper_path) != expected_cmd
+        ):
             return False
         st = os.lstat(expected_path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
             return False
+        wst = os.lstat(wrapper_path)
+        if stat.S_ISLNK(wst.st_mode) or not stat.S_ISREG(wst.st_mode):
+            return False
         actual = hashlib.sha256(expected_path.read_bytes()).digest()
         wanted = hashlib.sha256(committed_standalone().read_bytes()).digest()
+        wrapper_actual = hashlib.sha256(wrapper_path.read_bytes()).digest()
+        wrapper_wanted = hashlib.sha256(
+            render_wrapper(expected_path).encode("utf-8")
+        ).digest()
     except (OSError, TypeError, ValueError):
         return False
-    return actual == wanted
+    return actual == wanted and wrapper_actual == wrapper_wanted
 
 
 def _allowed_subprocess_argv(
@@ -601,6 +647,7 @@ def _freeze_exec_identity(bin_dir: Path) -> _IsolationExecIdentity:
         grok_digest=_regular_non_symlink_digest(grok),
         python3_digest=_regular_non_symlink_digest(python3),
         path_snapshot=str(bin_dir),
+        durable_python3=_durable_wrapper_python3(),
     )
 
 
@@ -663,6 +710,11 @@ def _child_will_exec_isolation_inode(
     # /bin/sh is not isolation-owned; hook argv stays a shape+digest review.
     if argv0 == "/bin/sh":
         return True
+    # grok 1.0.4 execvp()s the wrapper path; already shape+digest reviewed.
+    from omg_cli.hook_install import WRAPPER_BASENAME
+
+    if os.path.isabs(argv0) and Path(argv0).name == WRAPPER_BASENAME:
+        return True
     if _argv0_has_separator(argv0) and not os.path.isabs(argv0):
         return False
     child_path = _effective_child_path(kwargs, identity)
@@ -678,6 +730,16 @@ def _child_will_exec_isolation_inode(
         return _bare_resolves_to_isolation(
             "python3", identity.python3, identity.python3_digest, child_path
         )
+    durable = identity.durable_python3 or _durable_wrapper_python3()
+    if durable and os.path.normpath(argv0) == os.path.normpath(durable):
+        try:
+            st = os.lstat(argv0)
+        except OSError:
+            return False
+        # Debian/Homebrew python3 is often a symlink; do not follow to Cellar.
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+            return False
+        return os.access(argv0, os.X_OK)
     if not os.path.isabs(argv0):
         return False
     try:
