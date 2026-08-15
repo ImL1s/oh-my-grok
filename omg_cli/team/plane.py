@@ -3443,18 +3443,12 @@ def start_team(
             if before_spawn is not None and not created_team_dir:
                 from omg_cli.team.api import (
                     _api_config_path,
-                    _tasks_dir,
                     _worker_dir,
                 )
 
                 _note_start_file_backup(
                     file_backups, _api_config_path(root_path, rid, tid_plane)
                 )
-                tasks_dir = _tasks_dir(root_path, rid, tid_plane)
-                if tasks_dir.is_dir() and not tasks_dir.is_symlink():
-                    for child in tasks_dir.iterdir():
-                        if child.is_file() and child.name.startswith("task-"):
-                            _note_start_file_backup(file_backups, child)
                 for src in tasks:
                     logical = str(src.get("task_id") or src.get("id") or "")
                     if logical:

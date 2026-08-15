@@ -123,8 +123,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   after CR-strip copy. Canary parent prompt asks for a verbatim hook
   reason (classifier unchanged). Injected `TMPDIR`/`TMP`/`TEMP` classify
   shared-temp roots (process env is not leaked into `env={}`). Reused
-  `--run` rolls back only board task ids this launch returned (not a
-  concurrent leader's `task-*`). Partial API seeds unlink their own files.
+  `--run` rolls back only board task ids this launch returned and does
+  not restore unrelated pre-existing `task-*` files. Partial API seeds
+  unlink their own files.
   Staged/installed identity readback hashes launcher bytes raw (CRLF
   cannot share the LF digest). Fallback `list-tasks` includes `--input`
   with run/team identity and does not require a claim when no board
