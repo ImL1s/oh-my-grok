@@ -37,6 +37,9 @@ CLI-promotes `input_ready`. Grok 1.0.4 has no native ready emitter; the pane
 `exec`s `python -m omg_cli.team.interactive_wrapper`, which prints
 `TUI_READY:<nonce>` only after the child TTY is interactive and grok has
 started reading stdin. The wrapper never fabricates `PROVIDER_ECHO`.
+Grok 1.0.4 TUI seed is positional `grok "<text>"` (there is no `--prompt`
+flag; `--prompt-file` / `-p` / `--single` are forbidden). Operator submit
+is literal CR after a settle, not a claimed provider ACK.
 Timeout fails closed (no silent headless downgrade). Workers/descriptors
 never self-promote from stdout scrape. Default/`auto` remain headless until
 `LIVE_TEAM_INTERACTIVE_TTY_OK` is proven on a live capture.

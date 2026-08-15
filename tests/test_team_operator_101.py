@@ -462,8 +462,10 @@ def test_tmux_send_key_and_literal_bounds(monkeypatch: pytest.MonkeyPatch) -> No
 
     tmux.send_key("%10", "Enter")
     tmux.send_literal("%10", "hello")
+    tmux.send_submit("%10")
     assert seen[0] == ["send-keys", "-t", "%10", "Enter"]
     assert seen[1] == ["send-keys", "-l", "-t", "%10", "--", "hello"]
+    assert seen[2] == ["send-keys", "-l", "-t", "%10", "--", "\r"]
 
     with pytest.raises(tmux.TmuxTeamError):
         tmux.send_key("%10", "Enter;rm")
@@ -717,6 +719,11 @@ def test_key_and_input_audit_no_raw_text(
     send = [cmd for cmd in effects if "send-keys" in cmd]
     assert send
     assert all(cmd[:2] == ["-S", sock] for cmd in send)
+    # Grok submit is literal CR (possibly two pulses), never named Enter.
+    cr = [cmd for cmd in send if "-l" in cmd and cmd[-1] == "\r"]
+    assert len(cr) == 2
+    named_enter = [cmd for cmd in send if cmd[-1] == "Enter" and "-l" not in cmd]
+    assert len(named_enter) == 1  # key_worker Enter only
 
 
 def test_key_requires_tty_or_operator_override(
@@ -830,13 +837,13 @@ def test_toctou_blocks_input_when_identity_flips(
 def test_submit_reprobes_before_enter(
     live_team: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--submit must re-prove identity before Enter; flip after literal blocks it."""
+    """--submit must re-prove identity before CR; flip after literal blocks it."""
     root = live_team["root"]
     live = _stamp_interactive_io(root, live_team["live"])
     effects: list[list[str]] = []
     _install_live_tmux(monkeypatch, live, effects=effects)
 
-    # authorize LIVE → literal re-proof LIVE → Enter re-proof MISMATCH
+    # authorize LIVE → literal re-proof LIVE → submit re-proof MISMATCH
     states = iter([STATUS_LIVE, STATUS_LIVE, STATUS_MISMATCH])
     monkeypatch.setattr(
         operator,
@@ -854,10 +861,11 @@ def test_submit_reprobes_before_enter(
             is_tty=True,
         )
     assert exc.value.code == "E_OPERATOR_TOCTOU"
-    # Literal submitted to exact TTY; Enter must not have been sent.
+    # Literal submitted to exact TTY; submit CR must not have been sent.
     send_cmds = [cmd for cmd in effects if cmd and cmd[0] == "send-keys"]
     assert any("-l" in cmd for cmd in send_cmds)
     assert not any(cmd[-1] == "Enter" and "-l" not in cmd for cmd in send_cmds)
+    assert not any("-l" in cmd and cmd[-1] == "\r" for cmd in send_cmds)
 
 
 def test_watch_without_worker_keeps_per_worker_state(

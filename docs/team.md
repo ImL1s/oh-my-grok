@@ -48,7 +48,9 @@ omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 # silent headless. PROVIDER_ECHO is child-produced, never wrapper-faked.
 # Workers/descriptors never self-promote from stdout scrape. Prefer mailbox.
 # Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK requires capture of both
-# TUI_READY:<nonce> and PROVIDER_ECHO:<unique> after team input --submit.
+# TUI_READY:<nonce> and PROVIDER_ECHO:<unique> after team input --submit
+# (stdin→pane). Grok 1.0.4 TUI seed is positional `grok "<text>"` — there is
+# no `--prompt` flag; `--prompt-file` / `-p` / `--single` stay forbidden.
 
 # Catalog v4 atomic task-batch DAG admission (leader-only; no MCP mutation):
 omg team api bulk-create-tasks --input BATCH.json --json

@@ -82,7 +82,10 @@ def _tmux_capture(session: str, pane_id: str) -> str:
 def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
     """One grok interactive pane. Claim LIVE_TEAM_INTERACTIVE_TTY_OK only on proof."""
     sys.path.insert(0, str(ROOT))
-    from omg_cli.team.interactive import capture_contains_tui_ready
+    from omg_cli.team.interactive import (
+        GROK_INTERACTIVE_SEED_PROMPT,
+        capture_contains_tui_ready,
+    )
     from omg_cli.team.operator import input_worker
     from omg_cli.team.plane import stop_team
     from omg_cli.team.runtime import launch_team
@@ -91,14 +94,17 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
     live_env = dict(env)
     live_env.setdefault("OMG_TEAM_READY_TIMEOUT_MS", "45000")
     live_env["OMG_TEAM_INTERACTIVE_ECHO_PROBE"] = "1"
+    live_env.setdefault("OMG_TEAM_SUBMIT_SETTLE_MS", "400")
     evidence: dict = {
         "ok": False,
         "mode": "interactive-live",
         "schema_version": 1,
         "live_ok_line": False,
         "marker": token,
+        "seed_prompt": GROK_INTERACTIVE_SEED_PROMPT,
         "startup_status": None,
         "tui_ready": False,
+        "seed_echo": False,
         "provider_echo": False,
     }
     meta = None
@@ -150,10 +156,24 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             )
             _write_evidence(evidence)
             return _fail(evidence["reason"])
-        if f"PROVIDER_ECHO:{token}" in capture:
+        seed_marker = f"PROVIDER_ECHO:{GROK_INTERACTIVE_SEED_PROMPT}"
+        seed_deadline = time.monotonic() + 45.0
+        last = capture
+        while time.monotonic() < seed_deadline:
+            last = _tmux_capture(session, pane_id) if session else ""
+            if not last:
+                last = (_tmux("capture-pane", "-p", "-t", pane_id).stdout or "")
+            if seed_marker in last:
+                evidence["seed_echo"] = True
+                break
+            time.sleep(1.0)
+        evidence["capture_preview"] = last[-2000:]
+        if f"PROVIDER_ECHO:{token}" in last:
             evidence["reason"] = "PROVIDER_ECHO appeared before operator send"
             _write_evidence(evidence)
             return _fail(evidence["reason"])
+        if evidence["seed_echo"]:
+            time.sleep(2.0)
         input_worker(
             cwd,
             str(meta["run_id"]),
@@ -165,7 +185,6 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
         )
         deadline = time.monotonic() + 90.0
         echoed = False
-        last = capture
         while time.monotonic() < deadline:
             last = _tmux_capture(session, pane_id) if session else ""
             if not last:
@@ -178,9 +197,16 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
         evidence["capture_preview"] = last[-2000:]
         bare_only = token in last and f"PROVIDER_ECHO:{token}" not in last
         if bare_only or not echoed:
+            extra = ""
+            if evidence.get("seed_echo"):
+                extra = (
+                    "; positional seed echoed (grok-native --rules reply) but "
+                    "stdin submit did not"
+                )
             evidence["reason"] = (
                 "no provider-side PROVIDER_ECHO after input "
                 "(local echo of the marker is not sufficient)"
+                + extra
             )
             _write_evidence(evidence)
             return _fail(evidence["reason"])
