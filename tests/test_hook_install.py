@@ -795,7 +795,7 @@ def test_grok_home_honors_env(tmp_path, monkeypatch):
 
 
 def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeypatch):
-    """Codex P2: do not bake a Homebrew Cellar inode into the persistent wrapper."""
+    """Do not bake a Homebrew Cellar inode into the persistent wrapper."""
     from omg_cli import hook_install as hi
 
     bin_dir = tmp_path / "bin"
@@ -809,6 +809,8 @@ def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeyp
         stable.symlink_to(cellar)
     except OSError:
         pytest.skip("symlink python3 fixture unavailable")
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", ())
+
     def _which(name, *args, **kwargs):
         return str(stable) if name == "python3" else None
 
@@ -817,3 +819,21 @@ def test_python3_executable_keeps_which_path_not_cellar_target(tmp_path, monkeyp
     assert got == os.path.abspath(str(stable))
     assert "Cellar" not in got
     assert os.path.realpath(got) == os.path.realpath(cellar)
+
+
+def test_python3_executable_prefers_durable_system_path(monkeypatch, tmp_path):
+    """Install/doctor must not pin the caller's venv python3."""
+    from omg_cli import hook_install as hi
+
+    durable = tmp_path / "usr" / "bin" / "python3"
+    durable.parent.mkdir(parents=True)
+    durable.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    durable.chmod(0o755)
+    venv_py = tmp_path / "venv" / "bin" / "python3"
+    venv_py.parent.mkdir(parents=True)
+    (tmp_path / "venv" / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+    venv_py.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", (str(durable),))
+    monkeypatch.setattr(hi.shutil, "which", lambda name, *a, **k: str(venv_py) if name == "python3" else None)
+    assert hi.python3_executable() == str(durable)

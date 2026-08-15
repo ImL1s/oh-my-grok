@@ -127,9 +127,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   spawn prompt after #190. Doctor compares wrapper bytes to
   `render_wrapper`; setup receipts and uninstall rollback include the
   wrapper so a failed uninstall cannot restore JSON that points at a
-  missing executable. ``python3_executable()`` keeps the ``shutil.which``
-  path (no Cellar ``resolve()``). Isolation tests hash wrapper bytes
-  before authorizing execvp. Refs #79 (does not close).
+  missing executable. `python3_executable()` prefers a durable system
+  interpreter (`/usr/bin/python3`, Homebrew/local `bin/python3`) over the
+  caller's venv `PATH`, and does not `Path.resolve()` through Cellar
+  inodes. Isolation tests hash wrapper bytes before authorizing execvp.
+  Refs #79 (does not close).
 - **Live WSL evidence (2026-08-15):** PATH `omg` shebang stays LF across
   Windows autocrlf (`bin/omg` / `scripts/*.sh` `eol=lf` plus installer CR
   strip). Project-root **and** state-root discovery fail-close on unrelated

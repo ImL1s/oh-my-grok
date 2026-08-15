@@ -82,15 +82,59 @@ def committed_standalone(root: Path | None = None) -> Path:
     return (root or _repo_root()) / "hooks" / "bin" / STANDALONE_BASENAME
 
 
+_DURABLE_PYTHON3 = (
+    "/usr/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+)
+
+
+def _looks_like_venv_python(path: str) -> bool:
+    """True when *path* is a virtualenv interpreter (pyvenv.cfg beside bin/)."""
+    try:
+        parent = Path(path).parent
+        if (parent.parent / "pyvenv.cfg").is_file():
+            return True
+        if (parent / "pyvenv.cfg").is_file():
+            return True
+    except OSError:
+        return False
+    return False
+
+
 def python3_executable() -> str:
     """Absolute python3 grok's empty hook PATH may not find as ``python3``.
 
-    Keep the ``shutil.which`` path (``os.path.abspath``, not ``Path.resolve()``).
-    Homebrew's ``/opt/homebrew/bin/python3`` must stay the stable launcher, not a
-    Cellar inode that a brew upgrade deletes so every hook spawn ``|| true``
-    fail-opens until someone re-runs doctor.
+    Prefer durable system locations over the caller's ``PATH`` so install and
+    doctor agree across venvs, and so the persistent wrapper does not pin a
+    virtualenv that later disappears (fail-open via ``|| true``).
+
+    Do not ``Path.resolve()``: Homebrew's ``/opt/homebrew/bin/python3`` must
+    stay the stable launcher, not a Cellar inode a brew upgrade deletes.
     """
+    for candidate in _DURABLE_PYTHON3:
+        try:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            continue
     found = shutil.which("python3")
+    if found and not _looks_like_venv_python(found):
+        return os.path.abspath(found)
+    path_env = os.environ.get("PATH") or ""
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        cand = os.path.join(directory, "python3")
+        try:
+            if (
+                os.path.isfile(cand)
+                and os.access(cand, os.X_OK)
+                and not _looks_like_venv_python(cand)
+            ):
+                return os.path.abspath(cand)
+        except OSError:
+            continue
     if found:
         return os.path.abspath(found)
     return "/usr/bin/python3"
@@ -335,6 +379,7 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
             return json_path, "quarantined-no-source" if removed else "failed:QuarantineLeftActive"
         return json_path, "skipped-no-source"
 
+    live_mutated = False
     try:
         raw = src.read_bytes()
         compile(raw, str(src), "exec")  # reject a corrupt/truncated source
@@ -350,11 +395,15 @@ def install_global_hook(*, home: Path | None = None, root: Path | None = None) -
                 pass
             raise
         os.replace(staged, installed_py)
+        live_mutated = True
         _atomic_write(installed_wrapper, canonical_wrapper, mode=0o755)
         _atomic_write(json_path, canonical_json, mode=0o644)
     except Exception as e:  # noqa: BLE001
-        # Publish failed → a noncanonical (dangerous) json must never stay active.
-        if noncanonical and os.path.lexists(json_path):
+        # Publish failed → grok must not keep discovering JSON that points at a
+        # missing/broken wrapper. Canonical JSON is still dangerous after we
+        # started mutating live executables (replace/wrapper write). A staged
+        # smoke failure before replace leaves the live hook untouched.
+        if os.path.lexists(json_path) and (noncanonical or live_mutated):
             _dest, removed = _quarantine(json_path)
             if not removed:
                 return json_path, "failed:QuarantineLeftActive"
