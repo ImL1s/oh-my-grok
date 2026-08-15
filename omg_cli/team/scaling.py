@@ -572,6 +572,8 @@ def _build_pane_record(
         task_count=task_count,
         owned_files=owned,
         worktree=wt,
+        team_id=str(team_id or "team"),
+        api_task_id=str(task.get("api_task_id") or "").strip() or None,
         **(
             {
                 "provider": resolved.for_role(role).provider,
@@ -783,6 +785,11 @@ def _reuse_prepared_pane_record(
     owned = list(task.get("owned_files") or [])
     role = _task_role(task)
     worktree = worktree_dir(root, run_id, task_id)
+    board_id = str(task.get("api_task_id") or "").strip() or None
+    if board_id is None:
+        binding = task.get("binding")
+        if isinstance(binding, Mapping):
+            board_id = str(binding.get("api_task_id") or "").strip() or None
     authority_kw = {
         "leader_root": root,
         "run_id": run_id,
@@ -823,6 +830,8 @@ def _reuse_prepared_pane_record(
             provider=route.provider,
             role=route.role,
             posture=route.posture,
+            team_id=str(team_id or "team"),
+            api_task_id=board_id,
         )
         inv = build_executor_argv(
             route.provider,
@@ -866,6 +875,8 @@ def _reuse_prepared_pane_record(
             task_count=task_count,
             owned_files=owned,
             worktree=worktree,
+            team_id=str(team_id or "team"),
+            api_task_id=board_id,
         )
         fixture = (
             Path(__file__).resolve().parents[2]
@@ -892,6 +903,8 @@ def _reuse_prepared_pane_record(
             task_count=task_count,
             owned_files=owned,
             worktree=worktree,
+            team_id=str(team_id or "team"),
+            api_task_id=board_id,
         )
         expected_argv = build_grok_argv(
             mode="ulw",

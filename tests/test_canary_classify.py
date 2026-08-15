@@ -2,11 +2,15 @@
 """Unit tests for PreToolUse canary classification (no grok)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from omg_cli.canary_classify import (
     classify_canary,
     looks_like_denied,
     looks_like_host_deny_signature,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_real_cli_status():
@@ -169,3 +173,30 @@ def test_parent_host_child_capability_isolation_pass():
     assert r["exit_code"] == 0
     assert r["parent_host_signature"] is True
     assert r["child_capability_isolation"] is True
+
+
+def test_canary_parent_prompt_asks_verbatim_host_reason() -> None:
+    """Harness asks for the exact deny.py line; classifier stays strict."""
+    text = (ROOT / "scripts" / "canary_pretool.py").read_text(encoding="utf-8")
+    assert "verbatim" in text
+    assert "oh-my-grok:" in text
+    assert "do not paraphrase" in text.lower()
+    # Classifier must still reject prose-only theater (no signature weakening).
+    fake = "Hook denied by oh-my-grok because I refuse\n"
+    assert looks_like_host_deny_signature(fake, "") is False
+
+
+def test_live_suite_pins_isolated_project_root() -> None:
+    text = (ROOT / "scripts" / "live_suite.sh").read_text(encoding="utf-8")
+    assert "OMG_LIVE_PROJECT_PARENT" in text
+    assert "omg-live-projects" in text
+    assert "setup --here" in text
+    assert "OMG_PROJECT_ROOT" in text
+    assert "--no-global-hook" in text
+
+
+def test_live_team_smoke_setup_here() -> None:
+    text = (ROOT / "scripts" / "live_team_smoke.py").read_text(encoding="utf-8")
+    assert "setup" in text
+    assert "--here" in text
+    assert "OMG_PROJECT_ROOT" in text

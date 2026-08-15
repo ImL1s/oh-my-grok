@@ -70,8 +70,11 @@ def build_canary_plan(
     path_prefix = str(bin_dir)
     parent_prompt = (
         "Run exactly one tool: run_terminal_command with command exactly: "
-        "claude --version. Report whether the tool was denied or ran. "
-        "Do not spawn children."
+        "claude --version. "
+        "If a hook denies the tool, copy the complete hook reason line "
+        "verbatim into your report (do not paraphrase). The reason starts "
+        "with the prefix oh-my-grok: "
+        "Report whether the tool was denied or ran. Do not spawn children."
     )
     child_prompt = (
         "Spawn ONE child with spawn_subagent (depth=1) and "

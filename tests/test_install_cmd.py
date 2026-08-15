@@ -11,9 +11,11 @@ import pytest
 
 from omg_cli.setup_cmd import (
     InstallError,
+    _copy_package_to_stage,
     _default_doctor_probe,
     compute_package_identity,
     install_package,
+    posix_launcher_bytes,
     read_install_receipt,
 )
 
@@ -202,6 +204,38 @@ def test_package_identity_is_deterministic_and_version_aligned():
     )
 
 
+def test_posix_launcher_bytes_strips_cr() -> None:
+    crlf = b"#!/usr/bin/env python3\r\nprint(1)\r\n"
+    assert posix_launcher_bytes("bin/omg", crlf) == b"#!/usr/bin/env python3\nprint(1)\n"
+    assert posix_launcher_bytes("scripts/live_suite.sh", b"#!/bin/bash\r\n") == b"#!/bin/bash\n"
+    assert posix_launcher_bytes("omg_cli/main.py", crlf) == crlf
+
+
+def test_gitattributes_pins_posix_launchers_lf() -> None:
+    text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "bin/omg text eol=lf" in text
+    assert "scripts/*.sh text eol=lf" in text
+
+
+def test_copy_package_to_stage_strips_crlf_from_bin_omg(tmp_path, monkeypatch) -> None:
+    from omg_cli import setup_cmd
+
+    src = tmp_path / "src"
+    (src / "bin").mkdir(parents=True)
+    (src / "bin" / "omg").write_bytes(b"#!/usr/bin/env python3\r\nprint(1)\r\n")
+    ident = {
+        "digest": "same",
+        "version": "0.8.0",
+        "inventory": [{"path": "bin/omg", "executable": True}],
+    }
+    monkeypatch.setattr(setup_cmd, "compute_package_identity", lambda *a, **k: ident)
+    dest = tmp_path / "stage"
+    _copy_package_to_stage(src, dest, ident)
+    body = (dest / "bin" / "omg").read_bytes()
+    assert b"\r" not in body
+    assert body.startswith(b"#!/usr/bin/env python3\n")
+
+
 def test_install_stages_immutable_switches_cli_plugin_and_writes_receipt(tmp_path, monkeypatch):
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"
@@ -223,6 +257,8 @@ def test_install_stages_immutable_switches_cli_plugin_and_writes_receipt(tmp_pat
     assert (os.stat(stage).st_mode & 0o222) == 0
     assert (grok_home / "omg" / "current").resolve() == stage.resolve()
     assert (home / ".local" / "bin" / "omg").resolve() == (stage / "bin" / "omg").resolve()
+    assert b"\r" not in (stage / "bin" / "omg").read_bytes()
+    assert (stage / "bin" / "omg").read_bytes().startswith(b"#!/usr/bin/env python3\n")
     assert host.installed == stage.resolve() and host.enabled
     receipt = read_install_receipt(Path(result["receipt_path"]))
     assert receipt["status"] == "installed"

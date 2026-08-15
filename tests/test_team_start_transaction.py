@@ -241,7 +241,7 @@ def test_seed_failure_surfaces_incomplete_compensating_stop(
     def boom_seed(*_a, **_k):
         raise RuntimeError("board seed boom")
 
-    monkeypatch.setattr(runtime, "_seed_api_board", boom_seed)
+    monkeypatch.setattr(runtime, "_stamp_worker_bindings", boom_seed)
 
     def incomplete_stop(*_a, **_k):
         return {
@@ -296,7 +296,7 @@ def test_launch_seed_failure_removes_team_ref(
     )
     monkeypatch.setattr(
         runtime,
-        "_seed_api_board",
+        "_stamp_worker_bindings",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
     )
     removed: list[str] = []
@@ -344,7 +344,7 @@ def test_launch_annotation_failure_compensates(
     )
     monkeypatch.setattr(runtime, "write_team_ref", lambda *a, **k: None)
     monkeypatch.setattr(runtime, "_ensure_lane_dirs", lambda *a, **k: None)
-    monkeypatch.setattr(runtime, "_seed_api_board", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_stamp_worker_bindings", lambda *a, **k: None)
     monkeypatch.setattr(
         runtime,
         "decompose_goal",
@@ -429,7 +429,7 @@ def test_dry_run_reuse_run_compensate_preserves_active(
     )
     monkeypatch.setattr(
         runtime,
-        "_seed_api_board",
+        "_stamp_worker_bindings",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("seed boom")),
     )
 

@@ -1,0 +1,4 @@
+# POSIX launchers must stay LF. Windows core.autocrlf otherwise turns
+# `#!/usr/bin/env python3` into `python3\r` and PATH `omg` exits 127.
+bin/omg text eol=lf
+scripts/*.sh text eol=lf

@@ -440,6 +440,18 @@ def test_launch_team_dry_run_seeds_ref_and_board(
     assert meta.get("startup_acks") is None
     assert meta.get("startup_status") is None
     assert "dry_run skipped ACK wait" in str(meta.get("startup_note") or "")
+    inbox_text = "\n".join(p.read_text(encoding="utf-8") for p in inboxes)
+    assert "claim-task" in inbox_text
+    assert '"task_id":"1"' in inbox_text
+    prompts = list(
+        tmp_path.joinpath(".omg", "worktrees", meta["run_id"]).rglob("*.prompt.md")
+    )
+    assert prompts, "expected materialized worker prompts before spawn"
+    prompt_text = "\n".join(p.read_text(encoding="utf-8") for p in prompts)
+    assert "## First actions (required, this turn)" in prompt_text
+    assert "claim-task" in prompt_text
+    assert '"task_id":"1"' in prompt_text
+    assert "not `w1`" in prompt_text or "not w1" in prompt_text.lower()
 
 
 def test_wait_for_startup_acks_full_partial_zero(

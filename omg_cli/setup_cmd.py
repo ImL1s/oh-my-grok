@@ -243,6 +243,23 @@ def _sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def is_posix_launcher_path(relative: str) -> bool:
+    """True for shipping paths that must remain LF (shebang / bash)."""
+    rel = relative.replace("\\", "/")
+    if rel == "bin/omg":
+        return True
+    return rel.startswith("scripts/") and rel.endswith(".sh")
+
+
+def posix_launcher_bytes(relative: str, body: bytes) -> bytes:
+    """Strip CR so Windows autocrlf cannot turn ``python3`` into ``python3\\r``."""
+    if not is_posix_launcher_path(relative):
+        return body
+    if b"\r" not in body:
+        return body
+    return body.replace(b"\r\n", b"\n").replace(b"\r", b"")
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -332,7 +349,7 @@ def compute_package_identity(
     for relative, path in _iter_shipping_files(
         package_root, tolerate_missing=tolerate_missing_roots
     ):
-        body = path.read_bytes()
+        body = posix_launcher_bytes(relative, path.read_bytes())
         executable = bool(path.stat().st_mode & 0o111)
         inventory.append(
             {
@@ -499,7 +516,7 @@ def _copy_package_to_stage(
             src = source.joinpath(*PurePosixPath(relative).parts)
             dst = temporary.joinpath(*PurePosixPath(relative).parts)
             dst.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-            dst.write_bytes(src.read_bytes())
+            dst.write_bytes(posix_launcher_bytes(relative, src.read_bytes()))
             dst.chmod(0o755 if row["executable"] else 0o644)
         staged = compute_package_identity(
             temporary, tolerate_missing_roots=tolerate_missing_roots
