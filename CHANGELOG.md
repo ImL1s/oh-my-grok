@@ -10,10 +10,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
-- **#70 Wave B/C skill playbooks + catalog-driven routing:** 29 catalog-only
+- **#70 Wave B/C skill playbooks + catalog-driven routing:**   29 catalog-only
   canonical skills now have real `skills/omg-*/SKILL.md` playbooks (13 Wave B +
   16 Wave C) plus bundled `resources/contract.json` on every plugin skill
-  (45 total). Grok `<workflow_routing>` is generated from `skills/catalog.json`
+  (45 total). Read-write playbooks (TDD/build-fix and peers) may edit their
+  slice; they still must never write `passes`/`verified`. Grok `<workflow_routing>` is generated from `skills/catalog.json`
   triggers/aliases (no UserPromptSubmit injector; no second skill list).
   Localized catalog tables: `docs/parity/skills-catalog.zh.md` and
   `skills-catalog.zh-TW.md`. Projection writes are atomic/no-follow and prune

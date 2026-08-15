@@ -38,7 +38,8 @@ Structured git status/commit/branch hygiene. Use when the user says git-master. 
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **git** operations this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - No CLI twin. Use Grok git/terminal tools. Record the plan under `.omg/artifacts/git-master.md`. Never mark verified because a commit exists.
 

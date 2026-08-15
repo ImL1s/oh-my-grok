@@ -38,7 +38,8 @@ Scaffold .omg/ and init notes for a repo. Use when the user says deepinit, deep 
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **setup** files this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg setup` (and `omg doctor`). Alias `init-deep` resolves here.
 

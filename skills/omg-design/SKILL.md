@@ -38,7 +38,8 @@ UI/UX implementation slice via omg-designer. Use when the user says omg design o
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **design** source/artifact edits this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - No dedicated CLI twin. Spawn `omg-designer` `read-write` (no shell). Notes under `.omg/artifacts/design/`.
 

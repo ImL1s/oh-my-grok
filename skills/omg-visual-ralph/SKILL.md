@@ -38,7 +38,8 @@ Visual persistence is not shipped. Use when the user says visual-ralph. Route to
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **visual-loop** capture/fix slice this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg visual compare` only (same compare-only envelope as visual-verdict). Persistence loop remains `omg ralph` if they need iterations — that loop is not visual-aware.
 

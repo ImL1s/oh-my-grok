@@ -38,7 +38,8 @@ Find AI-slop in text and propose cleanups. Use when the user says ai slop or slo
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **slop-clean** source edits this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg edit` is `plan|apply` (hash-anchored) only — no `comments` subcommand. Default: write `.omg/artifacts/ai-slop-report.md`. Use `omg edit plan|apply` only when the user wants a confined file replace.
 

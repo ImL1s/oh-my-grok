@@ -38,7 +38,8 @@ Red-green-refactor one failing test slice. Use when the user says tdd, test driv
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **red-green-refactor** source and test edits for this slice (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg qa *` is the QA twin (freeze→run→repair, never verified). Tests themselves run via the outer CLI / user command policy.
 

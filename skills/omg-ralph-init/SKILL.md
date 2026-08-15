@@ -38,7 +38,8 @@ Scaffold a ralph PRD proposal then stop. Use when the user says ralph-init.
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **ralph-init** proposal files this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg ralph` is the loop twin. This skill only writes `.omg/artifacts/prd-proposal.md` (and similar).
 

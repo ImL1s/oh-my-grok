@@ -38,7 +38,8 @@ Install or print the Grok MCP add command. Use when the user says mcp setup or i
 - Do not dump whole transcripts. Pass ids, paths, and the next question only.
 
 ## 5. State / artifacts
-- Write only under `.omg/artifacts/` (proposals, briefs, reports).
+- Apply the **MCP config** this playbook owns (`capability_mode: read-write`).
+- Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
 - `omg mcp-install` (`--print-only` to show the grok command).
 
