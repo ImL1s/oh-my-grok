@@ -103,8 +103,14 @@ def _looks_like_venv_python(path: str) -> bool:
 
 
 def _looks_like_version_manager_shim(path: str) -> bool:
-    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``)."""
+    """True for pyenv/asdf shims (interpreter chosen from cwd ``.python-version``).
+
+    Detects default layouts (``~/.pyenv/shims``, ``~/.asdf/shims``) and
+    customized ``PYENV_ROOT`` / ``ASDF_DATA_DIR`` shims dirs. Does not
+    ``Path.resolve()`` through package-manager symlinks.
+    """
     try:
+        parent = os.path.abspath(str(Path(path).parent))
         parts = [part.lower() for part in Path(path).parts]
     except (OSError, TypeError, ValueError):
         return False
@@ -112,6 +118,18 @@ def _looks_like_version_manager_shim(path: str) -> bool:
         if part != "shims" or index == 0:
             continue
         if parts[index - 1] in {".pyenv", "pyenv", ".asdf", "asdf"}:
+            return True
+    for key in ("PYENV_ROOT", "ASDF_DATA_DIR"):
+        raw = os.environ.get(key)
+        if not raw or not str(raw).strip():
+            continue
+        try:
+            shim_dir = os.path.abspath(
+                os.path.join(os.path.expanduser(str(raw).strip()), "shims")
+            )
+        except OSError:
+            continue
+        if parent == shim_dir:
             return True
     return False
 

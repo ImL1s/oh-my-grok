@@ -846,6 +846,36 @@ def test_python3_executable_rejects_pyenv_asdf_shims(tmp_path, monkeypatch):
     assert hi._looks_like_version_manager_shim("/usr/bin/python3") is False
 
 
+def test_python3_executable_rejects_custom_pyenv_asdf_root_shims(
+    tmp_path, monkeypatch
+):
+    """PYENV_ROOT / ASDF_DATA_DIR shims dirs are cwd-dependent even if unnamed pyenv."""
+    from omg_cli import hook_install as hi
+
+    pyenv_root = tmp_path / "my-python"
+    pyenv_shim = pyenv_root / "shims" / "python3"
+    pyenv_shim.parent.mkdir(parents=True)
+    pyenv_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    pyenv_shim.chmod(0o755)
+    asdf_root = tmp_path / "asdf-data"
+    asdf_shim = asdf_root / "shims" / "python3"
+    asdf_shim.parent.mkdir(parents=True)
+    asdf_shim.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    asdf_shim.chmod(0o755)
+    monkeypatch.setattr(hi, "_DURABLE_PYTHON3", ())
+    monkeypatch.setenv("PYENV_ROOT", str(pyenv_root))
+    monkeypatch.setenv("ASDF_DATA_DIR", str(asdf_root))
+    monkeypatch.setattr(
+        hi.shutil,
+        "which",
+        lambda name, *a, **k: str(pyenv_shim) if name == "python3" else None,
+    )
+    monkeypatch.setenv("PATH", str(pyenv_shim.parent))
+    assert hi._looks_like_version_manager_shim(str(pyenv_shim)) is True
+    assert hi._looks_like_version_manager_shim(str(asdf_shim)) is True
+    assert hi.python3_executable() == "/usr/bin/python3"
+
+
 def test_install_quarantines_shim_wrapper_when_durable_python_missing(
     tmp_path, monkeypatch
 ):
