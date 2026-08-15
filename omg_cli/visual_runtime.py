@@ -26,12 +26,15 @@ from typing import Any, Mapping, Sequence
 from omg_cli.contracts.visual_contract import (
     COMPARISON_KIND,
     DIMENSION_IDS,
+    MAX_EDGE,
     MAX_IMAGE_BYTES,
+    MAX_PIXELS,
     SCHEMA_VERSION as VISUAL_SCHEMA,
     VisualContractError,
     compare,
     validate_image_descriptor,
 )
+from omg_cli.redaction import redact_value
 
 SCHEMA_VERSION = 1
 CAPTURE_RESULT_KIND = "omg.visual.capture_result"
@@ -277,7 +280,7 @@ def resolve_threshold(config: Mapping[str, Any], cli_percent: int | None) -> int
             raise VisualConfigError("threshold_score must be an integer 0..10000")
         return value
     if "threshold" in config:
-        return percent_to_score(int(config["threshold"]))
+        return percent_to_score(config["threshold"])
     return percent_to_score(90)
 
 
@@ -602,8 +605,11 @@ def _assert_honest(payload: Any) -> None:
 
 
 def copy_image(root: Path, source: Path, dest: Path) -> Path:
+    confined = confine_workspace_path(root, source)
+    if confined.is_symlink() or not confined.is_file():
+        raise VisualPathError("image path is not a regular file")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, dest)
+    shutil.copyfile(confined, dest)
     return confine_workspace_path(root, dest)
 
 
@@ -646,6 +652,10 @@ def _require_hw(spec: Mapping[str, Any], config: Mapping[str, Any], *, width: in
         )
     if w <= 0 or h <= 0:
         raise VisualMetadataError("width/height must be positive integers")
+    if w > MAX_EDGE or h > MAX_EDGE:
+        raise VisualMetadataError(f"width/height must be <= {MAX_EDGE}")
+    if w * h > MAX_PIXELS:
+        raise VisualMetadataError(f"width*height must be <= {MAX_PIXELS}")
     return w, h
 
 
@@ -735,7 +745,7 @@ def run_capture(
         "run_id": rid,
         "status": "blocked",
         "source": diagnosis["source"],
-        "command": diagnosis.get("command"),
+        "command": redact_value(diagnosis.get("command")),
         "tool": diagnosis.get("tool"),
         "target": target,
         "readiness": readiness or "unspecified",

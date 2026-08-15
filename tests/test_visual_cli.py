@@ -731,3 +731,95 @@ def test_capture_unlinks_stale_output(tmp_path: Path, capsys) -> None:
     assert payload["result"]["status"] == "blocked"
     assert payload["result"]["block_code"] == "capture_failed"
     assert not stale.is_file()
+
+
+def test_capture_redacts_command_secrets(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    secret = "sk-live-super-secret-token"
+    config = _compat_cfg(
+        capture={
+            "command": [
+                sys.executable,
+                str(FIXTURES / "fake_capture.py"),
+                "--header",
+                f"Authorization: Bearer {secret}",
+            ],
+            "target": "about:blank",
+            "readiness": "explicit",
+        }
+    )
+    cfg = _write_config(tmp_path, config)
+    rc = main(_argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "redact1"))
+    assert rc == 0
+    payload = _out(capsys)
+    dumped = json.dumps(payload)
+    assert secret not in dumped
+    capture_json = (
+        tmp_path / ".omg" / "artifacts" / "visual" / "redact1" / "capture.json"
+    )
+    assert secret not in capture_json.read_text(encoding="utf-8")
+
+
+def test_verdict_missing_image_is_path_error(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    cfg = _write_config(tmp_path, _compat_cfg())
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "verdict",
+            "--config",
+            str(cfg),
+            "--reference",
+            "missing-ref.png",
+            "--actual",
+            "current.png",
+            "--run-id",
+            "miss1",
+        )
+    )
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_PATH" or payload.get("error_code") == "E_VISUAL_PATH"
+
+
+def test_width_above_contract_max_is_metadata_error(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    cfg = _write_config(tmp_path, _compat_cfg())
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "verdict",
+            "--config",
+            str(cfg),
+            "--reference",
+            "ref.png",
+            "--actual",
+            "current.png",
+            "--width",
+            "16385",
+            "--height",
+            "200",
+            "--run-id",
+            "huge-w",
+        )
+    )
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_METADATA" or payload.get("error_code") == (
+        "E_VISUAL_METADATA"
+    )
+
+
+def test_threshold_rejects_non_integer_config() -> None:
+    from omg_cli.visual_runtime import VisualConfigError, resolve_threshold
+
+    with pytest.raises(VisualConfigError):
+        resolve_threshold({"threshold": "90"}, None)
+    with pytest.raises(VisualConfigError):
+        resolve_threshold({"threshold": 90.9}, None)
+    with pytest.raises(VisualConfigError):
+        resolve_threshold({"threshold": True}, None)
