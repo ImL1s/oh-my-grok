@@ -64,7 +64,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   timeline` and `omg memory layers`. Journals under `resolve_state_root()`
   are the source of truth; reports redact credentials and home paths and
   never print raw prompts/responses/tool output. Replay never re-executes
-  commands; restore-code refuses unsafe cwd/worktree. `--project all` is
+  commands; restore-code refuses unsafe cwd/worktree. Retention skips
+  `*.jsonl.lock` and `event-cursors`; event scans keep the newest records
+  when the per-store cap is hit. `--project all` is
   required to search sibling stores. AG history is a read-only stub (pin
   `unsupported` / `unknown_version`; never mutates AG files). ACP
   session/resume transport is still absent and this is not a live smoke.

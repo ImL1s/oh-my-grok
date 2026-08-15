@@ -546,12 +546,6 @@ def iter_store_events(
                 )
                 continue
             for index, line in enumerate(raw.splitlines(), start=1):
-                if len(rows) >= MAX_EVENTS_PER_STORE:
-                    _append_diag(
-                        diag,
-                        {"reason": "event_scan_truncated", "source": confined.name},
-                    )
-                    break
                 if not line.strip():
                     continue
                 try:
@@ -592,6 +586,16 @@ def iter_store_events(
             str(row.get("event_id") or ""),
         )
     )
+    if len(rows) > MAX_EVENTS_PER_STORE:
+        _append_diag(
+            diag,
+            {
+                "reason": "event_scan_truncated",
+                "kept": MAX_EVENTS_PER_STORE,
+                "dropped": len(rows) - MAX_EVENTS_PER_STORE,
+            },
+        )
+        rows = rows[-MAX_EVENTS_PER_STORE:]
     return rows
 
 
@@ -1261,6 +1265,10 @@ def _iter_retain_targets(store: ProjectStore) -> Iterable[Path]:
             continue
         for entry in entries:
             if entry.is_symlink() or not entry.is_file():
+                continue
+            if entry.name.endswith(".lock"):
+                continue
+            if not entry.name.endswith(".jsonl"):
                 continue
             if _confine_under(store.state_dir, entry) is None:
                 continue

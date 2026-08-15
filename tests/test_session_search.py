@@ -492,3 +492,52 @@ def test_released_lease_is_not_stale(
     stale = report.get("signals", {}).get("stale_leases", {})
     count = stale.get("count") if isinstance(stale, dict) else stale
     assert not count
+
+
+def test_event_scan_keeps_newest_when_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli import session_index
+
+    root = _project(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_index, "MAX_EVENTS_PER_STORE", 2)
+    state_dir = resolve_state_root(cwd=root, explicit_project_root=root).state_dir
+    for index in range(5):
+        _write_event(
+            state_dir,
+            _event(
+                event_id=f"cap-{index}",
+                source_sequence=index,
+                observed_at=f"2026-01-0{index + 1}T00:00:00Z",
+                payload={"marker": "cap-unique", "provider": "grok"},
+            ),
+        )
+    hits = search_sessions(query="cap-unique", cwd=root)
+    ids = {row["event_id"] for row in hits["hits"]}
+    assert ids == {"cap-3", "cap-4"}
+    assert any(
+        row.get("reason") == "event_scan_truncated" for row in hits["diagnostics"]
+    )
+
+
+def test_retain_apply_skips_journal_lock_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path, monkeypatch)
+    state_dir = resolve_state_root(cwd=root, explicit_project_root=root).state_dir
+    events = state_dir / "state" / "events"
+    events.mkdir(parents=True, exist_ok=True)
+    old = events / "old.jsonl"
+    old.write_text("{}\n", encoding="utf-8")
+    lock = events / "old.jsonl.lock"
+    lock.write_text("lock", encoding="utf-8")
+    old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(old, (old_ts, old_ts))
+    os.utime(lock, (old_ts, old_ts))
+    rc = main(["--json", "session", "retain", "--apply", "--since", "7d"])
+    assert rc == 0
+    retain = _domain(_out(capsys))
+    assert retain["apply"] is True
+    assert lock.exists()
+    assert not old.exists()
+    assert not any(str(row.get("path") or "").endswith(".lock") for row in retain["candidates"])
