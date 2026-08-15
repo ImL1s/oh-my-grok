@@ -517,18 +517,24 @@ def iter_store_events(
                     },
                 )
                 continue
-            if size > MAX_JOURNAL_BYTES:
-                _append_diag(
-                    diag,
-                    {
-                        "reason": "file_too_large",
-                        "source": confined.name,
-                        "bytes": size,
-                    },
-                )
-                continue
             try:
-                raw = confined.read_bytes()
+                if size > MAX_JOURNAL_BYTES:
+                    with confined.open("rb") as handle:
+                        handle.seek(max(0, size - MAX_JOURNAL_BYTES))
+                        raw = handle.read(MAX_JOURNAL_BYTES)
+                    newline = raw.find(b"\n")
+                    if newline >= 0:
+                        raw = raw[newline + 1 :]
+                    _append_diag(
+                        diag,
+                        {
+                            "reason": "journal_tail_truncated",
+                            "source": confined.name,
+                            "bytes": size,
+                        },
+                    )
+                else:
+                    raw = confined.read_bytes()
             except OSError as exc:
                 _append_diag(
                     diag,
@@ -926,6 +932,8 @@ def friction_report(
             else _read_json_object(lease_path, root=store.state_dir)
         )
         if isinstance(lease_obj, Mapping):
+            if str(lease_obj.get("state") or "") == "released":
+                continue
             acquired = _parse_timestamp(lease_obj.get("acquired_at"))
             pid = lease_obj.get("pid")
             live = isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
@@ -1242,7 +1250,7 @@ def observatory(
 
 
 def _iter_retain_targets(store: ProjectStore) -> Iterable[Path]:
-    for directory_name in ("events", "event-cursors"):
+    for directory_name in ("events",):
         directory = store.state_dir / "state" / directory_name
         confined = _confine_under(store.state_dir, directory)
         if confined is None or not confined.is_dir():

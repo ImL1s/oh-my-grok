@@ -414,3 +414,81 @@ def test_ag_history_unknown_version_never_mutates(
     assert result["mutated"] is False
     assert result["pin"] == "unknown_version"
     assert (history / "version").read_text(encoding="utf-8") == before
+
+
+def test_search_reads_truncated_journal_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli import session_index
+
+    root = _project(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_index, "MAX_JOURNAL_BYTES", 200)
+    state_dir = resolve_state_root(cwd=root, explicit_project_root=root).state_dir
+    directory = state_dir / "state" / "events"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "huge.jsonl"
+    padding = '{"noise":"' + ("x" * 40) + '"}\n'
+    marker = {
+        "event_id": "tail-1",
+        "event_type": "turn_started",
+        "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "payload": {"marker": "tail-unique", "provider": "grok"},
+    }
+    path.write_text(padding * 20 + json.dumps(marker) + "\n", encoding="utf-8")
+    hits = search_sessions(query="tail-unique", cwd=root, since="7d")
+    dumped = json.dumps(hits)
+    assert "tail-unique" in dumped
+    assert any(
+        row.get("reason") == "journal_tail_truncated" for row in hits["diagnostics"]
+    )
+
+
+def test_retain_apply_keeps_event_cursors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path, monkeypatch)
+    state_dir = resolve_state_root(cwd=root, explicit_project_root=root).state_dir
+    cursors = state_dir / "state" / "event-cursors"
+    cursors.mkdir(parents=True, exist_ok=True)
+    cursor = cursors / "omg-hooks-bus.json"
+    cursor.write_text("{}", encoding="utf-8")
+    old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    os.utime(cursor, (old_ts, old_ts))
+    events = state_dir / "state" / "events"
+    events.mkdir(parents=True, exist_ok=True)
+    old = events / "old.jsonl"
+    old.write_text("{}\n", encoding="utf-8")
+    os.utime(old, (old_ts, old_ts))
+    rc = main(["--json", "session", "retain", "--apply", "--since", "7d"])
+    assert rc == 0
+    retain = _domain(_out(capsys))
+    assert retain["apply"] is True
+    assert cursor.exists()
+    assert not old.exists()
+
+
+def test_released_lease_is_not_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, monkeypatch)
+    state_dir = resolve_state_root(cwd=root, explicit_project_root=root).state_dir
+    run = state_dir / "state" / "runs" / "run-alpha"
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "status.json").write_text(
+        json.dumps({"run_id": "run-alpha", "phase": "done"}),
+        encoding="utf-8",
+    )
+    (run / "execution.lease.json").write_text(
+        json.dumps(
+            {
+                "state": "released",
+                "pid": 1,
+                "acquired_at": "2020-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = friction_report(cwd=root, since="24h")
+    stale = report.get("signals", {}).get("stale_leases", {})
+    count = stale.get("count") if isinstance(stale, dict) else stale
+    assert not count
