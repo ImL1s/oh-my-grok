@@ -13,8 +13,10 @@ from omg_cli.team.interactive import (
     E_TEAM_IO_MODE_UNSUPPORTED,
     ECHO_PROBE_ENV,
     GROK_INTERACTIVE_RULES,
+    GROK_INTERACTIVE_SEED_PROMPT,
     INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
+    capture_contains_provider_echo,
     capture_contains_tui_ready,
     grok_interactive_argv,
     make_interactive_nonce,
@@ -72,19 +74,28 @@ def test_grok_interactive_argv_has_no_prompt_file() -> None:
     assert argv[0] == "grok"
     assert "--cwd" in argv
     assert "--prompt-file" not in argv
+    assert "--single-turn" not in argv
+    assert "-p" not in argv
+    assert "--single" not in argv
+    assert "--prompt" not in argv
     assert "--no-alt-screen" in argv
     assert "--minimal" in argv
     assert "--no-subagents" in argv
     assert "--rules" not in argv
+    assert argv[-1] == GROK_INTERACTIVE_SEED_PROMPT
+    assert argv[-1] != "--prompt-file"
     echo = grok_interactive_argv(
         cwd="/tmp/wt", posture="read-write", rules=GROK_INTERACTIVE_RULES
     )
     assert "--rules" in echo
     assert echo[echo.index("--rules") + 1].startswith("When the user sends a line")
+    assert echo[-1] == GROK_INTERACTIVE_SEED_PROMPT
+    assert "--prompt" not in echo
     assert "bypassPermissions" not in argv
     yolo = grok_interactive_argv(cwd="/tmp/wt", posture="read-write", yolo=True)
     assert "bypassPermissions" in yolo
     assert "--always-approve" in yolo
+    assert yolo[-1] == GROK_INTERACTIVE_SEED_PROMPT
     safe = grok_interactive_argv(
         cwd="/tmp/wt", posture="read-write", safe=True, yolo=True
     )
@@ -126,6 +137,8 @@ def test_exec_script_is_0700_and_has_no_prompt(tmp_path: Path) -> None:
     assert text.startswith("#!/bin/sh")
     assert "exec" in text and "grok" in text
     assert "--prompt-file" not in text
+    assert GROK_INTERACTIVE_SEED_PROMPT in text
+    assert " --prompt " not in f" {text} "
     assert "XAI_API_KEY" not in text
     mode = dest.stat().st_mode & 0o777
     assert mode in {0o700, 0o666, 0o644} or (mode & 0o100)
@@ -174,6 +187,18 @@ def test_exec_argv_rejects_prompt_file_option_not_path_substring(
         write_interactive_exec_script(
             dest=dest,
             argv=["grok", "--prompt-file=secret"],
+            worktree=tmp_path,
+        )
+    with pytest.raises(InteractiveTeamError, match="--prompt flag"):
+        write_interactive_exec_script(
+            dest=dest,
+            argv=["grok", "--prompt", "x"],
+            worktree=tmp_path,
+        )
+    with pytest.raises(InteractiveTeamError, match="-p/--single"):
+        write_interactive_exec_script(
+            dest=dest,
+            argv=["grok", "-p", "x"],
             worktree=tmp_path,
         )
     write_interactive_exec_script(
@@ -280,6 +305,10 @@ def test_dry_run_interactive_grok_argv(
     assert "--no-alt-screen" in rec["argv"]
     assert "--minimal" in rec["argv"]
     assert "--rules" not in rec["argv"]
+    assert "--prompt" not in rec["argv"]
+    assert rec["argv"][-1] == GROK_INTERACTIVE_SEED_PROMPT
+    assert "--single-turn" not in rec["argv"]
+    assert "-p" not in rec["argv"]
     assert "supervisor" not in rec["pane_command"]
     exec_path = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.sh"
     script = exec_path.read_text(encoding="utf-8")
@@ -311,6 +340,8 @@ def test_dry_run_interactive_echo_probe_attaches_rules(
     assert rec["argv"][rec["argv"].index("--rules") + 1].startswith(
         "When the user sends a line"
     )
+    assert rec["argv"][-1] == GROK_INTERACTIVE_SEED_PROMPT
+    assert "--prompt" not in rec["argv"]
     rules = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.rules.txt"
     assert rules.is_file()
     assert "PROVIDER_ECHO:" in rules.read_text(encoding="utf-8")
@@ -441,6 +472,22 @@ def test_tui_ready_marker_is_exact_line_only() -> None:
     assert not capture_contains_tui_ready(f"{marker}EVIL\n", nonce)
     assert not capture_contains_tui_ready("TUI_READY:other\n", nonce)
     assert not capture_contains_tui_ready("", nonce)
+
+
+def test_provider_echo_allows_optional_space_not_local_composer() -> None:
+    token = "OMG147-LIVE-01548eed17fe"
+    assert capture_contains_provider_echo(f"PROVIDER_ECHO:{token}\n", token)
+    assert capture_contains_provider_echo(f"PROVIDER_ECHO: {token}\n", token)
+    assert capture_contains_provider_echo(
+        "Thought for 0.8s\nPROVIDER_ECHO: OMG147-LIVE-01548eed17fe\n❯\n",
+        token,
+    )
+    assert not capture_contains_provider_echo(f"❯ {token}\n", token)
+    assert not capture_contains_provider_echo(f"PROVIDER_ECHO:{token}EVIL\n", token)
+    assert not capture_contains_provider_echo(
+        f"PROVIDER_ECHO:\n{token}\n", token
+    )
+    assert not capture_contains_provider_echo("", token)
 
 
 def test_sanitize_tty_payload_drops_csi_and_empty() -> None:

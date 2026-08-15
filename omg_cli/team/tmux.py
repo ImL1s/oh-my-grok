@@ -4960,6 +4960,30 @@ def send_key(
         raise TmuxTeamError(f"send-keys failed: {err}")
 
 
+def send_submit(
+    pane_id: str,
+    *,
+    socket_path: str | None = None,
+) -> None:
+    """Submit the pane composer with a literal CR (0x0d).
+
+    Grok 1.0.4 PTY tests inject raw CR (``\\r``, not a named key). ``send-keys
+    Enter`` / ``C-m`` are the same 0x0d byte on tmux 3.4 with extended-keys
+    off, but named keys can be rewritten to CSI-u when extended-keys is on.
+    Literal CR after a settle avoids paste-coalescing the composer text.
+    """
+    if not tmux_available():
+        raise TmuxTeamError("tmux is required for pane submit")
+    target = _require_exact_pane_id(pane_id)
+    result = _tmux_run(
+        ["send-keys", "-l", "-t", target, "--", "\r"],
+        socket_path=socket_path,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()[:200]
+        raise TmuxTeamError(f"send-keys submit CR failed: {err}")
+
+
 def attach_argv_for_target(
     *,
     pane_id: str,

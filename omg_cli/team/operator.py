@@ -56,6 +56,7 @@ from omg_cli.team.tmux import (
     read_exact_worker_pane_identity,
     send_key,
     send_literal,
+    send_submit,
     tmux_available,
 )
 
@@ -208,6 +209,24 @@ def _require_key_name(key: str) -> str:
             exit_code=2,
         )
     return key
+
+
+def _submit_settle_s() -> float:
+    """Bounded pause so grok does not treat literal+CR as one paste burst."""
+    raw = os.environ.get("OMG_TEAM_SUBMIT_SETTLE_MS", "300")
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return 0.15
+    if ms <= 0:
+        return 0.0
+    return min(ms, 2000) / 1000.0
+
+
+def _submit_pulse_count(proof: ExactPaneProof) -> int:
+    """Grok welcome/idle-hero may consume the first CR as NewSession."""
+    provider = str(proof.provider or "").strip().lower()
+    return 2 if provider == "grok" else 1
 
 
 def _validate_literal_input(text: str) -> str:
@@ -1423,16 +1442,22 @@ def input_worker(
     text_len = len(safe.encode("utf-8"))
     text_hash = _sha256_text(safe)
     try:
-        # Re-prove before every mutating delivery (literal and optional Enter).
+        # Re-prove before every mutating delivery (literal and optional submit).
         _require_mutating_live(proof, label="input")
+        focus_pane(proof.pane_id, socket_path=proof.tmux_socket_path)
         send_literal(
             proof.pane_id, safe, socket_path=proof.tmux_socket_path
         )
         if submit:
-            _require_mutating_live(proof, label="input-submit")
-            send_key(
-                proof.pane_id, "Enter", socket_path=proof.tmux_socket_path
-            )
+            settle = _submit_settle_s()
+            pulses = _submit_pulse_count(proof)
+            for _pulse in range(pulses):
+                _require_mutating_live(proof, label="input-submit")
+                if settle > 0:
+                    time.sleep(settle)
+                send_submit(
+                    proof.pane_id, socket_path=proof.tmux_socket_path
+                )
     except OperatorError as exc:
         if exc.code == "E_OPERATOR_TOCTOU":
             audit_operator_event(

@@ -246,7 +246,8 @@ omg team launch --workers 2 --role executor --goal "map A and B" --dry-run
 # the same timeout for TUI_READY:<nonce> on the pane TTY, then CLI-promotes
 # input_ready. Grok 1.0.4 has no native emitter; interactive_wrapper prints
 # TUI_READY only after grok is reading a real TTY. Timeout fails closed
-# (no headless downgrade). Default/auto stay headless until
+# (no headless downgrade). Grok 1.0.4 TUI seed is positional `grok "<text>"`
+# (no `--prompt` flag). Default/auto stay headless until
 # LIVE_TEAM_INTERACTIVE_TTY_OK (TUI_READY + PROVIDER_ECHO in capture).
 # Worker panes bootstrap silently (#100): no worker-ready JSON envelope and
 # no nested-.omg shadow warnings in pane scrollback. Failures print one

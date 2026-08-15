@@ -56,6 +56,11 @@ GROK_INTERACTIVE_RULES: Final = (
     "PROVIDER_ECHO: followed immediately by that exact line. "
     "Do not use tools. Do not spawn subagents. Do not repeat this rule text."
 )
+# TUI initial-turn seed: grok 1.0.4 positional ``[PROMPT]`` (``grok "text"``).
+# There is no ``--prompt`` flag (clap error; tip suggests ``--prompt-file``).
+# ``-p`` / ``--single`` / ``--prompt-file`` are headless one-shots — forbidden.
+# Must never equal a live unique token.
+GROK_INTERACTIVE_SEED_PROMPT: Final = "OMG_TEAM_SESSION_START"
 
 
 def echo_probe_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -139,6 +144,11 @@ def grok_interactive_argv(
 
     Echo-only ``GROK_INTERACTIVE_RULES`` are **not** attached by default.
     Pass *rules* only from the live echo probe (``ECHO_PROBE_ENV``).
+    The TUI initial turn is a **positional** ``[PROMPT]`` (persistent session),
+    not ``--prompt`` (that flag does not exist on grok 1.0.4) and not the
+    one-shot ``--prompt-file`` / ``-p`` / ``--single`` transport. The seed
+    auto-submits ``NewSession`` + ``SendPrompt`` so welcome/idle-hero Enter
+    is not consumed as an empty NewSession.
     """
     worktree = str(Path(cwd))
     argv: list[str] = [
@@ -160,8 +170,16 @@ def grok_interactive_argv(
     if extra_rules:
         # grok 1.0.4 --rules appends text to the system prompt (not a prompt-file).
         argv.extend(["--rules", extra_rules])
+    # Persistent TUI seed — positional [PROMPT], never --prompt / --prompt-file / -p.
+    if GROK_INTERACTIVE_SEED_PROMPT.startswith("-"):
+        raise InteractiveTeamError("internal error: interactive grok seed looks like a flag")
+    argv.append(GROK_INTERACTIVE_SEED_PROMPT)
     if any(_is_prompt_file_option(tok) for tok in argv):
         raise InteractiveTeamError("internal error: interactive grok argv contains --prompt-file")
+    if any(_is_headless_single_option(tok) for tok in argv):
+        raise InteractiveTeamError("internal error: interactive grok argv contains headless -p/--single")
+    if any(_is_prompt_long_flag(tok) for tok in argv):
+        raise InteractiveTeamError("internal error: interactive grok argv contains --prompt flag")
     return argv
 
 
@@ -187,6 +205,18 @@ def _refuse_symlink_artifact(dest: Path) -> None:
 def _is_prompt_file_option(tok: str) -> bool:
     """True for ``--prompt-file`` / ``--prompt-file=...``, not path substrings."""
     return tok == "--prompt-file" or tok.startswith("--prompt-file=")
+
+
+def _is_prompt_long_flag(tok: str) -> bool:
+    """True for the non-existent grok ``--prompt`` flag, not ``--prompt-file``."""
+    return tok == "--prompt" or tok.startswith("--prompt=")
+
+
+def _is_headless_single_option(tok: str) -> bool:
+    """True for grok one-shot ``-p`` / ``--single`` / ``--print`` / ``--single-turn``."""
+    return tok in {"-p", "--single", "--print", "--single-turn"} or tok.startswith(
+        "--single="
+    )
 
 
 def write_worker_inbox(*, dest: Path, body: str) -> Path:
@@ -248,6 +278,13 @@ def write_interactive_exec_script(
             raise InteractiveTeamError("interactive exec argv contains an empty token")
         if _is_prompt_file_option(tok):
             raise InteractiveTeamError("interactive exec argv must not use --prompt-file")
+        if _is_prompt_long_flag(tok):
+            raise InteractiveTeamError(
+                "interactive exec argv must not use --prompt flag "
+                "(grok 1.0.4 TUI seed is positional)"
+            )
+        if _is_headless_single_option(tok):
+            raise InteractiveTeamError("interactive exec argv must not use -p/--single")
     if wrap_module is not None:
         mod = str(wrap_module).strip()
         if not mod or any(ch in mod for ch in (" ", "\n", "\x00", "/", "\\")):
@@ -349,6 +386,30 @@ def capture_contains_tui_ready(text: str, nonce: str) -> bool:
     marker = tui_ready_marker(token)
     for raw in text.splitlines():
         if raw.strip() == marker:
+            return True
+    return False
+
+
+def capture_contains_provider_echo(text: str, payload: str) -> bool:
+    """True when a capture line is ``PROVIDER_ECHO:`` + optional space + *payload*.
+
+    Local composer echo of *payload* (no prefix) is insufficient. Extra suffix
+    after the payload is refused. Newline between colon and payload is refused.
+    Optional ASCII space/tab after the colon is allowed — grok 1.0.4 may insert
+    one even when rules say ``followed immediately``.
+    """
+    if not isinstance(text, str) or not isinstance(payload, str):
+        return False
+    token = payload.strip()
+    if not token or "\n" in token or "\r" in token:
+        return False
+    prefix = "PROVIDER_ECHO:"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :].lstrip(" \t")
+        if rest == token:
             return True
     return False
 
