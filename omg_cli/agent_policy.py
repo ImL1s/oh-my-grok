@@ -824,6 +824,7 @@ def resolve_agent_policy(
     per_run: Mapping[str, Any] | None = None,
     host: HostCapabilitySnapshot | None = None,
     bundle: PolicyBundle | None = None,
+    inspect_doc: Any | None = None,
 ) -> AgentPolicyViewV1:
     """Resolve portable model intent before host execution."""
     loaded = bundle or load_policy_bundle(root)
@@ -880,6 +881,7 @@ def resolve_agent_policy(
     status = "ready"
     selected: str | None = None
     receipt: str | None = None
+    attempt: int | None = 1
 
     if not snapshot.is_supported("host.native-agent.v1"):
         native_state = snapshot.state_of("host.native-agent.v1")
@@ -957,6 +959,24 @@ def resolve_agent_policy(
     if snapshot.host_tier == HOST_TIER_GROK:
         receipt = None
 
+    if inspect_doc is not None and snapshot.is_supported("medley.native-route-receipt.v1"):
+        from omg_cli.medley_inspect import apply_receipt_to_view_fields, receipt_for_policy
+
+        rec = receipt_for_policy(
+            inspect_doc,
+            policy_id=str(policy["policy_id"]),
+            agent_id=identity.agent_id,
+            policy_digest=digest,
+        )
+        if rec is not None:
+            fields = apply_receipt_to_view_fields(rec)
+            if fields["selected_model_ref"]:
+                selected = fields["selected_model_ref"]
+            if fields["route_receipt_digest"]:
+                receipt = fields["route_receipt_digest"]
+            if fields["attempt"] is not None:
+                attempt = fields["attempt"]
+
     host_facts = {
         "medley_capability_outcome": medley_capability_outcome(snapshot),
         "route_specific_facts": route_specific_facts_state(snapshot),
@@ -983,7 +1003,7 @@ def resolve_agent_policy(
         selected_model_ref=selected,
         route_kind=ROUTE_KIND_NATIVE,
         route_receipt_digest=receipt,
-        attempt=1,
+        attempt=attempt,
         status=status,
         reasons=tuple(reasons),
         host_facts=host_facts,
@@ -997,6 +1017,7 @@ def list_agent_policies(
     user_home: Path | None = None,
     host: HostCapabilitySnapshot | None = None,
     catalog_only: bool = False,
+    inspect_doc: Any | None = None,
 ) -> tuple[AgentPolicyViewV1, ...]:
     loaded = load_policy_bundle(root)
     snapshot = host or stock_grok_snapshot()
@@ -1012,6 +1033,7 @@ def list_agent_policies(
                 user_home=user_home,
                 host=snapshot,
                 bundle=loaded,
+                inspect_doc=inspect_doc,
             )
         )
     rows.sort(key=lambda item: item.agent_id)

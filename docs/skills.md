@@ -643,7 +643,7 @@ them from a skill, but authority and evidence remain in the CLI artifacts.
 | `omg workflow install\|list\|show\|plan\|run` | Immutable workflow registry, deterministic waves, receipt-bound ship gate. |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | Frozen W0 manifest delegation, canonical bundle/evidence producers, bundle verification, inventory check, gap listing, and plan-only upstream pin refresh. |
 | `omg capabilities` / `omg native-status` | Independent capability tiers plus read-only `agents_catalog`, `skills_catalog`, `hooks_registry`, and `tools_sidecar`; no private-sidecar probing. |
-| `omg agents list\|explain` | Dual-host agent/model policy inspect (#131) plus host-neutral UX (#134): `--width` / `COLUMNS` narrow-normal-wide, `NO_COLOR`, CJK aliases. Stock Grok Build uses explicit inherit; Medley caps are unsupported (not installation failed). No paid probe. Medley TUI remains #290. |
+| `omg agents list\|explain` | Dual-host agent/model policy inspect (#131) plus host-neutral UX (#134): `--width` / `COLUMNS` narrow-normal-wide, `NO_COLOR`, CJK aliases. Stock Grok Build uses explicit inherit; Medley caps are unsupported (not installation failed) unless `--host-inspect` / `OMG_MEDLEY_INSPECT` supplies a Medley inspect document. No paid probe. Medley TUI remains #290. |
 | `omg skill list\|show\|resolve\|resources` | Read-only skill catalog inspect (#70). Never sets `verified`. Host-native names such as `plan`/`goal` resolve as aliases only. |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity (`agy`) probe + headless run (#67-A/B): capabilities envelope, doctor, and `ProviderAdapter.run` (text/json/stream-json). `omg ask agy` cutover (#67-C); Team panes via `build_launch_envelope` (#67-D; supervisor owns PTY/PID/readiness). Never claims `live_call_ready`. |
 | `omg visual compare\|capture\|verdict\|ralph` | Visual Contract V1 (#75). `compare` wraps `compare()` on `--input` JSON (scored/blocked; callers compare `aggregate` to `threshold`). `capture` runs `capture.command` else `OMG_VISUAL_CAPTURE`, else **blocked** (not a fake pass; Playwright is not required). `verdict` wraps `compare()`, writes descriptors/findings/score history under `.omg/artifacts/visual/<run_id>/`, overlay is **descriptor-only** (no pixel decode), and `reviewer_status` requires an independent read-only reviewer (`E_VISUAL_REVIEWER` otherwise). `ralph` is a bounded capture/verdict/repair-prompt loop (no agent spawn). Never writes `passes`/`verified`. No live screenshot smoke / no AG vision model in this slice. See [visual-contract-v1.md](./visual-contract-v1.md). |
@@ -710,8 +710,8 @@ are **projections only** — not an installed AG plugin and not live AG evidence
 (Antigravity is not installed in this slice; live AG smoke remains a gap).
 Team routing floors remain in `omg_cli/team/roles.py`. Dual-host model policy
 (#131) consumes this catalog via `agents/model_policies.json` and
-`omg agents list|explain` (Grok baseline shipped; Medley exact/receipts remain
-Refs). Grok built-ins (`explore`, `plan`, `general-purpose`) are policy
+`omg agents list|explain` (Grok baseline shipped; optional Medley inspect via
+`--host-inspect` / `OMG_MEDLEY_INSPECT`; live spawn/TUI remain Refs). Grok built-ins (`explore`, `plan`, `general-purpose`) are policy
 profiles, not a second registry.
 
 ---

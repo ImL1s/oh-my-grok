@@ -47,7 +47,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     CommandSpec("native-status", "native host status pack", "inspect"),
     CommandSpec(
         "agents",
-        "dual-host agent/model policy list/explain (Grok baseline; Medley caps unsupported)",
+        "dual-host agent/model policy list/explain (Grok baseline; Medley inspect optional)",
         "inspect",
     ),
     CommandSpec("workflow", "repository workflows", "workflow"),

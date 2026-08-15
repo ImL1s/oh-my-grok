@@ -363,3 +363,125 @@ def test_policy_view_schema_requires_full_projection() -> None:
     assert schema["properties"]["effective_route"]["type"] == ["object", "null"]
     assert view["effective_route"] is None
     assert view["requested_policy"]["binding"] == "inherit"
+
+
+def test_inspect_receipt_overlays_verifier_effective_route(tmp_path: Path) -> None:
+    from omg_cli.medley_inspect import (
+        INSPECT_SCHEMA,
+        load_inspect_document,
+        snapshot_from_inspect,
+    )
+
+    baseline = resolve_agent_policy("omg-verifier", root=ROOT)
+    path = tmp_path / "inspect.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [
+                    {
+                        "capability_id": "medley.native-exact-model.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                    {
+                        "capability_id": "medley.native-ordered-candidates.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                    {
+                        "capability_id": "medley.native-route-receipt.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                ],
+                "receipts": [
+                    {
+                        "schema": "medley.native-route-receipt.v1",
+                        "consumer_policy_id": "verifier.default",
+                        "consumer_policy_digest": baseline.policy_digest,
+                        "selected_catalog_id": "review-primary-example",
+                        "route_digest": "b" * 64,
+                        "attempt": 3,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    doc = load_inspect_document(path)
+    snap = snapshot_from_inspect(doc)
+    view = resolve_agent_policy(
+        "omg-verifier",
+        root=ROOT,
+        host=snap,
+        inspect_doc=doc,
+    )
+    assert snap.host_tier == HOST_TIER_MEDLEY
+    assert view.selected_model_ref == "review-primary-example"
+    assert view.route_receipt_digest == "b" * 64
+    assert view.attempt == 3
+    assert view.host_facts["route_specific_facts"] == "supported"
+    assert view.to_json()["effective_route"]["selected_model_ref"] == (
+        "review-primary-example"
+    )
+
+
+def test_inspect_receipt_does_not_overlay_stale_policy_digest(tmp_path: Path) -> None:
+    from omg_cli.medley_inspect import (
+        INSPECT_SCHEMA,
+        load_inspect_document,
+        snapshot_from_inspect,
+    )
+
+    path = tmp_path / "inspect.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": INSPECT_SCHEMA,
+                "schemaVersion": 1,
+                "host": "medley",
+                "capabilities": [
+                    {
+                        "capability_id": "medley.native-exact-model.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                    {
+                        "capability_id": "medley.native-ordered-candidates.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                    {
+                        "capability_id": "medley.native-route-receipt.v1",
+                        "state": "supported",
+                        "version": "v1",
+                    },
+                ],
+                "receipts": [
+                    {
+                        "schema": "medley.native-route-receipt.v1",
+                        "consumer_policy_id": "verifier.default",
+                        "consumer_policy_digest": "c" * 64,
+                        "selected_catalog_id": "review-primary-example",
+                        "route_digest": "b" * 64,
+                        "attempt": 3,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    doc = load_inspect_document(path)
+    snap = snapshot_from_inspect(doc)
+    view = resolve_agent_policy(
+        "omg-verifier",
+        root=ROOT,
+        host=snap,
+        inspect_doc=doc,
+    )
+    assert view.selected_model_ref != "review-primary-example"
+    assert view.route_receipt_digest is None
+    assert view.to_json()["effective_route"] is None

@@ -68,6 +68,16 @@ def test_incompatible_version_is_not_authorized() -> None:
     assert not snap.is_supported("medley.native-route-receipt.v1")
 
 
+def test_advertised_unknown_is_not_unsupported() -> None:
+    snap = negotiate(
+        host_tier=HOST_TIER_MEDLEY,
+        advertised={"medley.native-route-receipt.v1": "unknown"},
+    )
+    assert snap.state_of("medley.native-route-receipt.v1") == "unknown"
+    assert not snap.is_supported("medley.native-route-receipt.v1")
+    assert route_specific_facts_state(snap) == "unknown"
+
+
 def test_claimed_but_missing_is_unavailable() -> None:
     snap = negotiate(
         host_tier=HOST_TIER_GROK,
@@ -104,3 +114,12 @@ def test_medley_advertised_exact_and_candidates_supported() -> None:
 def test_unknown_tier_rejected() -> None:
     with pytest.raises(HostCapabilityError, match="unknown host_tier"):
         negotiate(host_tier="grok-binary")
+
+
+def test_medley_explicit_unsupported_baseline_is_not_restored() -> None:
+    snap = negotiate(
+        host_tier=HOST_TIER_MEDLEY,
+        advertised={"host.native-agent.v1": "unsupported"},
+    )
+    assert snap.state_of("host.native-agent.v1") == "unsupported"
+    assert not snap.is_supported("host.native-agent.v1")

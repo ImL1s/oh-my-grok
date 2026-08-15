@@ -60,9 +60,12 @@ Rules:
 - Unknown hosts negotiate by **capabilities**, not binary-name guessing.
   Current shipped `omg doctor` reports **current host/session capabilities**
   plus the versioned **routing capability registry** (`routing_capabilities`).
-  Medley-side exact/candidate/receipt consumption remains
-  **planned** under [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287)
-  and is **unsupported** on stock Grok Build (not an installation failure).
+  An explicit Medley inspect document (`OMG_MEDLEY_INSPECT` or
+  `--host-inspect` on `omg agents list`) is **shipped** as a read-only
+  adapter; it is never inferred from PATH or binary name. Live spawn wiring
+  remains **planned** under [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287).
+  Stock Grok Build keeps Medley caps **unsupported** (not an installation
+  failure).
 - This document does **not** claim affiliation between OMG, Medley, or xAI.
 
 ## Mandatory terminology
@@ -437,7 +440,7 @@ panel.
 | `omg doctor` / `omg doctor --strict` / `omg doctor --json` (also `omg --json doctor`) | **Shipped** — host/compat/probe honesty for **current host/session capabilities** plus the routing capability registry; Medley caps are **unsupported** on stock Grok Build (not installation failed); enhanced fields must not false-green |
 | `omg ask <provider>` / `omg ask <provider> --background` | **Shipped** — advisory broker only (`purpose = advisory`); not a Team executor; artifacts never set `verified` |
 | `omg team status [--json]` | **Shipped** — locked `--json` view (no `route` / `route.kind`). Route kind labeling is a dual-host **contract target** and appears only on Presentation V1 (`--presentation`) |
-| `omg agents list [--json]` | **Shipped** — host-neutral agent/policy inspect; Grok baseline inherit; Medley facts **unsupported** / **unavailable**; no paid probe |
+| `omg agents list [--json]` | **Shipped** — host-neutral agent/policy inspect; Grok baseline inherit; Medley facts **unsupported** / **unavailable** unless an explicit inspect document is supplied; no paid probe; Medley TUI remains [medley#290](https://github.com/ImL1s/medley/issues/290) **contract-only** |
 | `omg agents explain <agent-or-profile> [--json]` | **Shipped** — policy vs effective route/receipt inspect; exact never silently inherits; Medley TUI remains [medley#290](https://github.com/ImL1s/medley/issues/290) **contract-only** |
 
 Human and JSON views of the same facts must agree.
@@ -622,9 +625,10 @@ route-specific facts: unavailable
 
 - Original Grok Build remains the **normal supported host**.
 - Medley is an **optional compatible host**. Grok-side policy inspect
-  (`omg agents list` / `omg agents explain <agent-or-profile>`) is shipped; Medley exact/candidate/receipt
-  consumption is **planned** ([ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287))
-  and remains **unsupported** on stock Grok Build, not claimed here.
+  (`omg agents list` / `omg agents explain <agent-or-profile>`) is shipped.
+  Optional inspect-document consumption is shipped; live spawn receipts remain
+  **planned** ([ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287))
+  and Medley caps remain **unsupported** on stock Grok Build, not claimed here.
 - OMG install ≠ Medley install; Medley is not required for baseline OMG.
 - External Team executors remain separate optional dependencies.
 - Current `omg doctor` reports **current host/session capabilities** plus the

@@ -44,14 +44,18 @@ def _cmd_list(args: argparse.Namespace) -> int:
         filter_policy_views,
         list_agent_policies,
     )
-    from omg_cli.host_capabilities import stock_grok_snapshot
+    from omg_cli.medley_inspect import MedleyInspectError, resolve_host_snapshot
 
     try:
+        host, inspect_doc = resolve_host_snapshot(
+            cli_path=getattr(args, "host_inspect", None),
+        )
         rows = list_agent_policies(
             root=_plugin_root(),
             project_root=project_root(),
             user_home=_user_home(),
-            host=stock_grok_snapshot(),
+            host=host,
+            inspect_doc=inspect_doc,
         )
         rows = filter_policy_views(
             rows,
@@ -65,8 +69,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         )
     except AgentPolicyError as exc:
         return _fail(args, "agents.list", exc)
+    except MedleyInspectError as exc:
+        return _fail(args, "agents.list", exc)
     payload = {
-        "host_tier": "original_grok_build",
+        "host_tier": host.host_tier,
         "agents": [row.to_json() for row in rows],
     }
     if wants_json(args):
@@ -81,7 +87,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_explain(args: argparse.Namespace) -> int:
     from omg_cli.agent_policy import AgentPolicyError, resolve_agent_policy, resume_pin
-    from omg_cli.host_capabilities import stock_grok_snapshot
+    from omg_cli.medley_inspect import MedleyInspectError, resolve_host_snapshot
 
     name = str(getattr(args, "agent_or_profile", "") or "")
     per_run = None
@@ -89,15 +95,21 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     if model:
         per_run = {"model": str(model)}
     try:
+        host, inspect_doc = resolve_host_snapshot(
+            cli_path=getattr(args, "host_inspect", None),
+        )
         view = resolve_agent_policy(
             name,
             root=_plugin_root(),
             project_root=project_root(),
             user_home=_user_home(),
             per_run=per_run,
-            host=stock_grok_snapshot(),
+            host=host,
+            inspect_doc=inspect_doc,
         )
     except AgentPolicyError as exc:
+        return _fail(args, "agents.explain", exc)
+    except MedleyInspectError as exc:
         return _fail(args, "agents.explain", exc)
     payload = {"agent": view.to_json(), "resume": resume_pin(view)}
     if wants_json(args):
@@ -129,7 +141,7 @@ def register_agents_parsers(
         parents=[common],
         help=(
             "dual-host agent/model policy list/explain "
-            "(Grok baseline; Medley caps unsupported)"
+            "(Grok baseline; Medley inspect via --host-inspect / OMG_MEDLEY_INSPECT)"
         ),
     )
     agents_sub = p_agents.add_subparsers(dest="agents_action")
@@ -161,6 +173,15 @@ def register_agents_parsers(
     )
     p_list.add_argument("--status", default=None, help="filter by view status")
     p_list.add_argument(
+        "--host-inspect",
+        dest="host_inspect",
+        default=None,
+        help=(
+            "explicit Medley inspect JSON (medley.native-subagent-route.inspect/v1); "
+            "never inferred from PATH. Env: OMG_MEDLEY_INSPECT"
+        ),
+    )
+    p_list.add_argument(
         "--width",
         type=int,
         default=None,
@@ -177,6 +198,15 @@ def register_agents_parsers(
         "--model",
         default=None,
         help="per-run exact model override for this explain only (not persisted)",
+    )
+    p_explain.add_argument(
+        "--host-inspect",
+        dest="host_inspect",
+        default=None,
+        help=(
+            "explicit Medley inspect JSON (medley.native-subagent-route.inspect/v1); "
+            "never inferred from PATH. Env: OMG_MEDLEY_INSPECT"
+        ),
     )
     p_explain.add_argument(
         "--width",

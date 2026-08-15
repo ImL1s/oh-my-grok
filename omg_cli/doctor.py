@@ -1403,10 +1403,10 @@ def check_agent_model_routing() -> SoftResult:
         from omg_cli.host_capabilities import (
             MEDLEY_CAPABILITY_IDS,
             medley_capability_outcome,
-            stock_grok_snapshot,
         )
+        from omg_cli.medley_inspect import resolve_host_snapshot
 
-        snap = stock_grok_snapshot()
+        snap, _doc = resolve_host_snapshot()
         outcome = medley_capability_outcome(snap)
         medley_states = sorted(
             f"{cid}={snap.state_of(cid)}" for cid in MEDLEY_CAPABILITY_IDS
@@ -1606,9 +1606,10 @@ def run_doctor(
             "note": SOFT_GATE_FOOTER,
         }
         try:
-            from omg_cli.host_capabilities import stock_grok_snapshot
+            from omg_cli.medley_inspect import resolve_host_snapshot
 
-            body["routing_capabilities"] = stock_grok_snapshot().to_json()
+            snap, _doc = resolve_host_snapshot()
+            body["routing_capabilities"] = snap.to_json()
         except Exception as exc:
             body["routing_capabilities"] = {
                 "schema": "omg-host-capability-registry/v1",
@@ -1666,10 +1667,11 @@ def run_doctor(
 
     try:
         from omg_cli.agent_policy_ux import format_doctor_routing_human
-        from omg_cli.host_capabilities import stock_grok_snapshot
+        from omg_cli.medley_inspect import resolve_host_snapshot
 
+        snap, _doc = resolve_host_snapshot()
         print("-" * 48)
-        print(format_doctor_routing_human(stock_grok_snapshot()))
+        print(format_doctor_routing_human(snap))
     except Exception:
         pass
 

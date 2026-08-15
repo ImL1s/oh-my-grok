@@ -10,6 +10,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#131/#134 Medley inspect glue:** `omg agents list|explain --host-inspect`
+  and `OMG_MEDLEY_INSPECT` consume `medley.native-subagent-route.inspect/v1`.
+  Support is never inferred from PATH, binary name, or state dirs. Stock Grok
+  Build stays the baseline (Medley caps **unsupported**). Doctor routing and
+  policy views overlay secret-free receipts when the inspect document
+  advertises `medley.native-route-receipt.v1`. Inspect `incompatible` stays
+  incompatible even when a version is present; `supported` without a version is
+  unavailable; explicit `unknown` is preserved; duplicate capability ids fail
+  closed; receipt rows are schema-checked before overlay; diagnostic reason
+  text is not treated as a secret. Does **not** close #131/#134: live spawn
+  wiring, session-persisted receipts, and Medley `/agents` TUI (#290) remain
+  host-owned. Refs #131 #134.
 - **#147 grok 1.0.4 composer submit (stacked on TUI_READY wrapper):** Interactive
   grok argv seeds a persistent TUI turn with positional `[PROMPT]`
   `OMG_TEAM_SESSION_START`. grok 1.0.4 has **no** `--prompt` flag (unexpected
@@ -139,7 +151,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   set to match the recorded assignment. Durable redacted artifacts under `.omg/artifacts/edit/`.
   Never writes `passes`/`verified`. Does not claim `omo.edit.hash_anchored`
   host parity. Docs: `docs/hash-edit.md`. Hermetic:
-  `tests/test_comment_checker.py`. Refs #76 (does not close).
+  `tests/test_comment_checker.py`.   Refs #76 (does not close).
 - **#77 install manifest (first cut):** `omg setup --runtime grok|antigravity|both`
   `--scope project|user` (defaults remain `grok` + `project`). Versioned
   `.omg/install/manifest.json` (or `~/.omg-user/` for user scope) records

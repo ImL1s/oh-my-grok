@@ -33,7 +33,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `compact` | memory | compaction helpers |
 | `notify` | inspect | notification channels |
 | `native-status` | inspect | native host status pack |
-| `agents` | inspect | dual-host agent/model policy list/explain (Grok baseline; Medley caps unsupported) |
+| `agents` | inspect | dual-host agent/model policy list/explain (Grok baseline; Medley inspect optional) |
 | `workflow` | workflow | repository workflows |
 | `capabilities` | inspect | capabilities lock surface |
 | `parity` | inspect | parity matrix |

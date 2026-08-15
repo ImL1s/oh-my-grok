@@ -58,6 +58,9 @@ _KNOWN_VERSIONS: frozenset[str] = frozenset({"v1", "1", CURRENT_VERSION})
 
 ADVERTISED_CLAIM = "claimed"
 ADVERTISED_MISSING = "missing"
+ADVERTISED_UNKNOWN = "unknown"
+ADVERTISED_UNSUPPORTED = "unsupported"
+KNOWN_VERSIONS: frozenset[str] = _KNOWN_VERSIONS
 
 
 class HostCapabilityError(ValueError):
@@ -126,9 +129,10 @@ def negotiate(
 ) -> HostCapabilitySnapshot:
     """Negotiate versioned capabilities for an explicit host tier.
 
-    ``advertised`` maps capability id → version string, ``claimed``, or
-    ``missing``. Unknown ids in advertised are ignored for authorization
-    (they cannot become supported). Empty advertised is treated as none.
+    ``advertised`` maps capability id → version string, ``claimed``,
+    ``missing``, or ``unknown``. Unknown ids in advertised are ignored for
+    authorization (they cannot become supported). Empty advertised is treated
+    as none.
     """
     if host_tier not in HOST_TIERS:
         raise HostCapabilityError(
@@ -192,6 +196,20 @@ def _negotiate_one(
             state="unavailable",
             version=None,
             reason="host claimed this capability but runtime evidence is missing",
+        )
+    if advertised == ADVERTISED_UNKNOWN:
+        return CapabilityState(
+            capability_id=capability_id,
+            state="unknown",
+            version=None,
+            reason="host reported this capability as unknown",
+        )
+    if advertised == ADVERTISED_UNSUPPORTED:
+        return CapabilityState(
+            capability_id=capability_id,
+            state="unsupported",
+            version=None,
+            reason="host reported this capability as unsupported",
         )
     if advertised is not None and advertised not in {ADVERTISED_CLAIM} | _KNOWN_VERSIONS:
         return CapabilityState(
@@ -312,6 +330,8 @@ def route_specific_facts_state(snapshot: HostCapabilitySnapshot) -> str:
         return "unavailable"
     if snapshot.state_of("medley.native-route-receipt.v1") == "incompatible":
         return "incompatible"
+    if snapshot.state_of("medley.native-route-receipt.v1") == "unknown":
+        return "unknown"
     if snapshot.host_tier == HOST_TIER_UNKNOWN:
         return "unknown"
     return "unavailable"
@@ -320,6 +340,8 @@ def route_specific_facts_state(snapshot: HostCapabilitySnapshot) -> str:
 __all__ = [
     "ADVERTISED_CLAIM",
     "ADVERTISED_MISSING",
+    "ADVERTISED_UNKNOWN",
+    "ADVERTISED_UNSUPPORTED",
     "CAPABILITY_IDS",
     "CURRENT_VERSION",
     "CapabilityState",
@@ -331,6 +353,7 @@ __all__ = [
     "HOST_TIERS",
     "HostCapabilityError",
     "HostCapabilitySnapshot",
+    "KNOWN_VERSIONS",
     "MEDLEY_CAPABILITY_IDS",
     "SCHEMA",
     "STATES",
