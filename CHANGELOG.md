@@ -116,7 +116,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `OMG_CAPABILITY_MODE=read-only` (`E_READ_ONLY`), ownership-task
   `capability_mode=read-only`, and unowned ULW/Team paths
   when an ownership manifest exists (`E_OWNERSHIP`; host edits still allowed
-  with no manifest). Durable redacted artifacts under `.omg/artifacts/edit/`.
+  with no manifest). Writes refuse symlink ancestors and a symlinked
+  `.omg/state/simplify-guard.json` leaf. Durable redacted artifacts under `.omg/artifacts/edit/`.
   Never writes `passes`/`verified`. Does not claim `omo.edit.hash_anchored`
   host parity. Docs: `docs/hash-edit.md`. Hermetic:
   `tests/test_comment_checker.py`. Refs #76 (does not close).

@@ -20,6 +20,7 @@ from omg_cli.edit_hygiene.workspace import (
     read_workspace_text,
     relativize_to_root,
     resolve_workspace_file,
+    write_confined_text,
 )
 from omg_cli.hash_edit import (
     HashEditCurrentFact,
@@ -149,25 +150,22 @@ def _skip_reason(rel: str, text: str | None) -> str | None:
     return None
 
 
-def _guard_path(root: Path) -> Path:
-    return Path(root) / ".omg" / "state" / "simplify-guard.json"
-
-
 def _read_guard(root: Path) -> dict[str, Any]:
-    return _load_json(_guard_path(root))
+    try:
+        return _load_json(resolve_workspace_file(root, GUARD_REL))
+    except WorkspacePathError:
+        return {}
 
 
 def _write_guard(root: Path, payload: dict[str, Any]) -> None:
-    path = _guard_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     body = dict(payload)
     body.pop("passes", None)
     body.pop("verified", None)
-    path.write_text(
-        json.dumps(body, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    text = json.dumps(body, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        write_confined_text(root, GUARD_REL, text)
+    except WorkspacePathError as exc:
+        raise SimplifyError(f"cannot write simplify guard: {exc}") from exc
 
 
 def _rel_of(root: Path, raw: str) -> str:

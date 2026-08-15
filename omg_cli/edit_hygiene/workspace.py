@@ -42,19 +42,54 @@ def relativize_to_root(root: Path, raw: str) -> str:
 
 
 def resolve_workspace_file(root: Path, relative: str) -> Path:
-    """Resolve *relative* under *root* without treating ``..`` as in-tree."""
+    """Resolve *relative* under *root* without following any path component."""
 
     rel = posix_relpath(relative)
     root_res = Path(root).resolve()
-    raw = root_res.joinpath(*rel.split("/"))
-    if raw.is_symlink():
-        raise WorkspacePathError("workspace file must not be a symlink")
+    current = root_res
+    for part in rel.split("/"):
+        current = current / part
+        try:
+            if current.is_symlink():
+                raise WorkspacePathError("workspace path must not contain a symlink")
+        except OSError as exc:
+            raise WorkspacePathError("cannot inspect workspace path") from exc
+    if current.exists():
+        try:
+            resolved = current.resolve()
+            resolved.relative_to(root_res)
+        except ValueError as exc:
+            raise WorkspacePathError("path escapes the workspace root") from exc
+    return current
+
+
+def write_confined_text(root: Path, relative: str, text: str) -> None:
+    """Write UTF-8 text without following a symlink leaf or ancestor."""
+
+    rel = posix_relpath(relative)
+    root_res = Path(root).resolve()
+    current = root_res
+    parts = rel.split("/")
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            if current.is_symlink():
+                raise WorkspacePathError("workspace path must not contain a symlink")
+        except OSError as exc:
+            raise WorkspacePathError("cannot inspect workspace path") from exc
+        if index < len(parts) - 1:
+            if current.exists() and not current.is_dir():
+                raise WorkspacePathError("parent is not a directory")
+            try:
+                current.mkdir(exist_ok=True)
+            except OSError as exc:
+                raise WorkspacePathError("cannot create parent directory") from exc
+            if current.is_symlink():
+                raise WorkspacePathError("workspace path must not contain a symlink")
     try:
-        resolved = raw.resolve()
-        resolved.relative_to(root_res)
-    except ValueError as exc:
-        raise WorkspacePathError("path escapes the workspace root") from exc
-    return raw
+        current.write_text(text, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        raise WorkspacePathError("cannot write workspace file") from exc
 
 
 def read_workspace_text(root: Path, relative: str, *, max_bytes: int = MAX_HYGIENE_FILE_BYTES) -> str:
@@ -82,6 +117,4 @@ def read_workspace_text(root: Path, relative: str, *, max_bytes: int = MAX_HYGIE
 
 
 def write_workspace_text(root: Path, relative: str, text: str) -> None:
-    path = resolve_workspace_file(root, relative)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    write_confined_text(root, relative, text)

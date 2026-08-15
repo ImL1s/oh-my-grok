@@ -399,7 +399,7 @@ def _cmd_comments(args: argparse.Namespace) -> int:
     except CommentCheckerError as exc:
         usage = "require --input" in str(exc)
         return _emit_failure(COMMAND_COMMENTS, exc, usage=usage)
-    except EditHygieneError as exc:
+    except (EditHygieneError, WorkspacePathError) as exc:
         return _emit_failure(COMMAND_COMMENTS, exc)
 
 
@@ -426,7 +426,7 @@ def _cmd_simplify(args: argparse.Namespace) -> int:
         if art:
             extra["artifact"] = art
         return _emit_failure(COMMAND_SIMPLIFY, exc, extra=extra)
-    except (SimplifyError, EditHygieneError, HashEditError) as exc:
+    except (SimplifyError, EditHygieneError, HashEditError, WorkspacePathError) as exc:
         return _emit_failure(COMMAND_SIMPLIFY, exc)
 
 

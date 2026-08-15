@@ -561,3 +561,48 @@ def test_apply_refuses_read_only_task_capability(
     assert rc == 1
     payload = _out(capsys)
     assert _code(payload) == "E_READ_ONLY"
+
+
+def test_comments_skips_symlinked_ancestor(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    other = project / "other"
+    other.mkdir()
+    target = other / "x.py"
+    original = "# AI generated this\nx = 1\n"
+    target.write_text(original, encoding="utf-8")
+    owned = project / "owned"
+    owned.mkdir()
+    link = owned / "link"
+    try:
+        link.symlink_to(other, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not available")
+    rc = main(
+        ["--json", "edit", "comments", "--paths", "owned/link/x.py", "--fix"]
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    assert "owned/link/x.py" in payload["skipped"]
+    assert payload["finding_count"] == 0
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_simplify_refuses_symlinked_guard(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    leaked = project / "leaked-guard.json"
+    leaked.write_text("secret\n", encoding="utf-8")
+    guard_dir = project / ".omg" / "state"
+    guard_dir.mkdir(parents=True, exist_ok=True)
+    guard = guard_dir / "simplify-guard.json"
+    try:
+        guard.symlink_to(leaked)
+    except OSError:
+        pytest.skip("symlinks not available")
+    rc = main(["--json", "edit", "simplify", "--paths", "app.py", "--enable"])
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY"
+    assert leaked.read_text(encoding="utf-8") == "secret\n"
