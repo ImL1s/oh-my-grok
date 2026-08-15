@@ -91,7 +91,10 @@ callers). `state_dir` is the physical store:
 
 `ensure_omg_dirs` still scaffolds plans/research/handoffs/artifacts/
 ultragoal/wiki/jobs under `<project_root>/.omg`. It creates `state/` and
-`state/runs/` under the resolved `state_dir`.
+`state/runs/` under the resolved `state_dir`. While leftover writers still
+use `<project_root>/.omg/state`, it **also** confines that project-local
+tree (so a symlink there is rejected even when `OMG_STATE_DIR` or
+workspace sharing points the physical store elsewhere).
 
 `verified` is not written by this cutover except through the existing
 `set_verified` / `omg accept` paths. `create_run` still stamps

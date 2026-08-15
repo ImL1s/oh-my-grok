@@ -111,6 +111,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **Leftover Codex reviews (#177/#178/#179/#180):** project-local `.omg/state`
+  stays confined while leftover writers remain; agent frontmatter must match
+  catalog `capabilityMode`/`permissionMode`; `omg edit plan` uses the apply
+  `O_NOFOLLOW` walk and a size bound before load; apply JSON omits local
+  `--input` paths; missing `--input` emits `E_HASH_EDIT_USAGE`; `omg visual
+  compare` sanitizes contract errors and bounds JSON load size. Refs #71
+  #74 #75 #76 (does not close).
 - **#77 Codex review:** mergeable `AGENTS.md` records a post-setup
   `content_hash` so inspect is not immediately stale; manifest writes
   replace (never follow) a symlink; a failed commit-marker rolls the

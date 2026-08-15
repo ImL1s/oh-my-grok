@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Final
 
 from omg_cli.cli_envelope import emit_json, failure, success
 from omg_cli.cli_util import project_root
-from omg_cli.contracts.path_keys import ContractPathError, confined_path
 from omg_cli.hash_edit import (
     APPLY_RESULT_KIND,
     HashEditAmbiguousError,
@@ -38,8 +36,8 @@ from omg_cli.hash_edit import (
     apply_hash_edit,
     parse_hash_edit_descriptor,
     plan_hash_edit,
+    read_confined_regular_file,
 )
-from omg_cli.hash_edit.descriptor import require_workspace_relpath
 from omg_cli.redaction import redact_text
 
 PLAN_RESULT_KIND: Final[str] = "omg.hash_edit.plan.v1"
@@ -150,7 +148,7 @@ def _load_descriptor(input_path: str | None) -> Any:
     try:
         body = path.read_bytes()
     except OSError as exc:
-        raise HashEditCliUsageError(f"cannot read --input: {exc}") from exc
+        raise HashEditCliUsageError("cannot read --input") from exc
     try:
         data = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -159,38 +157,9 @@ def _load_descriptor(input_path: str | None) -> Any:
 
 
 def _read_current_bytes(workspace_root: Path, relative: str) -> bytes:
-    """Read target bytes for planning. Apply still re-reads under confinement."""
+    """Read target bytes for planning via the same O_NOFOLLOW walk as apply."""
 
-    rel = require_workspace_relpath(relative, label="edit path")
-    parts = rel.split("/")
-    root = Path(workspace_root)
-    if os.name == "posix":
-        try:
-            target = confined_path(root, *parts)
-        except ContractPathError as exc:
-            raise HashEditPathError(str(exc)) from exc
-    else:
-        if root.is_symlink():
-            raise HashEditPathError("workspace root may not be a symlink")
-        target = root.joinpath(*parts)
-        try:
-            target.resolve().relative_to(root.resolve())
-        except ValueError as exc:
-            raise HashEditPathError("path escapes workspace") from exc
-        if target.is_symlink():
-            raise HashEditPathError(f"target may not be a symlink: {rel}")
-    try:
-        if target.is_symlink():
-            raise HashEditPathError(f"target may not be a symlink: {rel}")
-        if not target.is_file():
-            raise HashEditPathError(f"target must be a regular file: {rel}")
-        return target.read_bytes()
-    except HashEditPathError:
-        raise
-    except FileNotFoundError as exc:
-        raise HashEditPathError(f"target does not exist: {rel}") from exc
-    except OSError as exc:
-        raise HashEditPathError(f"cannot read target: {rel}") from exc
+    return read_confined_regular_file(workspace_root, relative)
 
 
 def _plan_json(plan: HashEditPlanV1) -> dict[str, Any]:
@@ -302,7 +271,7 @@ def register_edit_parsers(
     p_plan.add_argument(
         "--input",
         dest="input_path",
-        required=True,
+        default=None,
         metavar="PATH",
         help="V1 hash-edit descriptor JSON",
     )
@@ -316,7 +285,7 @@ def register_edit_parsers(
     p_apply.add_argument(
         "--input",
         dest="input_path",
-        required=True,
+        default=None,
         metavar="PATH",
         help="V1 hash-edit descriptor JSON",
     )

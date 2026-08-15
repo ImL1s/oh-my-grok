@@ -15,7 +15,12 @@ from .descriptor import (
     content_sha256,
     parse_hash_edit_descriptor,
 )
-from .apply import APPLY_RESULT_KIND, HashEditApplyResultV1, apply_hash_edit
+from .apply import (
+    APPLY_RESULT_KIND,
+    HashEditApplyResultV1,
+    apply_hash_edit,
+    read_confined_regular_file,
+)
 from .errors import (
     HashEditAmbiguousError,
     HashEditApplyError,
@@ -59,4 +64,5 @@ __all__ = [
     "content_sha256",
     "parse_hash_edit_descriptor",
     "plan_hash_edit",
+    "read_confined_regular_file",
 ]

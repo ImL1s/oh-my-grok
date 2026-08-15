@@ -38,6 +38,7 @@ from .errors import (
     HashEditApplyError,
     HashEditConcurrencyError,
     HashEditDescriptorError,
+    HashEditInputError,
     HashEditPathError,
 )
 from .planner import (
@@ -145,6 +146,83 @@ def _open_parent_fd(root_fd: int, parts: list[str]) -> tuple[int, str]:
         raise
 
 
+def _posix_nofollow_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
+def _bounded_regular_bytes_from_path(target: Path, *, rel: str) -> bytes:
+    try:
+        probed = target.lstat()
+    except FileNotFoundError as exc:
+        raise HashEditPathError(f"target does not exist: {rel}") from exc
+    except OSError as exc:
+        raise HashEditPathError(f"cannot lstat target: {rel}") from exc
+    if stat.S_ISLNK(probed.st_mode):
+        raise HashEditPathError(f"target may not be a symlink: {rel}")
+    if (
+        stat.S_ISFIFO(probed.st_mode)
+        or stat.S_ISCHR(probed.st_mode)
+        or stat.S_ISBLK(probed.st_mode)
+        or stat.S_ISSOCK(probed.st_mode)
+    ):
+        raise HashEditPathError(
+            f"target must be a regular file (not fifo/device/socket): {rel}"
+        )
+    if not stat.S_ISREG(probed.st_mode):
+        raise HashEditPathError(f"target must be a regular file: {rel}")
+    if probed.st_size > MAX_PLAN_FILE_BYTES:
+        raise HashEditInputError(
+            f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
+    try:
+        with target.open("rb") as handle:
+            body = handle.read(MAX_PLAN_FILE_BYTES + 1)
+    except OSError as exc:
+        raise HashEditPathError(f"cannot read target: {rel}") from exc
+    if len(body) > MAX_PLAN_FILE_BYTES:
+        raise HashEditInputError(
+            f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
+    return body
+
+
+def read_confined_regular_file(workspace_root: Path | str, relative: str) -> bytes:
+    """Read a workspace-relative regular file without following a swapped symlink.
+
+    POSIX: pinned ``O_NOFOLLOW`` directory descriptors (same walk as apply).
+    Other hosts: lstat + size-bounded read after a resolve confinement check.
+    Size is inspected before allocating the full contents.
+    """
+
+    rel = require_workspace_relpath(relative, label="edit path")
+    root = _workspace_root(workspace_root)
+    parts = rel.split("/")
+    if _posix_nofollow_ready():
+        _confined_target(root, rel)
+        root_fd = _open_workspace_root_fd(root)
+        try:
+            parent_fd, name = _open_parent_fd(root_fd, parts)
+            try:
+                body, _mode = _read_regular_at(parent_fd, name)
+                return body
+            finally:
+                os.close(parent_fd)
+        finally:
+            os.close(root_fd)
+    if root.is_symlink():
+        raise HashEditPathError("workspace root may not be a symlink")
+    target = root.joinpath(*parts)
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise HashEditPathError("path escapes workspace") from exc
+    return _bounded_regular_bytes_from_path(target, rel=rel)
+
+
 def _read_regular_at(parent_fd: int, name: str) -> tuple[bytes, int]:
     try:
         probed = os.lstat(name, dir_fd=parent_fd)
@@ -183,12 +261,12 @@ def _read_regular_at(parent_fd: int, name: str) -> tuple[bytes, int]:
                 f"target must be a single-link regular file: {name} (nlink={before.st_nlink})"
             )
         if before.st_size > MAX_PLAN_FILE_BYTES:
-            raise HashEditApplyError(
+            raise HashEditInputError(
                 f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
             )
         body = os.read(descriptor, before.st_size + 1)
         if len(body) > MAX_PLAN_FILE_BYTES:
-            raise HashEditApplyError(
+            raise HashEditInputError(
                 f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
             )
         after = os.fstat(descriptor)

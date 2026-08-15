@@ -29,15 +29,17 @@ Workspace root follows `--project-root` / `OMG_PROJECT_ROOT` / discovery.
 `--input` is the operator's descriptor file (pretty JSON is accepted; the
 library re-canonicalizes mappings).
 
-`omg edit plan` reads the descriptor path under the workspace, plans, and
-prints a JSON envelope. It does not mutate the target, does not `patch(1)`
-a unified diff, and does not write `.omg/state`.
+`omg edit plan` reads the descriptor, then reads the target through the
+same pinned `O_NOFOLLOW` directory walk as apply (size is checked before
+the file is loaded). It plans and prints a JSON envelope. It does not
+mutate the target, does not `patch(1)` a unified diff, and does not write
+`.omg/state`.
 
 `omg edit apply` builds a plan from current bytes, then calls
 `apply_hash_edit` (re-read, re-plan under lock, splice at offsets, atomic
 replace). Apply JSON is copy-safe: relative `path`, digests, offsets,
 `rebased`, `preserved_mode`. It omits raw source, replacement, unified-diff
-text, and local absolute paths.
+text, and local absolute paths (including `--input` read failures).
 
 Neither command writes `passes` / `verified` or any `.omg/state` stamp that
 claims OMG accepted the edit. This does **not** claim `omo.edit.hash_anchored`
@@ -95,9 +97,10 @@ The plan carries before/after SHA-256, byte offsets of `old_text`, line
 span, `rebased`, descriptor digest, and a deterministic unified diff +
 digest. Apply **splices at those offsets**. Do not `patch(1)` the diff.
 
-Current-file and planned-file limit: 16 MiB (growing a file past the cap
-fails in the planner, before apply writes). Invalid UTF-8 and NUL bytes
-are rejected.
+Current-file and planned-file limit: 16 MiB. `omg edit plan|apply` inspects
+the target size and performs a bounded read **before** allocating the
+contents (growing a file past the cap is `E_HASH_EDIT_INPUT`). Invalid
+UTF-8 and NUL bytes are rejected.
 
 ## Apply (confined)
 

@@ -117,13 +117,33 @@ def _physical_state_dir(root: Path) -> Path:
     ).state_dir
 
 
+def _same_store(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
 def ensure_omg_dirs(root: Path) -> Path:
+    """Create project layout dirs and confine leftover local ``state/``.
+
+    Core run-state writers use ``resolve_state_root().state_dir``. Leftover
+    writers (``modes.py`` PRD scaffold, etc.) still mkdir under
+    ``<project>/.omg/state``. Keep validating that project-local tree even
+    when the physical store is centralized or workspace-shared, so a symlink
+    there cannot redirect those writers outside the managed tree.
+    """
+
     root = Path(root)
     for sub in OMG_PROJECT_SUBDIRS:
         ensure_managed_dir(root / ".omg" / sub)
-    state_dir = _physical_state_dir(root)
+    # Leftover writers still use <project>/.omg/state — confine it while they remain.
     for sub in OMG_RUN_STATE_SUBDIRS:
-        ensure_managed_dir(state_dir / sub)
+        ensure_managed_dir(root / ".omg" / sub)
+    state_dir = _physical_state_dir(root)
+    if not _same_store(state_dir, root / ".omg"):
+        for sub in OMG_RUN_STATE_SUBDIRS:
+            ensure_managed_dir(state_dir / sub)
     return root
 
 

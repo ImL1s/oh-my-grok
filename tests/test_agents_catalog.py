@@ -268,6 +268,62 @@ def test_projection_renderer_roundtrip(tmp_path: Path) -> None:
     assert check_antigravity_projections(tmp_path) == []
 
 
+def test_frontmatter_omitted_capability_mode_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\npermissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="missing capabilityMode"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_capability_mode_mismatch_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-only")
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="does not match catalog"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_frontmatter_forbidden_capability_mode_fails_closed(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _write(
+        tmp_path / "agents" / "omg-executor.md",
+        "---\nname: omg-executor\ncapabilityMode: execute\n"
+        "permissionMode: default\n---\n# x\n",
+    )
+    _write_catalog(tmp_path, [entry])
+    with pytest.raises(AgentsCatalogError, match="forbidden"):
+        load_agents_catalog(tmp_path, require_projections=False)
+
+
+def test_plugin_orchestrator_frontmatter_matches_catalog() -> None:
+    catalog = load_agents_catalog(ROOT)
+    text = (ROOT / "agents" / "omg-orchestrator.md").read_text(encoding="utf-8")
+    assert "capabilityMode: read-write" in text
+    assert catalog.by_id()["omg-orchestrator"].capability_mode == "read-write"
+
+
 def test_inspect_payload_never_claims_verified() -> None:
     payload = inspect_agents_catalog(ROOT)
     assert payload["ok"] is True

@@ -4,8 +4,10 @@ Single registry of ``agents/omg-*.md``. Dual-host routing (#131) must consume
 this catalog — do not add a second plugin-agent registry.
 
 Fail-closed: missing catalog, missing agent file, extra uncatalogued
-``omg-*.md``, duplicate id, or ``capability_mode`` outside
-``{read-only, read-write}``. Never ``execute`` / ``all``.
+``omg-*.md``, duplicate id, ``capability_mode`` outside
+``{read-only, read-write}``, or agent frontmatter that omits or disagrees
+with catalog ``capabilityMode`` / ``permissionMode``. Never ``execute`` /
+``all``.
 
 Not a routing runtime. Antigravity ``agent.md`` files are static projections
 only — not an installed AG plugin and not live AG evidence.
@@ -324,6 +326,11 @@ def load_agents_catalog(
         agent_path = base / record.file
         if not agent_path.is_file() or agent_path.is_symlink():
             raise AgentsCatalogError(f"missing agent: {record.file}")
+        try:
+            text = agent_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise AgentsCatalogError(f"cannot read agent: {record.file}") from exc
+        _require_frontmatter_matches_catalog(text, record)
         if require_projections:
             rel = record.projections["antigravity"].path
             proj = base / rel
@@ -377,6 +384,9 @@ def inspect_agents_catalog(root: Path | None = None) -> dict[str, Any]:
     }
 
 
+_FRONTMATTER_VALUE_MAX = 64
+
+
 def strip_markdown_frontmatter(text: str) -> str:
     """Return markdown body after a leading YAML frontmatter fence."""
     if not text.startswith("---"):
@@ -385,6 +395,94 @@ def strip_markdown_frontmatter(text: str) -> str:
     if len(parts) >= 3:
         return parts[2].strip()
     return text.strip()
+
+
+def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
+    """Parse scalar YAML-ish agent frontmatter. Fail closed on a missing fence."""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{agent_id}: missing YAML frontmatter")
+    end = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end = index
+            break
+    if end is None:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+    fields: dict[str, str] = {}
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[:1].isspace() or stripped.startswith("-"):
+            continue
+        if ":" not in line:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        if not key:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        scalar = raw_value.strip()
+        if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
+            scalar = scalar[1:-1]
+        if key in fields:
+            raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter key")
+        fields[key] = scalar
+    return fields
+
+
+def _frontmatter_scalar(
+    fields: dict[str, str],
+    *,
+    camel: str,
+    snake: str,
+    agent_id: str,
+) -> str:
+    camel_val = fields.get(camel)
+    snake_val = fields.get(snake)
+    if camel_val is not None and snake_val is not None and camel_val != snake_val:
+        raise AgentsCatalogError(
+            f"{agent_id}: frontmatter {camel} disagrees with {snake}"
+        )
+    value = camel_val if camel_val is not None else snake_val
+    if value is None or not str(value).strip():
+        raise AgentsCatalogError(f"{agent_id}: frontmatter missing {camel}")
+    value = str(value).strip()
+    if len(value) > _FRONTMATTER_VALUE_MAX:
+        raise AgentsCatalogError(f"{agent_id}: frontmatter {camel} is too long")
+    return value
+
+
+def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None:
+    """Reject source frontmatter that omits or disagrees with the catalog posture."""
+
+    fields = _parse_agent_frontmatter(text, agent_id=record.id)
+    declared_cap = _frontmatter_scalar(
+        fields,
+        camel="capabilityMode",
+        snake="capability_mode",
+        agent_id=record.id,
+    )
+    declared_perm = _frontmatter_scalar(
+        fields,
+        camel="permissionMode",
+        snake="permission_mode",
+        agent_id=record.id,
+    )
+    if declared_cap.lower() in FORBIDDEN_CAPABILITY_MODES:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter capabilityMode is forbidden "
+            "(never execute/all)"
+        )
+    if declared_cap != record.capability_mode:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter capabilityMode does not match catalog"
+        )
+    if declared_perm != record.permission_mode:
+        raise AgentsCatalogError(
+            f"{record.id}: frontmatter permissionMode does not match catalog"
+        )
 
 
 def _yaml_bool(value: bool) -> str:

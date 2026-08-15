@@ -150,12 +150,17 @@ or network, and adds no third-party dependency.
 ## CLI (`omg visual compare`)
 
 `omg visual compare --input <json>` reads a comparison document and wraps
-`compare()`. It always emits a schema_version 1 JSON envelope:
+`compare()`. The CLI document is size-bounded (1 MiB) before JSON load.
+It always emits a schema_version 1 JSON envelope:
 
 | Exit | When |
 | --- | --- |
 | `0` | `compare()` returned `scored` or `blocked` (`ok: true`; callers still compare `aggregate` to `threshold`) |
-| `2` | missing `--input`, unreadable JSON (`E_VISUAL_INPUT`), or `VisualContractError` (`E_VISUAL_CONTRACT`) |
+| `2` | missing `--input`, unreadable or oversized JSON (`E_VISUAL_INPUT`), or `VisualContractError` (`E_VISUAL_CONTRACT`) |
+
+`E_VISUAL_CONTRACT` uses a sanitized validation message. Rejected contract
+values (including image/base64 stuffed into a field) are not copied into
+the envelope.
 
 The nested `result` object is the contract output. The CLI does not decode
 images, talk to agents or providers, or write `passes` / `verified`.
