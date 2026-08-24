@@ -169,6 +169,34 @@ def test_session_acp_resume_happy_receipt_no_transcript(
     assert validated.receipt_sha256 == receipt["receipt_sha256"]
 
 
+def test_session_acp_resume_vendor_chrome_cli_content_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path, monkeypatch)
+    _acp_env(monkeypatch, scenario="vendor_chrome")
+    sid = str(uuid.uuid4())
+    rc = main(
+        [
+            "--json",
+            "session",
+            "acp-resume",
+            "--session-id",
+            sid,
+            "--cwd",
+            str(root),
+        ]
+    )
+    assert rc == 0
+    envelope = _out(capsys)
+    assert envelope["ok"] is True
+    blob = json.dumps(envelope)
+    assert "ACP_VENDOR_SECRET_TOKEN_DO_NOT_ECHO" not in blob
+    assert envelope["command"] == "session.acp-resume"
+    payload = _domain(envelope)
+    assert payload["resume_matched"] is True
+    _assert_content_free(envelope)
+
+
 def test_session_acp_resume_malformed_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
