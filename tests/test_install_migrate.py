@@ -486,3 +486,49 @@ def test_never_writes_passes_or_verified(tmp_path: Path) -> None:
     assert '"healthy": false' in stored
     assert '"passes":' not in stored
     assert not (tmp_path / ".omg" / "state").exists()
+
+
+def test_uninstall_plan_does_not_admit_arbitrary_grok_home_files(
+    tmp_path: Path,
+) -> None:
+    """Project manifests cannot authorize deleting unrelated GROK_HOME files."""
+    project = tmp_path / "proj"
+    grok = tmp_path / "grok-home"
+    project.mkdir()
+    grok.mkdir()
+    foreign = grok / "settings.json"
+    foreign_body = b'{"user":"unrelated"}\n'
+    foreign.write_bytes(foreign_body)
+    persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [
+                {
+                    "id": "imported.skill.foreign-home",
+                    "type": "skill",
+                    "target": str(foreign),
+                    "ownership": "imported",
+                    "content_hash": _sha(foreign_body),
+                    "enabled": True,
+                }
+            ],
+        },
+        project_root=project,
+        scope="project",
+    )
+    plan = plan_owned_uninstall(
+        project_root=project,
+        grok_home=grok,
+        include_user_manifest=False,
+    )
+    remove_paths = {row.get("path") for row in plan.get("remove") or []}
+    assert str(foreign) not in remove_paths
+    assert any(
+        row.get("path") == str(foreign) and row.get("reason") == "out-of-scope"
+        for row in plan.get("preserve") or []
+        if isinstance(row, dict)
+    )
+    applied = apply_owned_uninstall(plan)
+    assert foreign.read_bytes() == foreign_body
+    assert str(foreign) not in (applied.get("removed") or [])

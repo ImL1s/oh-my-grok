@@ -753,10 +753,16 @@ def plan_owned_uninstall(
         uninstall_roots.append(Path(project_root) / ".omg" / "install")
         uninstall_roots.append(Path(project_root) / ".omg" / "projections")
     if grok_home is not None:
-        uninstall_roots.append(Path(grok_home))
+        from omg_cli.guidance import rules_file_path
+        from omg_cli.hook_install import managed_hook_paths
+
+        # Exact machine-scoped files only — never the whole GROK_HOME tree.
+        uninstall_roots.extend(managed_hook_paths(home=Path(grok_home)))
+        uninstall_roots.append(rules_file_path(home=Path(grok_home)))
     if include_user_manifest:
         uninstall_roots.append(user_store())
     uninstall_tuple = tuple(uninstall_roots)
+    allowed_global_ids = frozenset({"user.grok.hook", "user.grok.rules"})
     remove: list[dict[str, Any]] = []
     preserve: list[dict[str, Any]] = []
     for _scope, doc, _root in documents:
@@ -778,6 +784,20 @@ def plan_owned_uninstall(
                     }
                 )
                 continue
+            if grok_home is not None and ident not in allowed_global_ids:
+                try:
+                    under_home = resolved_path_is_under(target, Path(grok_home))
+                except (OSError, ValueError):
+                    under_home = False
+                if under_home:
+                    preserve.append(
+                        {
+                            "id": ident,
+                            "path": str(target),
+                            "reason": "out-of-scope",
+                        }
+                    )
+                    continue
             if _is_state_path(target, project_root):
                 preserve.append(
                     {"id": ident, "path": str(target), "reason": "state"}
