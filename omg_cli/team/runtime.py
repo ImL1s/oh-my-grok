@@ -979,8 +979,14 @@ def _promote_interactive_input_ready(
             if not isinstance(marker, str):
                 continue
             # Re-check inside the meta lock — identity may have flipped
-            # after the pre-filter snapshot.
-            if not evidence_matches_locked_row(raw, ev):
+            # after the pre-filter snapshot. Scaled workers may lack a
+            # persisted generation field; use evidence/meta generation.
+            locked = dict(raw)
+            if "generation" not in locked:
+                gen = ev.get("generation")
+                if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
+                    locked["generation"] = gen
+            if not evidence_matches_locked_row(locked, ev):
                 continue
             stamp_io_capability(
                 raw,
