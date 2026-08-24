@@ -19,7 +19,9 @@ from omg_cli.state import write_status
 from omg_cli.team.compositions.execution import (
     COMPOSITION_EXECUTION_KIND,
     GROK_EXECUTOR,
+    GROK_JOB_WAIT_FALLBACK_S,
     CompositionExecutionError,
+    _grok_job_wait_s,
     compile_composition_execution_v1,
     execute_composition_tasks_v1,
     fixture_pane_id,
@@ -496,6 +498,28 @@ def test_parse_rejects_wrong_fixture_pane_id() -> None:
             worker_evidence=[row],
             collected_digest=DIGEST_C,
         )
+
+
+def test_grok_job_wait_uses_configured_provider_timeout() -> None:
+    from types import SimpleNamespace
+
+    assert (
+        _grok_job_wait_s(SimpleNamespace(request={"timeout_s": 3600.0}, worker={}))
+        == 3600.0
+    )
+    assert (
+        _grok_job_wait_s(SimpleNamespace(request={"timeout_s": 12.5}, worker={}))
+        == 12.5
+    )
+    assert (
+        _grok_job_wait_s(SimpleNamespace(request={}, worker={"timeout_s": 9}))
+        == 9.0
+    )
+    assert _grok_job_wait_s(SimpleNamespace(request={}, worker={})) == GROK_JOB_WAIT_FALLBACK_S
+    assert (
+        _grok_job_wait_s(SimpleNamespace(request={"timeout_s": 0}, worker={}))
+        == GROK_JOB_WAIT_FALLBACK_S
+    )
 
 
 def test_compile_stamps_true_only_with_complete_evidence() -> None:

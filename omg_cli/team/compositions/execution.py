@@ -45,7 +45,7 @@ from omg_cli.contracts.state_schemas import (
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.runtime import cancel_job, wait_job
+from omg_cli.jobs.runtime import cancel_job, job_status, wait_job
 from omg_cli.state import _safe_run_id
 from omg_cli.team.api import _read_task
 from omg_cli.team.compositions.lane_protocol import (
@@ -91,7 +91,7 @@ FIXTURE_EXECUTOR = "fixture"
 GROK_EXECUTOR = "grok"
 HYPERPLAN_EXECUTION_FILENAME = "hyperplan-v1-execution.json"
 SECURITY_RESEARCH_EXECUTION_FILENAME = "security-research-v1-execution.json"
-GROK_JOB_WAIT_S = 30.0
+GROK_JOB_WAIT_FALLBACK_S = 3600.0
 _SUPPORTED_EXECUTORS = (FIXTURE_EXECUTOR, GROK_EXECUTOR)
 _SUPPORTED_EXECUTORS_TEXT = "fixture, grok"
 
@@ -938,6 +938,25 @@ def _wrap_job(exc: BaseException) -> CompositionExecutionError:
     )
 
 
+def _grok_job_wait_s(record: Any) -> float:
+    """Wait at most the job's configured provider timeout (default 3600s)."""
+    raw = None
+    request = getattr(record, "request", None)
+    if isinstance(request, Mapping):
+        raw = request.get("timeout_s")
+    if raw is None:
+        worker = getattr(record, "worker", None)
+        if isinstance(worker, Mapping):
+            raw = worker.get("timeout_s")
+    try:
+        timeout = float(raw) if raw is not None else GROK_JOB_WAIT_FALLBACK_S
+    except (TypeError, ValueError):
+        timeout = GROK_JOB_WAIT_FALLBACK_S
+    if timeout <= 0:
+        return GROK_JOB_WAIT_FALLBACK_S
+    return timeout
+
+
 def _launch_and_wait_grok_job(
     *,
     root: Path,
@@ -989,7 +1008,9 @@ def _launch_and_wait_grok_job(
             details={"provider": handle.provider},
         )
     try:
-        record, timed_out = wait_job(root, job_id, timeout_s=GROK_JOB_WAIT_S)
+        started = job_status(root, job_id)
+        wait_s = _grok_job_wait_s(started)
+        record, timed_out = wait_job(root, job_id, timeout_s=wait_s)
     except JobStoreError as exc:
         raise _wrap_job(exc) from exc
     if timed_out:

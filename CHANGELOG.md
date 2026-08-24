@@ -43,7 +43,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#69 leftover: grok composition executor:** `omg team hyperplan|security-research
   execute --executor grok` no longer raises `E_TEAM_COMPOSITION_EXEC_EXECUTOR`.
   Grok is admitted and launched through existing `launch_worker` Jobs machinery
-  (provider=grok; hermetic fake grok in tests). `agy` / `antigravity` /
+  (provider=grok; hermetic fake grok in tests). Wait uses the job's
+  configured provider timeout (default 3600s), not a 30s hard cap.
+  `agy` / `antigravity` /
   `claude` / `codex` / `cursor` / `kimi` / `omc` stay refused. Evidence stamps
   `executor=grok` with `job-{job_id}` pane ids; compile/produce remain
   `execution_supported=false`. Does **not** claim `live_verified` and does
