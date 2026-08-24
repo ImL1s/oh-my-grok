@@ -6989,6 +6989,9 @@ def _relaunch_dead_incomplete_workers_locked(
         launch_nonce = str(authority["launch_nonce"])
         for rec in to_relaunch:
             tid = str(rec["task_id"])
+            from omg_cli.team.interactive import clear_tui_ready_sidecar
+
+            clear_tui_ready_sidecar(rec.get("tui_ready_path"))
             plan = plan_by_id[tid]
             relaunch_nonce = str(plan["relaunch_nonce"])
             start_command = _relaunch_bootstrap_command(
