@@ -1874,6 +1874,8 @@ def test_resume_for_identity_runs_interactive_readiness_after_relaunch() -> None
     ready_at = src.index("apply_interactive_worker_readiness")
     assert relaunch_at < ready_at
     assert "IO_MODE_INTERACTIVE_TTY" in src
+    assert "persist_startup_annotations" in src
+    assert "startup_status" in src
 
 
 def test_scale_up_refreshes_readiness_for_all_interactive_workers() -> None:
@@ -1912,6 +1914,40 @@ def test_resolve_routing_from_meta_accepts_persisted_by_role() -> None:
     assert route.model == "m1"
 
 
+def test_canonical_scale_specs_keep_assignment_fields() -> None:
+    from omg_cli.team.scaling import _canonical_scale_task_specs
+
+    specs = _canonical_scale_task_specs(
+        [
+            {
+                "task_id": "t1",
+                "owned_files": ["README.md"],
+                "role": "executor",
+                "subject": "slice A",
+                "depends_on": ["t0"],
+            }
+        ]
+    )
+    assert specs[0]["subject"] == "slice A"
+    assert specs[0]["depends_on"] == ["t0"]
+
+
+def test_interactive_scale_refuses_unqualified_route() -> None:
+    from omg_cli.team.routing import resolve_routing
+    from omg_cli.team.scaling import TeamError, _interactive_scale_route_model
+
+    snap = resolve_routing(
+        {"executor": {"provider": "agy"}},
+        roles_needed=["executor"],
+        check_binary=False,
+        available_providers={"agy", "grok"},
+    )
+    with pytest.raises(TeamError, match="interactive scale refused"):
+        _interactive_scale_route_model(
+            resolved=snap, multi_cli=True, role="executor"
+        )
+
+
 def test_scale_command_uses_startup_exit_gate() -> None:
     import inspect
 
@@ -1922,6 +1958,8 @@ def test_scale_command_uses_startup_exit_gate() -> None:
     emit_at = src.index("_emit_startup_human", scale_at)
     resume_at = src.index('if action == "resume"', scale_at)
     assert scale_at < emit_at < resume_at
+    resume_emit = src.index('_emit_startup_human(result, command="resume"')
+    assert resume_at < resume_emit
 
 
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")

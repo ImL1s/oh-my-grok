@@ -779,9 +779,15 @@ def cmd_team(args: argparse.Namespace) -> int:
                     print(result["print_hint"])
                 if as_json:
                     # --json never attaches; still honor provider fail-closed above.
+                    code = _emit_startup_human(result, command="resume")
+                    if code is not None:
+                        return code
                     return 0 if result.get("ok", True) else 1
                 if not result.get("ok", True):
                     return 2 if view.get("status") == "refused" else 1
+            code = _emit_startup_human(result, command="resume")
+            if code is not None:
+                return code
             return 0 if result.get("ok", True) else 1
 
         if action == "view":

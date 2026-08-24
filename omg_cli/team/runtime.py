@@ -2123,6 +2123,7 @@ def resume_for_identity(
             if isinstance(item, Mapping)
         ]
         relaunched_ids = [tid for tid in relaunched_ids if tid]
+        readiness: dict[str, Any] | None = None
         if relaunched_ids:
             from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
 
@@ -2135,12 +2136,32 @@ def resume_for_identity(
             ]
             interactive_ids = [tid for tid in interactive_ids if tid]
             if interactive_ids:
-                apply_interactive_worker_readiness(
+                readiness = apply_interactive_worker_readiness(
                     root_path,
                     run_id,
                     interactive_ids,
                     env=env,
                 )
+                persist_keys = (
+                    "startup_acks",
+                    "startup_ack_workers",
+                    "startup_process_ready",
+                    "startup_process_ready_workers",
+                    "startup_ready_workers",
+                    "startup_missing_workers",
+                    "startup_blocked_workers",
+                    "startup_workers",
+                    "startup_status",
+                    "startup_expected",
+                    "startup_gate_phase",
+                    "ready_timeout_ms",
+                    "startup_note",
+                )
+                payload = {
+                    key: readiness[key] for key in persist_keys if key in readiness
+                }
+                if payload:
+                    persist_startup_annotations(root_path, run_id, payload)
         # Job-backed workers: bind existing Jobs without relaunch (#69 PR4).
         job_bind: dict[str, Any] | None = None
         if str(meta_for_claims.get("worker_topology") or "") == "job":
@@ -2166,6 +2187,28 @@ def resume_for_identity(
             "replacement_recover": replacement_recover,
         }
     )
+    if readiness:
+        for key in (
+            "startup_status",
+            "startup_ready_workers",
+            "startup_missing_workers",
+            "startup_note",
+            "startup_expected",
+            "startup_gate_phase",
+            "ready_timeout_ms",
+        ):
+            if key in readiness:
+                out[key] = readiness[key]
+        if readiness.get("startup_status") in {
+            "failed_start",
+            "degraded",
+            "blocked_start",
+        }:
+            out["note"] = (
+                f"{out.get('note') or ''}; interactive readiness "
+                f"{readiness.get('startup_status')}; "
+                f"missing={readiness.get('startup_missing_workers')}"
+            ).strip("; ")
     if job_bind is not None:
         out["job_bind"] = job_bind
         # Never relaunch job-backed workers on resume — Jobs owns process life.

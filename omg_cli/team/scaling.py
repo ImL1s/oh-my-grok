@@ -407,6 +407,27 @@ def _overlay_interactive_scale_worker(
     return overlay
 
 
+def _interactive_scale_route_model(
+    *,
+    resolved: ResolvedRouting | None,
+    multi_cli: bool,
+    role: str,
+) -> str | None:
+    """Return the routed model only when the role is interactive-qualified."""
+    if not multi_cli or resolved is None:
+        return None
+    route = resolved.for_role(role)
+    from omg_cli.team.interactive import QUALIFIED_INTERACTIVE_PROVIDERS
+
+    provider = str(route.provider or "").strip().lower()
+    if provider not in QUALIFIED_INTERACTIVE_PROVIDERS:
+        raise TeamError(
+            f"interactive scale refused: role {role!r} routes to {route.provider!r} "
+            "(qualified: grok, fixture; never silently downgrades)"
+        )
+    return route.model
+
+
 def _next_worker_index(meta: Mapping[str, Any]) -> int:
     """Monotonic window/worker index; never reuse an index."""
     stored = meta.get("next_worker_index")
@@ -505,7 +526,16 @@ def _validate_scale_request_preflight(
                 )
         if task_id in by_id:
             existing = _canonical_scale_task_specs([by_id[task_id]])[0]
-            if existing != spec:
+            ownership_keys = (
+                "task_id",
+                "owned_files",
+                "role",
+                "capability_mode",
+                "coordination",
+            )
+            if {k: existing.get(k) for k in ownership_keys} != {
+                k: spec.get(k) for k in ownership_keys
+            }:
                 raise TeamError(f"scale-up ownership differs task={task_id}")
 
 
@@ -796,10 +826,8 @@ def _build_pane_record(
             posture=posture,
             yolo=yolo,
             safe=safe,
-            model=(
-                resolved.for_role(role).model
-                if multi_cli and resolved is not None
-                else None
+            model=_interactive_scale_route_model(
+                resolved=resolved, multi_cli=multi_cli, role=role
             ),
             owned_files=owned,
             role=role,
@@ -1106,10 +1134,8 @@ def _reuse_prepared_pane_record(
             posture=posture,
             yolo=yolo,
             safe=safe,
-            model=(
-                resolved.for_role(role).model
-                if multi_cli and resolved is not None
-                else None
+            model=_interactive_scale_route_model(
+                resolved=resolved, multi_cli=multi_cli, role=role
             ),
             owned_files=owned,
             role=role,
@@ -1265,15 +1291,24 @@ def _canonical_scale_task_specs(
         if capability_mode not in {"read-only", "read-write"}:
             raise TeamError(f"task {task_id}: bad capability_mode {capability_mode!r}")
         coordination = str(raw.get("coordination") or "").strip() or None
-        normalized.append(
-            {
-                "task_id": task_id,
-                "owned_files": owned,
-                "role": _task_role(raw),
-                "capability_mode": capability_mode,
-                "coordination": coordination,
-            }
-        )
+        row: dict[str, Any] = {
+            "task_id": task_id,
+            "owned_files": owned,
+            "role": _task_role(raw),
+            "capability_mode": capability_mode,
+            "coordination": coordination,
+        }
+        subject = str(
+            raw.get("subject") or raw.get("title") or raw.get("description") or ""
+        ).strip()
+        if subject:
+            row["subject"] = subject
+        deps_raw = raw.get("depends_on")
+        if isinstance(deps_raw, list):
+            deps = [str(item).strip() for item in deps_raw if str(item).strip()]
+            if deps:
+                row["depends_on"] = deps
+        normalized.append(row)
     return normalized
 
 
