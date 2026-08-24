@@ -1,4 +1,4 @@
-"""CLI surface for Visual Contract V1 compare/capture/verdict/ralph (#75)."""
+"""CLI surface for Visual Contract V1 compare/capture/verdict/ralph/overlay (#75)."""
 
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ def test_visual_subcommand_registered() -> None:
         if getattr(a2, "choices", None) and "compare" in a2.choices:
             nested = set(a2.choices)
             break
-    assert nested == {"compare", "capture", "verdict", "ralph"}
+    assert nested == {"compare", "capture", "verdict", "ralph", "overlay"}
 
 
 def test_cli_compare_golden_scored(tmp_path: Path, capsys) -> None:
@@ -278,7 +278,7 @@ def test_cli_missing_compare_action_is_usage_exit(capsys) -> None:
     rc = main(["visual"])
     assert rc == 2
     out = capsys.readouterr()
-    assert "usage: omg visual {compare,capture,verdict,ralph}" in out.err
+    assert "usage: omg visual {compare,capture,verdict,ralph,overlay}" in out.err
     assert not out.out.strip()
 
 
@@ -328,14 +328,20 @@ def _argv(tmp_path: Path, *rest: str) -> list[str]:
 
 
 def test_runtime_does_not_import_pixel_decoders() -> None:
-    tree = ast.parse(RUNTIME_PATH.read_text(encoding="utf-8"))
-    banned = {"PIL", "Pillow", "pillow", "playwright"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert alias.name.split(".", 1)[0] not in banned
-        if isinstance(node, ast.ImportFrom) and node.module:
-            assert node.module.split(".", 1)[0] not in banned
+    banned = {"PIL", "Pillow", "pillow", "playwright", "numpy"}
+    paths = (
+        RUNTIME_PATH,
+        RUNTIME_PATH.parent / "visual_pixels.py",
+        RUNTIME_PATH.parent / "contracts" / "visual_contract.py",
+    )
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".", 1)[0] not in banned
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".", 1)[0] not in banned
 
 
 def test_capture_fake_driver(tmp_path: Path, capsys) -> None:
@@ -415,6 +421,60 @@ def test_verdict_mismatched_dims_blocked(tmp_path: Path, capsys) -> None:
     _assert_no_forbidden(payload)
 
 
+def test_verdict_decoded_png_dimension_mismatch_is_blocked(
+    tmp_path: Path, capsys
+) -> None:
+    """Pixel overlay must not turn a dim mismatch into E_VISUAL_PIXEL."""
+    from omg_cli.visual_pixels import encode_png_rgba
+
+    _seed(tmp_path)
+    (tmp_path / "ref.png").write_bytes(
+        encode_png_rgba(2, 2, bytes([255, 0, 0, 255] * 4))
+    )
+    (tmp_path / "current.png").write_bytes(
+        encode_png_rgba(3, 3, bytes([0, 255, 0, 255] * 9))
+    )
+    config = _compat_cfg(dimensions=_dims())
+    # Descriptors claim the same size so only the decoded IHDR differs.
+    config["reference"] = {
+        "path": "ref.png",
+        "width": 8,
+        "height": 8,
+        "media_type": "image/png",
+    }
+    config["actual"] = {
+        "path": "current.png",
+        "width": 8,
+        "height": 8,
+        "media_type": "image/png",
+    }
+    cfg = _write_config(tmp_path, config)
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "verdict",
+            "--config",
+            str(cfg),
+            "--reference",
+            "ref.png",
+            "--actual",
+            "current.png",
+            "--threshold",
+            "90",
+            "--run-id",
+            "mismatch-decoded",
+        )
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert result["status"] == "blocked"
+    assert result["comparison"]["block_code"] == "image_dimension_mismatch"
+    assert "E_VISUAL_PIXEL" not in json.dumps(payload)
+    _assert_no_forbidden(payload)
+
+
 def test_verdict_masks_and_byte_identity(tmp_path: Path, capsys) -> None:
     _seed(tmp_path)
     shutil.copyfile(tmp_path / "ref.png", tmp_path / "current.png")
@@ -444,9 +504,11 @@ def test_verdict_masks_and_byte_identity(tmp_path: Path, capsys) -> None:
     payload = _out(capsys)
     result = payload["result"]
     assert result["status"] == "scored"
-    assert result["overlay"]["mode"] == "descriptor_only"
-    assert result["overlay"]["pixel_decode"] is False
+    assert result["overlay"]["mode"] == "pixel"
+    assert result["overlay"]["pixel_decode"] is True
     assert result["overlay"]["byte_identity"] is True
+    assert result["overlay"]["changed_pixels"] == 0
+    assert result["pixel_decode"] is True
     assert result["comparison"]["masks"] == [{"x": 0, "y": 0, "width": 10, "height": 10}]
     assert result["reviewer_status"] == "threshold_met"
     overlay = json.loads(
@@ -454,7 +516,9 @@ def test_verdict_masks_and_byte_identity(tmp_path: Path, capsys) -> None:
             encoding="utf-8"
         )
     )
-    assert overlay["mode"] == "descriptor_only"
+    assert overlay["mode"] == "pixel"
+    overlay_png = tmp_path / overlay["overlay_png"]
+    assert overlay_png.is_file()
     _assert_no_forbidden(payload)
 
 
@@ -885,3 +949,149 @@ def test_threshold_rejects_non_integer_config() -> None:
         resolve_threshold({"threshold": 90.9}, None)
     with pytest.raises(VisualConfigError):
         resolve_threshold({"threshold": True}, None)
+
+
+def test_overlay_identical_pngs(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    shutil.copyfile(tmp_path / "ref.png", tmp_path / "current.png")
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "overlay",
+            "--reference",
+            "ref.png",
+            "--candidate",
+            "current.png",
+            "--run-id",
+            "ov-same",
+        )
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert payload["command"] == "visual.overlay"
+    assert result["pixel_decode"] is True
+    assert result["changed_pixels"] == 0
+    assert isinstance(result["changed_pixels"], int)
+    overlay_png = tmp_path / result["overlay_png"]
+    assert overlay_png.is_file()
+    assert "verified" not in result
+    _assert_no_forbidden(payload)
+    dumped = json.dumps(payload)
+    assert "iVBOR" not in dumped
+    assert "base64" not in dumped
+
+
+def test_overlay_different_pngs(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "overlay",
+            "--reference",
+            "ref.png",
+            "--candidate",
+            "current.png",
+            "--run-id",
+            "ov-diff",
+        )
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert result["pixel_decode"] is True
+    assert isinstance(result["changed_pixels"], int)
+    assert result["changed_pixels"] > 0
+    overlay_png = tmp_path / result["overlay_png"]
+    assert overlay_png.is_file()
+    overlay_bytes = overlay_png.read_bytes()
+    assert overlay_bytes != (tmp_path / "ref.png").read_bytes()
+    assert overlay_bytes != (tmp_path / "current.png").read_bytes()
+    assert "verified" not in result
+    _assert_no_forbidden(payload)
+
+
+def test_overlay_symlink_refused(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    link = tmp_path / "link.png"
+    link.symlink_to(tmp_path / "ref.png")
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "overlay",
+            "--reference",
+            "link.png",
+            "--candidate",
+            "current.png",
+            "--run-id",
+            "ov-link",
+        )
+    )
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_PATH" or payload.get("error_code") == "E_VISUAL_PATH"
+    _assert_no_forbidden(payload)
+
+
+def test_overlay_truncated_png_refused(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    truncated = tmp_path / "trunc.png"
+    truncated.write_bytes((tmp_path / "ref.png").read_bytes()[:20])
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "overlay",
+            "--reference",
+            "trunc.png",
+            "--candidate",
+            "current.png",
+            "--run-id",
+            "ov-trunc",
+        )
+    )
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_VISUAL_PIXEL" or payload.get("error_code") == (
+        "E_VISUAL_PIXEL"
+    )
+    _assert_no_forbidden(payload)
+
+
+def test_overlay_descriptor_only_skips_decode(tmp_path: Path, capsys) -> None:
+    _seed(tmp_path)
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "overlay",
+            "--reference",
+            "ref.png",
+            "--candidate",
+            "current.png",
+            "--descriptor-only",
+            "--run-id",
+            "ov-desc",
+        )
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert result["pixel_decode"] is False
+    assert result["mode"] == "descriptor_only"
+    assert "changed_pixels" not in result
+    assert not (tmp_path / ".omg" / "artifacts" / "visual" / "ov-desc" / "overlay.png").exists()
+    _assert_no_forbidden(payload)
+
+
+def test_overlay_missing_flags_are_usage(capsys) -> None:
+    rc = main(["--json", "visual", "overlay"])
+    assert rc == 2
+    payload = _out(capsys)
+    err = payload.get("error") or {}
+    assert err.get("code") == "E_USAGE" or payload.get("error_code") == "E_USAGE"

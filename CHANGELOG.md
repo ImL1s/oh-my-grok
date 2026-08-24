@@ -10,6 +10,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#75 PNG pixel overlay evidence:** `omg visual overlay --reference a.png
+  --candidate b.png --json` decodes PNG with stdlib (`struct`/`zlib`; no
+  Pillow) and writes `changed_pixels` / `changed_ratio_milli` / `bbox` plus
+  a confined `overlay.png` sidecar. Visual Contract V1 stays pixel-agnostic.
+  Fail-closed on non-PNG, truncated, oversize, symlink, and path escape.
+  `--descriptor-only` keeps sha/byte identity. Never writes `passes` /
+  `verified`; JSON never inlines image bytes. Not live screenshot smoke and
+  not Antigravity vision. Hermetic: `tests/test_visual_cli.py`,
+  `tests/test_visual_pixels.py`. Refs #75 (does not close).
 - **#77 leftover migrate/import:** `omg setup import --from PATH` copy-safe
   ingests user artifacts into the versioned install manifest as
   `ownership=imported` with provenance (source posix path, sha256, byte_size,

@@ -1,12 +1,12 @@
 """omg visual — Visual Contract V1 CLI (#75).
 
-Commands: ``compare``, ``capture``, ``verdict``, ``ralph``.
+Commands: ``compare``, ``capture``, ``verdict``, ``ralph``, ``overlay``.
 Parser construction: ``register_visual_parsers``.
 
-``compare`` wraps :func:`omg_cli.contracts.visual_contract.compare` only.
-``capture`` / ``verdict`` / ``ralph`` add a provider-neutral runtime that
-records descriptors, never decodes pixels, and never writes ``passes`` /
-``verified``. Overlay artifacts are descriptor-only.
+``compare`` wraps :func:`omg_cli.contracts.visual_contract.compare` only
+and stays pixel-agnostic. ``overlay`` may decode PNG pixels via stdlib
+(no Pillow). ``capture`` / ``verdict`` / ``ralph`` never write ``passes`` /
+``verified``. Overlay JSON never inlines image bytes.
 """
 
 from __future__ import annotations
@@ -19,14 +19,15 @@ from typing import Any, Final
 
 from omg_cli.cli_envelope import emit_json, failure, success
 from omg_cli.contracts.visual_contract import VisualContractError, compare
+from omg_cli.visual_pixels import VisualPixelError
 from omg_cli.visual_runtime import (
-    VisualConfigError,
     VisualMetadataError,
     VisualPathError,
     VisualReviewerError,
     VisualRuntimeError,
     load_visual_config,
     run_capture,
+    run_overlay,
     run_ralph,
     run_verdict,
 )
@@ -35,11 +36,12 @@ CMD_COMPARE = "visual.compare"
 CMD_CAPTURE = "visual.capture"
 CMD_VERDICT = "visual.verdict"
 CMD_RALPH = "visual.ralph"
+CMD_OVERLAY = "visual.overlay"
 MAX_COMPARE_DOCUMENT_BYTES: Final[int] = 1 * 1024 * 1024
 CONTRACT_VALIDATION_MESSAGE = (
     "comparison document failed Visual Contract V1 validation"
 )
-USAGE = "usage: omg visual {compare,capture,verdict,ralph}"
+USAGE = "usage: omg visual {compare,capture,verdict,ralph,overlay}"
 
 
 def cmd_visual(args: argparse.Namespace) -> int:
@@ -53,6 +55,8 @@ def cmd_visual(args: argparse.Namespace) -> int:
         return _cmd_visual_verdict(args)
     if action == "ralph":
         return _cmd_visual_ralph(args)
+    if action == "overlay":
+        return _cmd_visual_overlay(args)
     print(USAGE, file=sys.stderr)
     return 2
 
@@ -119,7 +123,12 @@ def _root(args: argparse.Namespace) -> Path:
     ctx = getattr(args, "omg_ctx", None)
     if ctx is not None and getattr(ctx, "root", None) is not None:
         return Path(ctx.root)
-    raise VisualConfigError("project root is required for visual capture/verdict/ralph")
+    explicit = getattr(args, "project_root", None)
+    if explicit:
+        return Path(str(explicit))
+    from omg_cli.cli_util import project_root
+
+    return project_root()
 
 
 def _load_optional_config(path: str | None) -> dict[str, Any]:
@@ -140,6 +149,10 @@ def _emit_runtime_failure(command: str, exc: BaseException) -> int:
         next_action = "Use a workspace-relative image path (no traversal)"
     elif isinstance(exc, VisualMetadataError):
         next_action = "Declare width/height in config or flags; images are not decoded"
+    elif isinstance(exc, VisualPixelError):
+        next_action = (
+            "Provide two workspace-relative PNG files; overlay is evidence only"
+        )
     emit_json(failure(command, code, message, next_action=next_action))
     return 2
 
@@ -207,8 +220,9 @@ def _cmd_visual_verdict(args: argparse.Namespace) -> int:
             run_id=getattr(args, "run_id", None),
             editor_role=getattr(args, "editor_role", None),
             reviewer_role=getattr(args, "reviewer_role", None),
+            descriptor_only=bool(getattr(args, "descriptor_only", False)),
         )
-    except VisualRuntimeError as exc:
+    except (VisualRuntimeError, VisualPixelError) as exc:
         return _emit_runtime_failure(CMD_VERDICT, exc)
     emit_json(success(CMD_VERDICT, result=result))
     return 0
@@ -236,9 +250,47 @@ def _cmd_visual_ralph(args: argparse.Namespace) -> int:
             threshold_percent=getattr(args, "threshold", None),
             run_id=getattr(args, "run_id", None),
         )
-    except VisualRuntimeError as exc:
+    except (VisualRuntimeError, VisualPixelError) as exc:
         return _emit_runtime_failure(CMD_RALPH, exc)
     emit_json(success(CMD_RALPH, result=result))
+    return 0
+
+
+def _cmd_visual_overlay(args: argparse.Namespace) -> int:
+    reference = getattr(args, "reference", None)
+    candidate = getattr(args, "candidate", None)
+    if not reference:
+        emit_json(
+            failure(
+                CMD_OVERLAY,
+                "E_USAGE",
+                "require --reference PATH",
+                next_action="Pass --reference and --candidate PNG paths",
+            )
+        )
+        return 2
+    if not candidate:
+        emit_json(
+            failure(
+                CMD_OVERLAY,
+                "E_USAGE",
+                "require --candidate PATH",
+                next_action="Pass --reference and --candidate PNG paths",
+            )
+        )
+        return 2
+    try:
+        root = _root(args)
+        result = run_overlay(
+            root=root,
+            reference_path=reference,
+            candidate_path=candidate,
+            run_id=getattr(args, "run_id", None),
+            descriptor_only=bool(getattr(args, "descriptor_only", False)),
+        )
+    except (VisualRuntimeError, VisualPixelError) as exc:
+        return _emit_runtime_failure(CMD_OVERLAY, exc)
+    emit_json(success(CMD_OVERLAY, result=result))
     return 0
 
 
@@ -250,7 +302,7 @@ def register_visual_parsers(
     p_visual = sub.add_parser(
         "visual",
         parents=[common],
-        help="visual compare/capture/verdict/ralph (scored/blocked; #75)",
+        help="visual compare/capture/verdict/ralph/overlay (scored/blocked; #75)",
     )
     vis_sub = p_visual.add_subparsers(dest="visual_action")
     p_compare = vis_sub.add_parser(
@@ -288,8 +340,8 @@ def register_visual_parsers(
         "verdict",
         parents=[common],
         help=(
-            "compare reference/actual via compare(); descriptor overlay; "
-            "reviewer_status only — never verified"
+            "compare reference/actual via compare(); PNG overlay sidecar "
+            "unless --descriptor-only; reviewer_status only — never verified"
         ),
     )
     p_verdict.add_argument("--config", default=None)
@@ -306,6 +358,12 @@ def register_visual_parsers(
     p_verdict.add_argument("--run-id", default=None, dest="run_id")
     p_verdict.add_argument("--editor-role", default=None, dest="editor_role")
     p_verdict.add_argument("--reviewer-role", default=None, dest="reviewer_role")
+    p_verdict.add_argument(
+        "--descriptor-only",
+        action="store_true",
+        dest="descriptor_only",
+        help="skip PNG pixel decode (sha/byte identity only)",
+    )
     p_verdict.set_defaults(func=cmd_visual, visual_action="verdict")
 
     p_ralph = vis_sub.add_parser(
@@ -337,12 +395,32 @@ def register_visual_parsers(
     p_ralph.add_argument("--run-id", default=None, dest="run_id")
     p_ralph.set_defaults(func=cmd_visual, visual_action="ralph")
 
+    p_overlay = vis_sub.add_parser(
+        "overlay",
+        parents=[common],
+        help=(
+            "PNG pixel overlay evidence (changed_pixels + overlay.png path); "
+            "never verified; no vision model"
+        ),
+    )
+    p_overlay.add_argument("--reference", default=None)
+    p_overlay.add_argument("--candidate", default=None)
+    p_overlay.add_argument("--run-id", default=None, dest="run_id")
+    p_overlay.add_argument(
+        "--descriptor-only",
+        action="store_true",
+        dest="descriptor_only",
+        help="skip PNG pixel decode (sha/byte identity only)",
+    )
+    p_overlay.set_defaults(func=cmd_visual, visual_action="overlay")
+
     p_visual.set_defaults(func=cmd_visual)
 
 
 __all__ = [
     "CMD_CAPTURE",
     "CMD_COMPARE",
+    "CMD_OVERLAY",
     "CMD_RALPH",
     "CMD_VERDICT",
     "CONTRACT_VALIDATION_MESSAGE",
