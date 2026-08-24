@@ -80,8 +80,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `passes`/`verified`, and does **not** claim `omo.edit.hash_anchored`
   host parity. Default (no `--provider`) stays `E_SIMPLIFY_ASSIGNMENT`.
   Grok missing / job failure / non-descriptor output is
-  `E_SIMPLIFY_PROVIDER` with the assignment still recorded. Hermetic:
-  `tests/test_edit_simplify.py`. Refs #76 (does not close).
+  `E_SIMPLIFY_PROVIDER` with the assignment still recorded. Non-terminal
+  wait exits cancel the job fail-closed (unproven cancel is an error).
+  Descriptors must bind to the captured snapshot, `producer` must be
+  `omg-code-simplifier`, and an empty descriptor list is `no_changes`
+  (no `--apply-edits` next action). Git-visible files outside `.omg/`
+  are content-fingerprinted (streamed SHA-256); Jobs is not an OS
+  sandbox. Hermetic: `tests/test_edit_simplify.py`. Refs #76 (does not
+  close).
 - **#75 leftover PATH screencapture capture default:** `omg visual capture`
   discovers `screencapture` on PATH (or `/usr/sbin/screencapture`) after
   `capture.command` and `OMG_VISUAL_CAPTURE`, and runs `screencapture -x`

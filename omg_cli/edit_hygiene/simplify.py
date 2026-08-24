@@ -35,6 +35,7 @@ from omg_cli.hash_edit import (
     HashEditConcurrencyError,
     HashEditCurrentFact,
     HashEditDescriptorError,
+    HashEditError,
     apply_hash_edit,
     content_sha256,
     parse_hash_edit_descriptor,
@@ -501,6 +502,21 @@ def _git_porcelain(root: Path) -> str:
     return proc.stdout
 
 
+def _file_sha256(path: Path) -> str | None:
+    """Stream SHA-256 of *path*; ``None`` if unreadable."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
     """SHA-256 of git-visible files outside ``.omg/`` (dirty-file content, not just status)."""
     try:
@@ -530,12 +546,29 @@ def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
         path = Path(root) / rel
         if not path.is_file():
             continue
-        try:
-            data = path.read_bytes()
-        except OSError:
+        digest = _file_sha256(path)
+        if digest is None:
             continue
-        out[rel] = hashlib.sha256(data).hexdigest()
+        out[rel] = digest
     return out
+
+
+def _cancel_simplify_job(
+    root: Path,
+    job_id: str,
+    *,
+    assignment: dict[str, Any],
+    reason: str,
+) -> None:
+    """Cancel a live simplify job. Unproven cancel is fail-closed."""
+    try:
+        cancel_job(root, job_id, reason=reason)
+    except Exception as exc:
+        raise SimplifyProviderError(
+            f"grok simplify job {reason} and cancel failed: {exc}",
+            assignment,
+            job_id=job_id,
+        ) from exc
 
 
 def _assert_real_tree_untouched(
@@ -659,6 +692,9 @@ def _propose_with_grok(
     job_id: str | None = None
     pending: SimplifyProviderError | None = None
     descriptors: list[Any] | None = None
+    job_succeeded = False
+    cancelled = False
+    wait_observed_terminal = False
     try:
         try:
             started = start_job(
@@ -684,19 +720,19 @@ def _propose_with_grok(
                 stop_on_recovery_required=True,
             )
             if timed_out:
-                try:
-                    cancel_job(root, job_id, reason="simplify-provider-timeout")
-                except Exception as exc:
-                    raise SimplifyProviderError(
-                        f"grok simplify job timed out after {timeout_s}s and cancel failed",
-                        assignment,
-                        job_id=job_id,
-                    ) from exc
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-timeout",
+                )
+                cancelled = True
                 raise SimplifyProviderError(
                     f"grok simplify job timed out after {timeout_s}s",
                     assignment,
                     job_id=job_id,
                 )
+            wait_observed_terminal = True
             if _job_state_value(getattr(waited, "state", None)) != JobState.SUCCEEDED.value:
                 raise SimplifyProviderError(
                     "grok simplify job did not succeed",
@@ -710,6 +746,7 @@ def _propose_with_grok(
                     assignment,
                     job_id=job_id,
                 )
+            job_succeeded = True
             raw_text = _read_job_result_text(root, summary)
             descriptors = _descriptors_from_provider_json(_extract_json_value(raw_text))
         except SimplifyProviderError as exc:
@@ -719,24 +756,23 @@ def _propose_with_grok(
                 exc.job_id = job_id
             pending = exc
         except JobStoreError as exc:
-            if job_id and getattr(exc, "code", "") == "E_JOB_RECOVERY_REQUIRED":
+            reason = (
+                "simplify-provider-recovery"
+                if getattr(exc, "code", "") == "E_JOB_RECOVERY_REQUIRED"
+                else "simplify-provider-wait"
+            )
+            if job_id and not cancelled:
                 try:
-                    cancel_job(root, job_id, reason="simplify-provider-recovery")
-                except Exception as cancel_exc:
-                    pending = SimplifyProviderError(
-                        f"{exc}; cancel failed: {cancel_exc}",
-                        assignment,
-                        job_id=job_id,
+                    _cancel_simplify_job(
+                        root,
+                        job_id,
+                        assignment=assignment,
+                        reason=reason,
                     )
-                    pending.__cause__ = cancel_exc
-                else:
-                    pending = SimplifyProviderError(
-                        str(exc),
-                        assignment,
-                        job_id=job_id,
-                    )
-                    pending.__cause__ = exc
-            else:
+                    cancelled = True
+                except SimplifyProviderError as cancel_exc:
+                    pending = cancel_exc
+            if pending is None:
                 pending = SimplifyProviderError(
                     str(exc),
                     assignment,
@@ -757,6 +793,23 @@ def _propose_with_grok(
                 job_id=job_id,
             )
             pending.__cause__ = exc
+        if (
+            pending is not None
+            and job_id
+            and not cancelled
+            and not job_succeeded
+            and not wait_observed_terminal
+        ):
+            try:
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-abort",
+                )
+                cancelled = True
+            except SimplifyProviderError as cancel_exc:
+                pending = cancel_exc
     finally:
         dirty: SimplifyProviderError | None = None
         try:
@@ -792,6 +845,7 @@ def _propose_with_grok(
             job_id=job_id,
         )
     kept_set = {Path(rel).as_posix() for rel in kept}
+    max_bytes = int(cfg["max_bytes"])
     for desc in descriptors:
         desc_path = Path(str(desc.path)).as_posix()
         if desc_path not in kept_set:
@@ -800,13 +854,39 @@ def _propose_with_grok(
                 assignment,
                 job_id=job_id,
             )
+        if str(desc.producer) != SIMPLIFIER_ROLE:
+            raise SimplifyProviderError(
+                f"grok descriptor producer {desc.producer!r} is not {SIMPLIFIER_ROLE}",
+                assignment,
+                job_id=job_id,
+            )
+        try:
+            current = snapshots[desc_path].encode("utf-8")
+            if len(current) > max_bytes:
+                raise SimplifyProviderError(
+                    f"grok descriptor path {desc_path!r} exceeds max_bytes",
+                    assignment,
+                    job_id=job_id,
+                )
+            plan_hash_edit(
+                desc,
+                HashEditCurrentFact(path=desc.path, current_bytes=current),
+            )
+        except HashEditError as exc:
+            raise SimplifyProviderError(
+                f"grok descriptor does not bind to the captured snapshot: {exc}",
+                assignment,
+                job_id=job_id,
+            ) from exc
 
     descriptor_maps = [desc.to_canonical_mapping() for desc in descriptors]
+    empty = not descriptor_maps
+    status = "no_changes" if empty else "proposed"
     proposal_body = {
         "kind": PROPOSAL_KIND,
         "schema_version": 1,
         "command": "edit.simplify",
-        "status": "proposed",
+        "status": status,
         "provider": GROK_PROVIDER,
         "job_id": job_id,
         "self_approve": False,
@@ -820,11 +900,16 @@ def _propose_with_grok(
         "stage": stage_id,
     }
     proposal = _write_proposal_artifact(root, proposal_body)
+    next_action = (
+        "no hash-edit descriptors; nothing to apply"
+        if empty
+        else "independent review then omg edit simplify --apply-edits " + proposal
+    )
     return {
         "kind": PROPOSAL_KIND,
         "ok": True,
         "verified": False,
-        "status": "proposed",
+        "status": status,
         "provider": GROK_PROVIDER,
         "job_id": job_id,
         "self_approve": False,
@@ -835,9 +920,7 @@ def _propose_with_grok(
         "artifact": proposal,
         "descriptor_count": len(descriptor_maps),
         "stage": stage_id,
-        "next_action": (
-            "independent review then omg edit simplify --apply-edits " + proposal
-        ),
+        "next_action": next_action,
     }
 
 

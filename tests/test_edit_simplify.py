@@ -102,6 +102,28 @@ def _install_fake(monkeypatch: pytest.MonkeyPatch, fake: _FakeGrokJob) -> None:
     monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", fake.start)
     monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
     monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    monkeypatch.setattr(
+        "omg_cli.edit_hygiene.simplify.cancel_job", lambda *_args, **_kwargs: None
+    )
+
+
+def _git_init(path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"], cwd=path, check=True, capture_output=True
+    )
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "i"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_parser_wires_simplify_provider_grok() -> None:
@@ -430,3 +452,185 @@ def test_simplify_provider_cannot_combine_with_apply_edits(
     payload = _out(capsys)
     assert _code(payload) == "E_SIMPLIFY_PROVIDER"
     assert not (project / ".omg" / "state" / "simplify-guard.json").exists()
+
+
+def test_simplify_provider_cancels_job_on_non_recovery_wait_error(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.models import JobStoreError
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    fake = _FakeGrokJob("unused")
+    cancelled: list[str] = []
+
+    def _wait(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        raise JobStoreError("orphan provider still live", code="E_JOB_ORPHAN")
+
+    def _cancel(_root: Path, job_id: str, *, reason: str = "") -> None:
+        cancelled.append(f"{job_id}:{reason}")
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", fake.start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", _wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.cancel_job", _cancel)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert cancelled == [f"{JOB_ID}:simplify-provider-wait"]
+
+
+def test_simplify_provider_cancel_unproven_is_fail_closed(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.models import JobStoreError
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    fake = _FakeGrokJob("unused")
+
+    def _wait(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        raise JobStoreError(
+            "job requires recovery (health=orphan_provider_live)",
+            code="E_JOB_RECOVERY_REQUIRED",
+        )
+
+    def _cancel(_root: Path, job_id: str, *, reason: str = "") -> None:
+        del job_id, reason
+        raise JobStoreError("cancel unproven", code="E_JOB_CANCEL_UNPROVEN")
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", fake.start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", _wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.cancel_job", _cancel)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert "cancel failed" in str(payload.get("error", {}).get("message") or payload)
+
+
+def test_simplify_provider_detects_unselected_tracked_mutation(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    other = project / "other.py"
+    other.write_text("y = 1\n", encoding="utf-8")
+    _git_init(project)
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_edit(project_root: Path, job_id: str, **kwargs: object):
+        other.write_text("y = 2\n", encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_edit  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+    assert other.read_text(encoding="utf-8") == "y = 2\n"
+
+
+def test_simplify_provider_rejects_wrong_producer(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    descriptor["producer"] = "omg-code-reviewer"
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
+def test_simplify_provider_empty_descriptors_are_no_changes(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    fake = _FakeGrokJob('{"descriptors": []}\n')
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    assert payload["ok"] is True
+    assert payload["verified"] is False
+    assert payload["status"] == "no_changes"
+    assert payload["descriptor_count"] == 0
+    assert "apply-edits" not in str(payload.get("next_action") or "")
+    assert (project / "app.py").read_text(encoding="utf-8") == current
