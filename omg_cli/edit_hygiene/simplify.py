@@ -926,6 +926,10 @@ def _propose_with_grok(
             runner_pids = set(captured)
             _absorb_runner_children(captured, runner_pids)
 
+            def _sync_start_identities() -> None:
+                nonlocal start_identities
+                start_identities = tuple(captured.values())
+
             def _absorb_supervisor_children() -> None:
                 if not runner_pids:
                     return
@@ -937,19 +941,23 @@ def _propose_with_grok(
             def _on_poll(_wait_record: object) -> None:
                 _absorb_runner_children(captured, runner_pids)
                 _absorb_supervisor_children()
+                _sync_start_identities()
 
             _absorb_supervisor_children()
-            waited, timed_out = wait_job(
-                root,
-                job_id,
-                timeout_s=float(timeout_s),
-                poll_s=0.02,
-                stop_on_recovery_required=True,
-                on_poll=_on_poll,
-            )
-            _absorb_runner_children(captured, runner_pids)
-            _absorb_supervisor_children()
-            start_identities = tuple(captured.values())
+            _sync_start_identities()
+            try:
+                waited, timed_out = wait_job(
+                    root,
+                    job_id,
+                    timeout_s=float(timeout_s),
+                    poll_s=0.02,
+                    stop_on_recovery_required=True,
+                    on_poll=_on_poll,
+                )
+            finally:
+                _absorb_runner_children(captured, runner_pids)
+                _absorb_supervisor_children()
+                _sync_start_identities()
             if timed_out:
                 _cancel_simplify_job(
                     root,

@@ -623,6 +623,76 @@ def test_become_child_subreaper_is_linux_only() -> None:
     assert become_child_subreaper() is False
 
 
+def test_simplify_provider_reaps_polled_identities_on_recovery(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inner identity discovered during wait must be reaped if wait raises."""
+    from omg_cli.jobs.models import JobStoreError
+    from omg_cli.jobs.ownership import pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc, ident, child = _runner_with_child()
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.RUNNING,
+                pid=ident.pid,
+                pgid=ident.pgid,
+                pid_starttime=ident.pid_starttime,
+                result="artifacts/result.md",
+            ),
+        )
+        started.record.pid = ident.pid
+        started.record.pgid = ident.pgid
+        started.record.pid_starttime = ident.pid_starttime
+        return started
+
+    def _wait(project_root: Path, job_id: str, **kwargs: object) -> tuple[object, bool]:
+        del project_root, job_id
+        on_poll = kwargs.get("on_poll")
+        if callable(on_poll):
+            on_poll(SimpleNamespace(state=JobState.RUNNING, job_id=JOB_ID))
+        raise JobStoreError(
+            "job requires recovery (health=lease_stale_live)",
+            code="E_JOB_RECOVERY_REQUIRED",
+        )
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", _wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        assert not pid_alive(proc.pid)
+        assert not pid_alive(child.pid)
+    finally:
+        _kill_proc(proc)
+
+
 def test_simplify_provider_cancels_job_on_recovery_required(
     project: Path,
     capsys: pytest.CaptureFixture[str],
