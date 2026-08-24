@@ -1915,7 +1915,10 @@ def test_resolve_routing_from_meta_accepts_persisted_by_role() -> None:
 
 
 def test_canonical_scale_specs_keep_assignment_fields() -> None:
-    from omg_cli.team.scaling import _canonical_scale_task_specs
+    from omg_cli.team.scaling import (
+        _canonical_scale_task_specs,
+        _ownership_spec_view,
+    )
 
     specs = _canonical_scale_task_specs(
         [
@@ -1930,6 +1933,11 @@ def test_canonical_scale_specs_keep_assignment_fields() -> None:
     )
     assert specs[0]["subject"] == "slice A"
     assert specs[0]["depends_on"] == ["t0"]
+    view = _ownership_spec_view(specs[0])
+    assert "subject" not in view
+    assert "depends_on" not in view
+    assert view["task_id"] == "t1"
+    assert view["owned_files"] == ["README.md"]
 
 
 def test_interactive_scale_refuses_unqualified_route() -> None:

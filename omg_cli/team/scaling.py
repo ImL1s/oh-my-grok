@@ -526,16 +526,7 @@ def _validate_scale_request_preflight(
                 )
         if task_id in by_id:
             existing = _canonical_scale_task_specs([by_id[task_id]])[0]
-            ownership_keys = (
-                "task_id",
-                "owned_files",
-                "role",
-                "capability_mode",
-                "coordination",
-            )
-            if {k: existing.get(k) for k in ownership_keys} != {
-                k: spec.get(k) for k in ownership_keys
-            }:
+            if _ownership_spec_view(existing) != _ownership_spec_view(spec):
                 raise TeamError(f"scale-up ownership differs task={task_id}")
 
 
@@ -1310,6 +1301,20 @@ def _canonical_scale_task_specs(
                 row["depends_on"] = deps
         normalized.append(row)
     return normalized
+
+
+_OWNERSHIP_SPEC_KEYS = (
+    "task_id",
+    "owned_files",
+    "role",
+    "capability_mode",
+    "coordination",
+)
+
+
+def _ownership_spec_view(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Ownership identity only — assignment fields are not retry-critical."""
+    return {key: spec.get(key) for key in _OWNERSHIP_SPEC_KEYS}
 
 
 def _scale_request_payload(
@@ -3324,7 +3329,7 @@ def _validate_pending_scale_ownership(
             "capability_mode": str(row.get("capability_mode") or "read-write"),
             "coordination": str(row.get("coordination") or "").strip() or None,
         }
-        if actual != expected:
+        if actual != _ownership_spec_view(expected):
             raise TeamError(
                 f"pending scale-up ownership differs task={expected['task_id']}"
             )
