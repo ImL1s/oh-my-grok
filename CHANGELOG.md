@@ -65,6 +65,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   also becomes the Linux subreaper before start_job so grok cannot
   escape by killing the job runner. Poll-discovered identities are
   synced into cancel/reap even when wait_job raises (recovery).
+  Linux refuses grok simplify if the child subreaper cannot be armed.
+  Pre-start supervisor children are skipped by start-time identity, not
+  PID alone, so a reused PID is still captured.
   Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar

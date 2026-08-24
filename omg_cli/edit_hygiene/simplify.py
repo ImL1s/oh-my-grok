@@ -18,6 +18,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
@@ -55,6 +56,7 @@ from omg_cli.jobs.ownership import (
     pgid_member_identities,
     probe_identity_liveness,
     refresh_identity,
+    same_occupant,
 )
 from omg_cli.jobs.runtime import (
     cancel_job,
@@ -894,10 +896,17 @@ def _propose_with_grok(
     try:
         try:
             # Subreaper must be this supervisor, not the job runner: grok can
-            # kill the runner. Linux only; Darwin has no PR_SET_CHILD_SUBREAPER.
-            become_child_subreaper()
+            # kill the runner. Linux: refuse if prctl is unavailable. Darwin
+            # has no PR_SET_CHILD_SUBREAPER; inner-identity proof still applies.
+            if not become_child_subreaper() and sys.platform.startswith("linux"):
+                raise SimplifyProviderError(
+                    "linux child subreaper unavailable; refusing grok simplify",
+                    assignment,
+                )
             supervisor_pid = os.getpid()
-            preexisting_children = {child.pid for child in child_identities(supervisor_pid)}
+            preexisting_children = {
+                child.pid: child for child in child_identities(supervisor_pid)
+            }
             started = start_job(
                 root,
                 provider=GROK_PROVIDER,
@@ -934,7 +943,8 @@ def _propose_with_grok(
                 if not runner_pids:
                     return
                 for child in child_identities(supervisor_pid):
-                    if child.pid in preexisting_children:
+                    old = preexisting_children.get(child.pid)
+                    if old is not None and same_occupant(old, child):
                         continue
                     merge_identity(captured, child)
 

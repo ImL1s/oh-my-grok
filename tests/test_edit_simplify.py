@@ -693,6 +693,35 @@ def test_simplify_provider_reaps_polled_identities_on_recovery(
         _kill_proc(proc)
 
 
+def test_simplify_linux_subreaper_unavailable_fails_closed(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.sys.platform", "linux")
+    monkeypatch.setattr(
+        "omg_cli.edit_hygiene.simplify.become_child_subreaper", lambda: False
+    )
+    _install_fake(monkeypatch, _FakeGrokJob("{}"))
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert "subreaper" in str(payload.get("error", {}).get("message") or payload)
+
+
 def test_simplify_provider_cancels_job_on_recovery_required(
     project: Path,
     capsys: pytest.CaptureFixture[str],

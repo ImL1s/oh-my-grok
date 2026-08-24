@@ -483,6 +483,21 @@ def refresh_identity(ident: ProcessIdentity) -> ProcessIdentity | None:
     )
 
 
+def same_occupant(expected: ProcessIdentity, observed: ProcessIdentity) -> bool:
+    """True when *observed* is still the process recorded in *expected*.
+
+    A later occupant reusing the PID has a different start-time fingerprint.
+    Missing expected fingerprint is treated as the same occupant so we do not
+    signal an unproven replacement.
+    """
+    if expected.pid != observed.pid:
+        return False
+    stamp = expected.pid_starttime
+    if not isinstance(stamp, str) or stamp == "":
+        return True
+    return observed.pid_starttime == stamp
+
+
 def merge_identity(
     found: dict[int, ProcessIdentity], ident: ProcessIdentity
 ) -> bool:
@@ -578,6 +593,7 @@ __all__ = [
     "probe_identity_liveness",
     "probe_pid_starttime",
     "refresh_identity",
+    "same_occupant",
     "process_fingerprint_ok",
     "process_identity_id_in_range",
     "process_identity_id_ok",

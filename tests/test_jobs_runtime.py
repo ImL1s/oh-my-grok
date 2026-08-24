@@ -461,6 +461,16 @@ def test_refresh_identity_refuses_missing_fingerprint(
     assert refresh_identity(ident) is None
 
 
+def test_same_occupant_rejects_pid_reuse_with_new_starttime() -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, same_occupant
+
+    original = ProcessIdentity(pid=5, pgid=5, pid_starttime="lstart:a")
+    reused = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:b")
+    same = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:a")
+    assert same_occupant(original, reused) is False
+    assert same_occupant(original, same) is True
+
+
 def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:
     from omg_cli.jobs.ownership import ProcessIdentity, merge_identity
 
