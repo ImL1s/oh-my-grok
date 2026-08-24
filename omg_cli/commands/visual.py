@@ -324,7 +324,7 @@ def register_visual_parsers(
         "capture",
         parents=[common],
         help=(
-            "run a provider-neutral capture command (config/env); "
+            "run a provider-neutral capture command (config/env/PATH screencapture); "
             "blocked if none; never fakes a pass"
         ),
     )
