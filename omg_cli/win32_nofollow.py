@@ -832,7 +832,7 @@ class CtypesWin32API:
 
         class _FILE_RENAME_INFO(ctypes.Structure):
             _fields_ = [
-                ("ReplaceIfExists", ctypes.c_ubyte),
+                ("ReplaceIfExists", self._wintypes.DWORD),
                 ("RootDirectory", self._HANDLE),
                 ("FileNameLength", self._wintypes.DWORD),
                 ("FileName", self._wintypes.WCHAR * nchars),
@@ -842,11 +842,7 @@ class CtypesWin32API:
         info.ReplaceIfExists = 1
         info.RootDirectory = self._HANDLE(root_handle)
         info.FileNameLength = len(utf16)
-        ctypes.memmove(
-            ctypes.addressof(info) + _FILE_RENAME_INFO.FileName.offset,
-            utf16 + b"\x00\x00",
-            len(utf16) + 2,
-        )
+        info.FileName = dest_name
         FileRenameInfo = 3
         ok = self._kernel32.SetFileInformationByHandle(
             self._HANDLE(handle),
@@ -854,7 +850,17 @@ class CtypesWin32API:
             ctypes.byref(info),
             ctypes.sizeof(info),
         )
-        if not ok:
+        if ok:
+            return
+        src = self._final_path(handle)
+        parent = self._final_path(root_handle)
+        dest = parent + ("\\" if not parent.endswith("\\") else "") + dest_name
+        self.close(handle)
+        MOVEFILE_REPLACE_EXISTING = 0x1
+        MOVEFILE_WRITE_THROUGH = 0x8
+        if not self._kernel32.MoveFileExW(
+            src, dest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+        ):
             self._raise_last("write", f"cannot replace {dest_name}")
 
     def unlink(self, root_handle: int, name: str) -> None:
