@@ -11,7 +11,8 @@ from pathlib import Path
 from omg_cli.capability_discovery import hook_capability_inventory
 from omg_cli.contracts.tracker_contract import make_role_receipt
 from omg_cli.deny import decide_spawn_subagent
-from omg_cli.runtime_events import read_all_runtime_events
+from omg_cli.hooks_registry import WRAPPER_SOURCE, emit_wrapper_event
+from omg_cli.runtime_events import read_all_runtime_events, read_runtime_events, source_journal_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -279,3 +280,31 @@ def test_rendered_standalone_preserves_receipt_validation_under_isolated_python(
     tampered = deepcopy(valid)
     tampered["role_receipt"]["expected_sequence"] += 1
     assert decide(tampered) == "deny"
+
+
+def test_wrapper_events_use_wrapper_source_not_host_inject(tmp_path) -> None:
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
+    result = emit_wrapper_event(
+        "job.terminal",
+        {
+            "root": str(tmp_path),
+            "job_id": "20990101T000000Z-abcd1234",
+            "from": "running",
+            "to": "succeeded",
+        },
+    )
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert result["source"] == WRAPPER_SOURCE
+    assert result["timeout_kind"] == "post_hoc"
+    path = source_journal_path(tmp_path, WRAPPER_SOURCE)
+    rows = read_runtime_events(path)
+    assert rows
+    assert all(row["source"] == WRAPPER_SOURCE for row in rows)
+    assert all(row["payload"]["canonical_event"] == "job.terminal" for row in rows)
+    assert all(row["payload"].get("verified") is False for row in rows)
+    grok_hook = source_journal_path(tmp_path, "grok-hook")
+    assert not grok_hook.exists()
+    all_rows = read_all_runtime_events(tmp_path)
+    assert all(row.get("verified") is not True for row in all_rows)
+    assert "UserPromptSubmit" not in path.read_text(encoding="utf-8")

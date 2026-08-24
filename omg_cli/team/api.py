@@ -293,6 +293,40 @@ def _ok(operation: str, data: Mapping[str, Any]) -> TeamApiEnvelope:
     return {"ok": True, "operation": operation, "data": dict(data)}
 
 
+def _emit_team_member_transition(
+    root: Path,
+    *,
+    run_id: str,
+    worker: str,
+    from_status: str,
+    to_status: str,
+    reason: str,
+    team_id: str | None = None,
+    task_id: str | None = None,
+) -> None:
+    """Best-effort wrapper ``team.member.transition``. Never raises."""
+    if from_status == to_status:
+        return
+    try:
+        from omg_cli.hooks_registry import emit_wrapper_event
+
+        payload: dict[str, Any] = {
+            "root": str(root),
+            "run_id": run_id,
+            "worker": worker,
+            "from": from_status,
+            "to": to_status,
+            "reason": reason,
+        }
+        if team_id:
+            payload["team_id"] = team_id
+        if task_id:
+            payload["task_id"] = task_id
+        emit_wrapper_event("team.member.transition", payload)
+    except Exception:
+        return
+
+
 def _require_str(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -2087,6 +2121,7 @@ def _op_update_worker_heartbeat(
 ) -> TeamApiEnvelope:
     from omg_cli.team.liveness import (
         LivenessError,
+        classify_liveness,
         initialize_liveness,
         load_liveness,
         record_heartbeat,
@@ -2105,6 +2140,7 @@ def _op_update_worker_heartbeat(
             exit_code=2,
         )
     expected_sequence = int(expected)
+    prev_status = "missing"
     try:
         row = load_liveness(
             root, run_id=run_id, team_id=team_id, task_id=task_id
@@ -2118,6 +2154,11 @@ def _op_update_worker_heartbeat(
                 worker_id=worker,
                 generation=generation,
             )
+        else:
+            try:
+                prev_status = classify_liveness(row)
+            except (LivenessError, ContractValidationError, ValueError, TypeError):
+                prev_status = "unknown"
         updated = record_heartbeat(
             root,
             run_id=run_id,
@@ -2133,6 +2174,20 @@ def _op_update_worker_heartbeat(
             str(exc),
             details={"error": "heartbeat_failed"},
         ) from exc
+    try:
+        new_status = classify_liveness(updated)
+    except (LivenessError, ContractValidationError, ValueError, TypeError):
+        new_status = "live"
+    _emit_team_member_transition(
+        root,
+        run_id=run_id,
+        worker=worker,
+        from_status=prev_status,
+        to_status=new_status,
+        reason="heartbeat",
+        team_id=team_id,
+        task_id=task_id,
+    )
     return _ok(
         "update-worker-heartbeat",
         {
@@ -2272,6 +2327,14 @@ def _op_write_shutdown_ack(root: Path, payload: dict[str, Any]) -> TeamApiEnvelo
         ),
         mode=DATA_FILE_MODE,
         replace=True,
+    )
+    _emit_team_member_transition(
+        root,
+        run_id=run_id,
+        worker=worker,
+        from_status="live",
+        to_status="shutdown_acked",
+        reason="shutdown_ack",
     )
     return _ok("write-shutdown-ack", {"worker": worker, "path": str(path)})
 

@@ -19,6 +19,7 @@ projections (not live AG).
 | `subagent.stop` | native **passive** | stdout ignored. Must not `decision:block`. |
 | `prompt.submit` | **unsupported** | `UserPromptSubmit` stdout is ignored. Routing lives in `~/.grok/rules/omg.md`. OMG does **not** inject. |
 | `tool.post`, `session.end`, `compact.pre` (host) | unsupported / wrapper | No Grok inject. Compaction handoff is CLI-owned and ids-only. |
+| `artifact.created`, `job.terminal`, `team.member.transition` | reconciled / wrapper | CLI `emit_wrapper_event` → journal `source=wrapper`. Not host inject. |
 
 ## Kill switches
 
@@ -50,6 +51,13 @@ adopt. This does not set `verified`.
   under `.omg/state/events/` (`source=omg-hooks-bus`) with a monotonic
   sequence per workspace. Journal write failures fail open and never crash
   the session. This is not a `passes` / `verified` stamp.
+- **CLI wrapper events:** `emit_wrapper_event(kind, payload)` journals
+  `artifact.created` (classified CLI artifact writes), `job.terminal`
+  (jobs runtime reached a terminal status), and `team.member.transition`
+  (team API heartbeat/shutdown-ack status change) with `source=wrapper`.
+  Payload is redacted and field-bounded. Timeout remains post-hoc.
+  `prompt.submit` stays unsupported (no UserPromptSubmit inject). Never
+  live AG hook install. Never sets `verified`.
 
 ## Registry load (fail-closed)
 

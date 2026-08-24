@@ -363,6 +363,32 @@ def _coerce_terminal_under_cancel_request(
     return JobState.CANCELLED, out
 
 
+def _emit_job_terminal_event(
+    project_root: Path, record: JobRecord, previous: JobState
+) -> None:
+    """Best-effort wrapper ``job.terminal``. Never raises; never sets verified."""
+    from omg_cli.jobs.models import TERMINAL_STATES
+
+    if record.state not in TERMINAL_STATES:
+        return
+    try:
+        from omg_cli.hooks_registry import emit_wrapper_event
+
+        payload: dict[str, Any] = {
+            "root": str(Path(project_root).resolve()),
+            "job_id": record.job_id,
+            "provider": record.provider,
+            "role": record.role,
+            "from": previous.value,
+            "to": record.state.value,
+        }
+        if isinstance(record.run_id, str) and record.run_id.strip():
+            payload["run_id"] = record.run_id
+        emit_wrapper_event("job.terminal", payload)
+    except Exception:
+        return
+
+
 def transition_job(
     project_root: Path,
     job_id: str,
@@ -377,6 +403,7 @@ def transition_job(
     try:
         with job_lock(project_root, job_id):
             record = read_job_record(project_root, job_id)
+            previous = record.state
             new_state, merged = _coerce_terminal_under_cancel_request(
                 record, new_state, updates
             )
@@ -387,7 +414,7 @@ def transition_job(
             _apply_field_updates(record, merged)
             record.state = new_state
             write_job_record(project_root, record)
-            return read_job_record(project_root, job_id)
+            out = read_job_record(project_root, job_id)
     except JobStoreError:
         raise
     except (OSError, ContractPathError) as exc:
@@ -395,6 +422,8 @@ def transition_job(
             f"job transition durable failure: {exc}",
             code="E_JOB_STORE",
         ) from exc
+    _emit_job_terminal_event(project_root, out, previous)
+    return out
 
 
 def update_job_fields(
@@ -495,6 +524,7 @@ def compare_and_transition_job(
                         "job owner_token changed during recovery CAS",
                         code="E_JOB_RECOVERY_CONFLICT",
                     )
+            previous = record.state
             new_state, merged = _coerce_terminal_under_cancel_request(
                 record, new_state, updates
             )
@@ -502,7 +532,7 @@ def compare_and_transition_job(
             _apply_field_updates(record, merged)
             record.state = new_state
             write_job_record(project_root, record)
-            return read_job_record(project_root, job_id)
+            out = read_job_record(project_root, job_id)
     except JobStoreError:
         raise
     except (OSError, ContractPathError) as exc:
@@ -510,6 +540,8 @@ def compare_and_transition_job(
             f"job CAS transition durable failure: {exc}",
             code="E_JOB_STORE",
         ) from exc
+    _emit_job_terminal_event(project_root, out, previous)
+    return out
 
 
 def renew_owner_lease(
@@ -609,6 +641,7 @@ def transition_owned_job(
                 expected_owner_token=expected_owner_token,
                 expected_runner_pid=expected_runner_pid,
             )
+            previous = record.state
             new_state, merged = _coerce_terminal_under_cancel_request(
                 record, new_state, updates
             )
@@ -618,7 +651,7 @@ def transition_owned_job(
             _apply_field_updates(record, merged)
             record.state = new_state
             write_job_record(project_root, record)
-            return read_job_record(project_root, job_id)
+            out = read_job_record(project_root, job_id)
     except JobStoreError:
         raise
     except (OSError, ContractPathError) as exc:
@@ -626,6 +659,8 @@ def transition_owned_job(
             f"owned job transition durable failure: {exc}",
             code="E_JOB_STORE",
         ) from exc
+    _emit_job_terminal_event(project_root, out, previous)
+    return out
 
 
 def mark_provider_launching(

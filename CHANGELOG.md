@@ -10,6 +10,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#72 CLI wrapper events:** `omg_cli.hooks_registry.emit_wrapper_event`
+  journals `artifact.created` (classified CLI artifact writes),
+  `job.terminal` (jobs runtime terminal status), and
+  `team.member.transition` (team API heartbeat/shutdown-ack) with
+  `source=wrapper`, schema `omg-wrapper-event/v1`, redaction, and
+  post-hoc timeout. `prompt.submit` stays unsupported (no
+  UserPromptSubmit inject). Does not set `verified`. Not live AG hook
+  install. Does not close #72. Refs #72.
 - **#74 leftover ACP session resume CLI:** `omg session acp-resume
   --session-id UUID --cwd PATH` reuses `host_acp.py` initialize +
   `session/resume` and prints a content-free receipt (no transcript).

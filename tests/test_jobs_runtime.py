@@ -2875,3 +2875,78 @@ def test_preflight_retry_job_is_side_effect_free(root: Path) -> None:
     preflight_retry_job(root, terminal.job_id, attempt=2)
     assert job_json_path(root, terminal.job_id).read_bytes() == before
     assert not attempt_dir(root, terminal.job_id, 1).exists()
+
+
+def test_fake_job_terminal_emits_wrapper_event(root: Path) -> None:
+    from omg_cli.hooks_registry import WRAPPER_SOURCE
+    from omg_cli.runtime_events import read_runtime_events, source_journal_path
+
+    started = start_job(
+        root,
+        provider="fake",
+        role="researcher",
+        prompt_file=_prompt(root),
+        sleep_s=0.05,
+    )
+    rec, timed_out = wait_job(root, started.record.job_id, timeout_s=10.0)
+    assert timed_out is False
+    assert rec.state == JobState.SUCCEEDED
+    path = source_journal_path(root, WRAPPER_SOURCE)
+    rows = read_runtime_events(path)
+    terminals = [
+        row for row in rows if row["payload"].get("canonical_event") == "job.terminal"
+    ]
+    assert terminals
+    row = terminals[-1]
+    assert row["source"] == WRAPPER_SOURCE
+    assert row["payload"]["to"] == "succeeded"
+    assert row["payload"]["job_id"] == rec.job_id
+    assert row["payload"]["timeout_kind"] == "post_hoc"
+    assert row["payload"].get("verified") is False
+    text = path.read_text(encoding="utf-8")
+    assert "verified" not in text or '"verified":false' in text.replace(" ", "")
+    assert rec.to_dict().get("verified") is not True
+
+
+def test_cli_fake_job_terminal_journals_wrapper_event(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omg_cli.hooks_registry import WRAPPER_SOURCE
+    from omg_cli.main import main
+    from omg_cli.runtime_events import read_runtime_events, source_journal_path
+
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("OMG_PROJECT_ROOT", str(root))
+    prompt = _prompt(root)
+    rc = main(
+        [
+            "--json",
+            "job",
+            "start",
+            "--provider",
+            "fake",
+            "--prompt-file",
+            str(prompt),
+            "--sleep",
+            "0.05",
+        ]
+    )
+    assert rc == 0
+    start = json.loads(capsys.readouterr().out)
+    assert start["ok"] is True
+    assert start.get("verified") is not True
+    job_id = start["job_id"]
+    rc = main(["--json", "job", "wait", job_id, "--timeout", "15"])
+    assert rc == 0
+    waited = json.loads(capsys.readouterr().out)
+    assert waited["ok"] is True
+    assert waited["job"]["state"] == "succeeded"
+    assert waited.get("verified") is not True
+    path = source_journal_path(root, WRAPPER_SOURCE)
+    rows = read_runtime_events(path)
+    assert any(row["payload"].get("canonical_event") == "job.terminal" for row in rows)
+    assert all(row["source"] == WRAPPER_SOURCE for row in rows)
+    assert all(row["payload"].get("verified") is False for row in rows)
+    text = path.read_text(encoding="utf-8")
+    assert "job.terminal" in text
+    assert "SECRET" not in text

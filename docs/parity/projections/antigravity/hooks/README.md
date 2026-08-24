@@ -17,11 +17,14 @@ Grok honesty:
 
 | Hook | Event | Grok capability | Fail policy |
 |------|-------|-----------------|-------------|
+| `omg.artifact.created.observe` | `artifact.created` | `reconciled` | `fail-open` |
 | `omg.compact.handoff` | `compact.pre` | `wrapper` | `fail-open` |
+| `omg.job.terminal.observe` | `job.terminal` | `wrapper` | `fail-open` |
 | `omg.prompt.submit.unsupported` | `prompt.submit` | `unsupported` | `fail-open` |
 | `omg.session.start.observe` | `session.start` | `native_passive` | `fail-open` |
 | `omg.stop.gate` | `stop.request` | `native_blocking` | `fail-open` |
 | `omg.subagent.stop.observe` | `subagent.stop` | `native_passive` | `fail-open` |
+| `omg.team.member.transition.observe` | `team.member.transition` | `wrapper` | `fail-open` |
 | `omg.pretool.deny` | `tool.pre` | `native_blocking` | `fail-open` |
 | `omg.continuation.guard` | `workflow.transition` | `reconciled` | `fail-closed` |
 
