@@ -632,6 +632,32 @@ def _cancel_simplify_job(
         ) from exc
 
 
+def _assert_no_authority_stamps(
+    root: Path,
+    *,
+    assignment: dict[str, Any],
+    job_id: str | None,
+) -> None:
+    """Fail closed if ``.omg/state`` gained verified/passes stamps."""
+    state = Path(root) / ".omg" / "state"
+    if not state.is_dir():
+        return
+    needles = ('"verified": true', '"verified":true', '"passes": true', '"passes":true')
+    for path in state.rglob("*"):
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(needle in text for needle in needles):
+            raise SimplifyProviderError(
+                "omg state gained verified/passes during grok proposal; originals were not overwritten",
+                assignment,
+                job_id=job_id,
+            )
+
+
 def _assert_real_tree_untouched(
     root: Path,
     snapshots: Mapping[str, str],
@@ -883,6 +909,9 @@ def _propose_with_grok(
                 cfg,
                 assignment=assignment,
                 job_id=job_id,
+            )
+            _assert_no_authority_stamps(
+                root, assignment=assignment, job_id=job_id
             )
             porcelain_after = _git_porcelain(root)
             extra_skip = (

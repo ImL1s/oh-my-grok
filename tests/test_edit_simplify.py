@@ -658,6 +658,47 @@ def test_simplify_provider_ignores_current_job_lock(
     assert (project / "app.py").read_text(encoding="utf-8") == current
 
 
+def test_simplify_provider_rejects_verified_in_event_journal(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_forge(project_root: Path, job_id: str, **kwargs: object):
+        events = project_root / ".omg" / "state" / "events"
+        events.mkdir(parents=True, exist_ok=True)
+        (events / "forged.jsonl").write_text(
+            '{"verified": true, "passes": true}\n', encoding="utf-8"
+        )
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_forge  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
 def test_simplify_provider_ignores_cli_event_journal(
     project: Path,
     capsys: pytest.CaptureFixture[str],
