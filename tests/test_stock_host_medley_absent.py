@@ -2,8 +2,11 @@
 
 Absence of Medley must not disable ordinary OMG operation. This file is
 stock-host smoke (setup / package projection, current ``omg doctor``,
-ordinary agent/profile discovery, ordinary workflow parser/inventory). It
-is not a routing implementation and does not exercise #131 / #134 / #138.
+ordinary agent/profile discovery, ordinary workflow parser/inventory).
+Inspect-absent list/doctor honesty (``inspect_source=absent``, null
+``attempt``, Medley #18 not attempted) is stock-host UX, not Medley
+routing, live spawn, or a TUI. It does not exercise live #131 spawn
+receipts or #138.
 
 Absence is an explicit import blocker, never inferred from directory names
 on ``sys.path`` / ``PYTHONPATH``. An injected installable ``medley`` stays
@@ -502,6 +505,9 @@ def test_ordinary_omg_surfaces_work_with_medley_absent(tmp_path) -> None:
     assert payload["live_canonical_host_probe"] is True
     assert payload["live_session_caps_ok"] is True
     assert payload["capability_sources"] == dict(EXPECTED_LIVE_CAPABILITY_SOURCES)
+    assert payload["inspect_source"] == "absent"
+    assert payload["agents_attempt_null"] is True
+    assert payload["doctor_inspect_absent"] is True
     assert IMPORT_PROBE_MODULE not in sys.modules
     assert "stock_host_medley_absent_smoke_bootstrap" not in sys.modules
 

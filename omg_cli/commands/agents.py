@@ -44,7 +44,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
         filter_policy_views,
         list_agent_policies,
     )
-    from omg_cli.medley_inspect import MedleyInspectError, resolve_host_snapshot
+    from omg_cli.medley_inspect import (
+        MedleyInspectError,
+        inspect_source_for,
+        resolve_host_snapshot,
+    )
 
     try:
         host, inspect_doc = resolve_host_snapshot(
@@ -73,6 +77,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return _fail(args, "agents.list", exc)
     payload = {
         "host_tier": host.host_tier,
+        "inspect_source": inspect_source_for(inspect_doc),
         "agents": [row.to_json() for row in rows],
     }
     if wants_json(args):
@@ -111,7 +116,11 @@ def _cmd_explain(args: argparse.Namespace) -> int:
         return _fail(args, "agents.explain", exc)
     except MedleyInspectError as exc:
         return _fail(args, "agents.explain", exc)
-    payload = {"agent": view.to_json(), "resume": resume_pin(view)}
+    payload = {
+        "agent": view.to_json(),
+        "resume": resume_pin(view),
+        "inspect_source": view.inspect_source,
+    }
     if wants_json(args):
         emit_json(success("agents.explain", data=payload))
         return 0

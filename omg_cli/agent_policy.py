@@ -35,6 +35,10 @@ from omg_cli.host_capabilities import (
     route_specific_facts_state,
     stock_grok_snapshot,
 )
+from omg_cli.medley_inspect import (
+    INSPECT_SOURCE_ABSENT,
+    INSPECT_SOURCE_DOCUMENT,
+)
 
 POLICY_SCHEMA = "omg-agent-model-policy/v1"
 OVERRIDE_SCHEMA = "omg-agent-model-policy-override/v1"
@@ -61,6 +65,7 @@ EXTERNAL_EXECUTORS: frozenset[str] = frozenset(
 ORDERED_CANDIDATES_CAP = "medley.native-ordered-candidates.v1"
 EXACT_MODEL_CAP = "host.native-exact-model.v1"
 INHERIT_MODEL_CAP = "host.native-inherit-model.v1"
+INSPECT_ABSENT_NEXT_ACTION = "omg agents list --host-inspect PATH"
 
 _SECRET_KEYS: frozenset[str] = frozenset(
     {
@@ -147,6 +152,7 @@ class AgentPolicyViewV1:
     route_kind: str
     route_receipt_digest: str | None
     attempt: int | None
+    inspect_source: str
     status: str
     reasons: tuple[PolicyReason, ...]
     host_facts: dict[str, str]
@@ -174,6 +180,7 @@ class AgentPolicyViewV1:
             "route_kind": self.route_kind,
             "route_receipt_digest": self.route_receipt_digest,
             "attempt": self.attempt,
+            "inspect_source": self.inspect_source,
             "status": self.status,
             "reasons": [item.to_json() for item in self.reasons],
             "host_facts": dict(self.host_facts),
@@ -728,7 +735,7 @@ def resume_pin(view: AgentPolicyViewV1) -> dict[str, Any]:
         "selected_model_ref": view.selected_model_ref,
         "route_kind": view.route_kind,
         "route_receipt_digest": view.route_receipt_digest,
-        "attempt": view.attempt if view.attempt is not None else 1,
+        "attempt": view.attempt,
         "prompt_profile": view.prompt_profile,
     }
 
@@ -881,7 +888,22 @@ def resolve_agent_policy(
     status = "ready"
     selected: str | None = None
     receipt: str | None = None
-    attempt: int | None = 1
+    attempt: int | None = None
+    inspect_source = (
+        INSPECT_SOURCE_DOCUMENT if inspect_doc is not None else INSPECT_SOURCE_ABSENT
+    )
+
+    if inspect_doc is None:
+        reasons.append(
+            PolicyReason(
+                code="E_MEDLEY_INSPECT_ABSENT",
+                message=(
+                    "inspect document absent; baseline fallback only; "
+                    "Medley #18 replay-safe fallback is not attempted"
+                ),
+                next_action=INSPECT_ABSENT_NEXT_ACTION,
+            )
+        )
 
     if not snapshot.is_supported("host.native-agent.v1"):
         native_state = snapshot.state_of("host.native-agent.v1")
@@ -959,7 +981,9 @@ def resolve_agent_policy(
     if snapshot.host_tier == HOST_TIER_GROK:
         receipt = None
 
-    if inspect_doc is not None and snapshot.is_supported("medley.native-route-receipt.v1"):
+    if inspect_source == INSPECT_SOURCE_DOCUMENT and snapshot.is_supported(
+        "medley.native-route-receipt.v1"
+    ):
         from omg_cli.medley_inspect import apply_receipt_to_view_fields, receipt_for_policy
 
         rec = receipt_for_policy(
@@ -976,6 +1000,10 @@ def resolve_agent_policy(
                 receipt = fields["route_receipt_digest"]
             if fields["attempt"] is not None:
                 attempt = fields["attempt"]
+
+    if inspect_source == INSPECT_SOURCE_ABSENT:
+        receipt = None
+        attempt = None
 
     host_facts = {
         "medley_capability_outcome": medley_capability_outcome(snapshot),
@@ -1004,6 +1032,7 @@ def resolve_agent_policy(
         route_kind=ROUTE_KIND_NATIVE,
         route_receipt_digest=receipt,
         attempt=attempt,
+        inspect_source=inspect_source,
         status=status,
         reasons=tuple(reasons),
         host_facts=host_facts,
@@ -1112,6 +1141,9 @@ __all__ = [
     "PolicyReason",
     "ROUTE_KIND_EXTERNAL",
     "ROUTE_KIND_NATIVE",
+    "INSPECT_ABSENT_NEXT_ACTION",
+    "INSPECT_SOURCE_ABSENT",
+    "INSPECT_SOURCE_DOCUMENT",
     "VIEW_SCHEMA",
     "filter_policy_views",
     "list_agent_policies",

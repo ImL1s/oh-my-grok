@@ -156,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(out)
         if payload.get("command") != "doctor":
             return _fail(f"doctor payload command={payload.get('command')!r}")
+        if payload.get("inspect_source") != "absent":
+            return _fail(
+                f"doctor inspect_source={payload.get('inspect_source')!r}"
+            )
         host = payload.get("host") or {}
         if not support.doctor_host_identity_matches(host):
             return _fail(f"doctor host identity mismatch: {host!r}")
@@ -215,6 +219,53 @@ def main(argv: list[str] | None = None) -> int:
         ):
             return _fail("compile_workflow missing name/contract/definition")
 
+        from omg_cli.agent_policy import list_agent_policies
+        from omg_cli.agent_policy_ux import (
+            INSPECT_ABSENT_DOCTOR_LINE,
+            format_doctor_routing_human,
+        )
+        from omg_cli.medley_inspect import inspect_source_for, resolve_host_snapshot
+
+        snap, inspect_doc = resolve_host_snapshot()
+        source = inspect_source_for(inspect_doc)
+        if source != "absent":
+            return _fail(f"stock inspect_source={source!r}")
+        doctor_human = format_doctor_routing_human(snap, inspect_source=source)
+        if INSPECT_ABSENT_DOCTOR_LINE not in doctor_human:
+            return _fail(f"doctor missing inspect-absent line: {doctor_human!r}")
+        if "not installation failed" not in doctor_human:
+            return _fail("doctor missing not-installation-failed")
+        rows = list_agent_policies(
+            root=root,
+            project_root=project,
+            host=snap,
+            inspect_doc=inspect_doc,
+        )
+        if not rows:
+            return _fail("list_agent_policies returned no rows")
+        for row in rows:
+            payload_row = row.to_json()
+            facts = payload_row.get("host_facts") or {}
+            if payload_row.get("inspect_source") != "absent":
+                return _fail(
+                    f"{row.agent_id} inspect_source="
+                    f"{payload_row.get('inspect_source')!r}"
+                )
+            if payload_row.get("attempt") is not None:
+                return _fail(
+                    f"{row.agent_id} fabricated attempt="
+                    f"{payload_row.get('attempt')!r}"
+                )
+            if payload_row.get("route_receipt_digest") is not None:
+                return _fail(
+                    f"{row.agent_id} fabricated receipt="
+                    f"{payload_row.get('route_receipt_digest')!r}"
+                )
+            if facts.get("medley_capability_outcome") != "unsupported":
+                return _fail(f"{row.agent_id} medley outcome not unsupported")
+            if facts.get("route_specific_facts") != "unavailable":
+                return _fail(f"{row.agent_id} route facts not unavailable")
+
         support.assert_blocker_raises()
         if "medley" in sys.modules or any(k.startswith("medley.") for k in sys.modules):
             return _fail("medley appeared in sys.modules after surfaces")
@@ -254,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
             "live_canonical_host_probe": True,
             "live_session_caps_ok": True,
             "capability_sources": dict(support.EXPECTED_LIVE_CAPABILITY_SOURCES),
+            "inspect_source": "absent",
+            "agents_attempt_null": True,
+            "doctor_inspect_absent": True,
         }
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

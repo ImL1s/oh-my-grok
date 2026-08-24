@@ -1606,16 +1606,18 @@ def run_doctor(
             "note": SOFT_GATE_FOOTER,
         }
         try:
-            from omg_cli.medley_inspect import resolve_host_snapshot
+            from omg_cli.medley_inspect import inspect_source_for, resolve_host_snapshot
 
-            snap, _doc = resolve_host_snapshot()
+            snap, doc = resolve_host_snapshot()
             body["routing_capabilities"] = snap.to_json()
-        except Exception as exc:
+            body["inspect_source"] = inspect_source_for(doc)
+        except Exception as extra:
             body["routing_capabilities"] = {
                 "schema": "omg-host-capability-registry/v1",
                 "host_tier": "unknown",
-                "error": type(exc).__name__,
+                "error": type(extra).__name__,
             }
+            body["inspect_source"] = "absent"
         if payload_ok:
             emit_json(success("doctor", **body))
         else:
@@ -1667,11 +1669,15 @@ def run_doctor(
 
     try:
         from omg_cli.agent_policy_ux import format_doctor_routing_human
-        from omg_cli.medley_inspect import resolve_host_snapshot
+        from omg_cli.medley_inspect import inspect_source_for, resolve_host_snapshot
 
-        snap, _doc = resolve_host_snapshot()
+        snap, doc = resolve_host_snapshot()
         print("-" * 48)
-        print(format_doctor_routing_human(snap))
+        print(
+            format_doctor_routing_human(
+                snap, inspect_source=inspect_source_for(doc)
+            )
+        )
     except Exception:
         pass
 

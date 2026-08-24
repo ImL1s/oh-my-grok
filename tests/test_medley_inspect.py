@@ -10,9 +10,12 @@ import pytest
 from omg_cli.host_capabilities import HOST_TIER_GROK, HOST_TIER_MEDLEY, route_specific_facts_state
 from omg_cli.medley_inspect import (
     INSPECT_SCHEMA,
+    INSPECT_SOURCE_ABSENT,
+    INSPECT_SOURCE_DOCUMENT,
     MedleyInspectError,
     advertised_from_inspect,
     apply_receipt_to_view_fields,
+    inspect_source_for,
     receipt_for_policy,
     resolve_host_snapshot,
 )
@@ -68,13 +71,24 @@ def test_absent_inspect_is_stock_grok() -> None:
     snap, doc = resolve_host_snapshot(env={})
     assert snap.host_tier == HOST_TIER_GROK
     assert doc is None
+    assert inspect_source_for(doc) == INSPECT_SOURCE_ABSENT
     assert snap.state_of("medley.native-route-receipt.v1") == "unsupported"
+    assert snap.state_of("medley.native-replay-safe-fallback.v1") == "unsupported"
+
+
+def test_missing_inspect_file_fail_closes(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-inspect.json"
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=missing)
+    assert exc.value.code == "E_MEDLEY_INSPECT_PATH"
+    assert inspect_source_for(None) == INSPECT_SOURCE_ABSENT
 
 
 def test_inspect_negotiates_medley_caps(tmp_path: Path) -> None:
     inspect = _write_inspect(tmp_path / "inspect.json")
     snap, doc = resolve_host_snapshot(inspect_path=inspect)
     assert snap.host_tier == HOST_TIER_MEDLEY
+    assert inspect_source_for(doc) == INSPECT_SOURCE_DOCUMENT
     assert snap.is_supported("medley.native-ordered-candidates.v1")
     assert snap.is_supported("medley.native-route-receipt.v1")
     assert snap.is_supported("host.native-exact-model.v1")

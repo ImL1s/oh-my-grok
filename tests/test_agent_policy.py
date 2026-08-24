@@ -67,11 +67,18 @@ def test_stock_orchestrator_executor_verifier_explore_inherit() -> None:
         assert view.selected_model_ref is None
         assert view.route_kind == ROUTE_KIND_NATIVE
         assert view.route_receipt_digest is None
+        assert view.attempt is None
+        assert view.inspect_source == "absent"
         assert view.status == "ready"
         assert spawn_admitted(view)
         assert view.host_facts["medley_capability_outcome"] == "unsupported"
         assert view.host_facts["route_specific_facts"] == "unavailable"
         assert view.to_json()["effective_route"] is None
+        assert view.to_json()["inspect_source"] == "absent"
+        assert any(r.code == "E_MEDLEY_INSPECT_ABSENT" for r in view.reasons)
+        pin = resume_pin(view)
+        assert pin["attempt"] is None
+        assert pin["route_receipt_digest"] is None
 
 
 def test_verifier_extension_not_flattened_on_stock() -> None:
@@ -363,6 +370,25 @@ def test_policy_view_schema_requires_full_projection() -> None:
     assert schema["properties"]["effective_route"]["type"] == ["object", "null"]
     assert view["effective_route"] is None
     assert view["requested_policy"]["binding"] == "inherit"
+    assert view["inspect_source"] == "absent"
+    assert view["attempt"] is None
+    assert schema["properties"]["inspect_source"]["enum"] == ["absent", "document"]
+
+
+def test_inspect_absent_does_not_attempt_medley_18_fallback() -> None:
+    view = resolve_agent_policy("omg-verifier", root=ROOT)
+    assert view.inspect_source == "absent"
+    assert view.attempt is None
+    assert view.route_receipt_digest is None
+    assert view.selected_model_ref is None
+    assert view.candidate_ids
+    assert view.selected_model_ref not in view.candidate_ids
+    assert view.host_facts["medley_capability_outcome"] == "unsupported"
+    assert view.host_facts["route_specific_facts"] == "unavailable"
+    absent = next(r for r in view.reasons if r.code == "E_MEDLEY_INSPECT_ABSENT")
+    assert "not attempted" in absent.message
+    assert absent.next_action == "omg agents list --host-inspect PATH"
+    assert view.reasons[0].code == "E_MEDLEY_INSPECT_ABSENT"
 
 
 def test_inspect_receipt_overlays_verifier_effective_route(tmp_path: Path) -> None:
@@ -423,6 +449,8 @@ def test_inspect_receipt_overlays_verifier_effective_route(tmp_path: Path) -> No
     assert view.selected_model_ref == "review-primary-example"
     assert view.route_receipt_digest == "b" * 64
     assert view.attempt == 3
+    assert view.inspect_source == "document"
+    assert not any(r.code == "E_MEDLEY_INSPECT_ABSENT" for r in view.reasons)
     assert view.host_facts["route_specific_facts"] == "supported"
     assert view.to_json()["effective_route"]["selected_model_ref"] == (
         "review-primary-example"
@@ -484,4 +512,6 @@ def test_inspect_receipt_does_not_overlay_stale_policy_digest(tmp_path: Path) ->
     )
     assert view.selected_model_ref != "review-primary-example"
     assert view.route_receipt_digest is None
+    assert view.attempt is None
+    assert view.inspect_source == "document"
     assert view.to_json()["effective_route"] is None
