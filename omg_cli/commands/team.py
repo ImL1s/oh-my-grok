@@ -2930,7 +2930,7 @@ def register_team_parsers(
         metavar="OP",
         help=(
             "operation name, or 'catalog' for the versioned operation catalog "
-            "(see omg_cli.team.operation_catalog / docs/team-operation-catalog-v5.md)"
+            "(see omg_cli.team.operation_catalog / docs/team-operation-catalog-v6.md)"
         ),
     )
     p_t_api.add_argument(

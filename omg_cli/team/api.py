@@ -4,13 +4,12 @@ Durable mailbox/task mutations go through the CLI-owned stores under
 ``.omg/state/runs/<run_id>/team/<team_key>/``. Workers never write mailbox or
 task files directly.
 
-P0 + P0′ ops (mailbox/task CRUD including claim renew/release, heartbeat/
-shutdown/orphan, events, manifest) are implemented; remaining
-``TEAM_API_OPERATIONS`` return ``E_TEAM_API_UNIMPLEMENTED``. Operation names
+P0 + P0′ ops plus catalog v6 remaining OMX-named file-store handlers are
+implemented. Unknown names return ``E_TEAM_API_UNKNOWN``. Operation names
 and metadata come from ``omg_cli.team.operation_catalog`` (default schema
-v5; v1–v4 goldens remain frozen). Full OMX catalog parity is intentionally
+v6; v1–v5 goldens remain frozen). Full OMX *live* parity is intentionally
 not claimed — see ``omg team api catalog`` /
-``docs/team-operation-catalog-v5.md``.
+``docs/team-operation-catalog-v6.md``.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -43,6 +43,13 @@ from omg_cli.contracts.writer_chain import (
     sha256_hex,
 )
 from omg_cli.redaction import redact_value
+from omg_cli.team.approval import (
+    ApprovalError,
+    read_task_approval,
+    write_task_approval,
+)
+from omg_cli.team.cleanup import CleanupError, cleanup_team_artifacts
+from omg_cli.team.identity import IdentityError, write_worker_identity
 from omg_cli.team.mailbox import (
     MailboxError,
     ack_message,
@@ -50,6 +57,12 @@ from omg_cli.team.mailbox import (
     read_message,
     send_message,
 )
+from omg_cli.team.monitor import (
+    MonitorError,
+    read_monitor_snapshot,
+    write_monitor_snapshot,
+)
+from omg_cli.team.notify import NotifyError, mark_notified
 from omg_cli.team.operation_catalog import (
     P0_OPERATIONS,
     TEAM_API_OPERATIONS,
@@ -85,6 +98,8 @@ from omg_cli.team.plane import (
 CLI_WRITER = "omg-cli"
 CLAIM_LEASE_SECONDS = 15 * 60
 TASK_ID_MAX_DIGITS = 20
+AWAIT_EVENT_TIMEOUT_CAP_MS = 1000
+AWAIT_EVENT_POLL_SLICE_S = 0.01
 
 TEAM_TASK_STATUSES = frozenset(
     {"pending", "blocked", "in_progress", "completed", "failed"}
@@ -1325,6 +1340,49 @@ def _op_mailbox_mark_delivered(root: Path, payload: dict[str, Any]) -> TeamApiEn
     )
 
 
+def _op_mailbox_mark_notified(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    worker = require_safe_id(_require_str(payload, "worker"), label="worker")
+    message_id = require_safe_id(
+        _require_str(payload, "message_id"), label="message_id"
+    )
+    generation = payload.get("generation")
+    if generation is not None and (
+        isinstance(generation, bool) or not isinstance(generation, int) or generation < 0
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "generation must be a non-negative integer when provided",
+            exit_code=2,
+        )
+    try:
+        marked = mark_notified(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            recipient_id=worker,
+            message_id=message_id,
+            expected_cursor=payload.get("expected_cursor"),
+            generation=generation if isinstance(generation, int) else None,
+        )
+    except (NotifyError, MailboxError, ContractValidationError, ValueError, TypeError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "notify_error"},
+        ) from exc
+    return _ok(
+        "mailbox-mark-notified",
+        {
+            "worker": worker,
+            "message_id": message_id,
+            "updated": True,
+            "notify": marked,
+        },
+    )
+
+
 def _op_create_task(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     run_id = _resolve_run_id(payload, root)
     team_id = _resolve_team_id(payload)
@@ -1987,11 +2045,48 @@ def _op_append_event(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("append-event", {"event": event, "path": str(path)})
 
 
-def _op_read_events(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
-    run_id = _resolve_run_id(payload, root)
-    team_id = _resolve_team_id(payload)
-    _require_control_plane(root, run_id)
-    after = _optional_str(payload, "after")  # event_id exclusive cursor
+def _load_event_rows(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if not path.exists():
+        return events
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            events.append(row)
+    return events
+
+
+def _filter_event_rows(
+    rows: list[dict[str, Any]],
+    *,
+    after: str | None,
+    kind_filter: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen_after = after is None
+    for row in rows:
+        eid = str(row.get("event_id") or "")
+        if not seen_after:
+            if eid == after:
+                seen_after = True
+            continue
+        if kind_filter and str(row.get("kind") or "") != kind_filter:
+            continue
+        events.append(row)
+        if len(events) >= limit:
+            break
+    return events
+
+
+def _event_query_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None, int]:
+    after = _optional_str(payload, "after")
     kind_filter = _optional_str(payload, "kind")
     if kind_filter:
         kind_filter = require_safe_id(kind_filter, label="kind")
@@ -2002,31 +2097,62 @@ def _op_read_events(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
             "limit must be a positive integer when provided",
             exit_code=2,
         )
-    limit = min(limit, 1000)
+    return after, kind_filter, min(limit, 1000)
+
+
+def _bounded_timeout_ms(payload: dict[str, Any]) -> int:
+    raw = payload.get("timeout_ms", 0)
+    if raw is None:
+        raw = 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "timeout_ms must be a non-negative integer when provided",
+            exit_code=2,
+        )
+    return min(raw, AWAIT_EVENT_TIMEOUT_CAP_MS)
+
+
+def _await_event_rows(
+    path: Path,
+    *,
+    after: str | None,
+    kind_filter: str | None,
+    limit: int,
+    timeout_ms: int,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """Bounded snapshot (timeout_ms=0) or capped poll. No threads."""
+
+    deadline = monotonic() + (timeout_ms / 1000.0 if timeout_ms else 0.0)
+    while True:
+        events = _filter_event_rows(
+            _load_event_rows(path),
+            after=after,
+            kind_filter=kind_filter,
+            limit=limit,
+        )
+        if events or timeout_ms == 0:
+            return events
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return events
+        sleep(min(AWAIT_EVENT_POLL_SLICE_S, remaining))
+
+
+def _op_read_events(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    _require_control_plane(root, run_id)
+    after, kind_filter, limit = _event_query_from_payload(payload)
     path = _events_path(root, run_id, team_id)
-    events: list[dict[str, Any]] = []
-    if path.exists():
-        seen_after = after is None
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            eid = str(row.get("event_id") or "")
-            if not seen_after:
-                if eid == after:
-                    seen_after = True
-                continue
-            if kind_filter and str(row.get("kind") or "") != kind_filter:
-                continue
-            events.append(row)
-            if len(events) >= limit:
-                break
+    events = _filter_event_rows(
+        _load_event_rows(path),
+        after=after,
+        kind_filter=kind_filter,
+        limit=limit,
+    )
     return _ok(
         "read-events",
         {
@@ -2034,6 +2160,35 @@ def _op_read_events(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
             "events": events,
             "after": after,
             "limit": limit,
+        },
+    )
+
+
+def _op_await_event(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Bounded read of events.jsonl. timeout_ms=0 is one snapshot (no sleep)."""
+
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    _require_control_plane(root, run_id)
+    after, kind_filter, limit = _event_query_from_payload(payload)
+    timeout_ms = _bounded_timeout_ms(payload)
+    path = _events_path(root, run_id, team_id)
+    events = _await_event_rows(
+        path,
+        after=after,
+        kind_filter=kind_filter,
+        limit=limit,
+        timeout_ms=timeout_ms,
+    )
+    return _ok(
+        "await-event",
+        {
+            "count": len(events),
+            "events": events,
+            "after": after,
+            "limit": limit,
+            "timeout_ms": timeout_ms,
+            "matched": bool(events),
         },
     )
 
@@ -2081,6 +2236,156 @@ def _op_get_summary(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     return _ok("get-summary", {"summary": summary})
 
 
+def _liveness_dir(root: Path, run_id: str, team_id: str) -> Path:
+    return _team_state_dir(root, run_id, team_id) / "liveness"
+
+
+def _list_liveness_rows(
+    root: Path, run_id: str, team_id: str
+) -> list[dict[str, Any]]:
+    from omg_cli.team.liveness import load_liveness
+
+    directory = _liveness_dir(root, run_id, team_id)
+    if not directory.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in sorted(directory.glob("*.json")):
+        # Filenames are confined hashes; recover identity from the body.
+        try:
+            parsed = parse_canonical_json_bytes(path.read_bytes())
+        except (OSError, ContractValidationError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        task_id = str(parsed.get("task_id") or "")
+        if not task_id or task_id in seen:
+            continue
+        try:
+            row = load_liveness(
+                root, run_id=run_id, team_id=team_id, task_id=task_id
+            )
+        except (ContractValidationError, ValueError):
+            continue
+        if row is None:
+            continue
+        seen.add(task_id)
+        rows.append(row)
+    return rows
+
+
+def _derive_idle_stall(
+    root: Path, run_id: str, team_id: str, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Idle/stall from heartbeat + task timestamps only. Never probes tmux."""
+
+    from omg_cli.team.liveness import LivenessError, classify_liveness
+
+    current = now or _now_utc()
+    config = _load_config(root, run_id, team_id)
+    if config is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team_not_found",
+            details={"error": "team_not_found"},
+        )
+    tasks = _list_tasks(root, run_id, team_id)
+    liveness_rows = _list_liveness_rows(root, run_id, team_id)
+    class_by_worker: dict[str, str] = {}
+    for row in liveness_rows:
+        worker_id = str(row.get("worker_id") or "")
+        if not worker_id:
+            continue
+        try:
+            class_by_worker[worker_id] = classify_liveness(row, now=current)
+        except (LivenessError, ContractValidationError, ValueError, TypeError):
+            continue
+
+    in_progress_unexpired: set[str] = set()
+    stalled_tasks: list[dict[str, Any]] = []
+    for task in tasks:
+        owner = str(task.get("owner") or "")
+        claim = task.get("claim") if isinstance(task.get("claim"), Mapping) else None
+        if task.get("status") == "in_progress" and owner:
+            if claim and not _lease_expired(claim):
+                in_progress_unexpired.add(owner)
+            else:
+                stalled_tasks.append(
+                    {
+                        "task_id": task["id"],
+                        "owner": owner,
+                        "reason": "expired_or_missing_claim",
+                    }
+                )
+
+    idle_workers: list[str] = []
+    busy_workers: list[str] = []
+    stalled_workers: list[str] = []
+    for item in config["workers"]:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        klass = class_by_worker.get(name)
+        is_stalled = klass == "stalled" or any(
+            row["owner"] == name for row in stalled_tasks
+        )
+        is_busy = klass == "live" or name in in_progress_unexpired
+        if is_stalled:
+            stalled_workers.append(name)
+        elif is_busy:
+            busy_workers.append(name)
+        else:
+            idle_workers.append(name)
+    return {
+        "run_id": run_id,
+        "team_id": team_id,
+        "derived_from": "heartbeat+task_timestamps",
+        "tmux_probed": False,
+        "idle_workers": idle_workers,
+        "busy_workers": busy_workers,
+        "stalled_workers": stalled_workers,
+        "stalled_tasks": stalled_tasks,
+        "idle": bool(config["workers"]) and not busy_workers and not stalled_workers,
+        "stalled": bool(stalled_workers or stalled_tasks),
+    }
+
+
+def _op_read_idle_state(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    derived = _derive_idle_stall(root, run_id, team_id)
+    return _ok(
+        "read-idle-state",
+        {
+            "idle": derived["idle"],
+            "idle_workers": derived["idle_workers"],
+            "busy_workers": derived["busy_workers"],
+            "derived_from": derived["derived_from"],
+            "tmux_probed": False,
+            "run_id": run_id,
+            "team_id": team_id,
+        },
+    )
+
+
+def _op_read_stall_state(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    derived = _derive_idle_stall(root, run_id, team_id)
+    return _ok(
+        "read-stall-state",
+        {
+            "stalled": derived["stalled"],
+            "stalled_workers": derived["stalled_workers"],
+            "stalled_tasks": derived["stalled_tasks"],
+            "derived_from": derived["derived_from"],
+            "tmux_probed": False,
+            "run_id": run_id,
+            "team_id": team_id,
+        },
+    )
+
+
 def _op_write_worker_inbox(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     run_id = _resolve_run_id(payload, root)
     team_id = _resolve_team_id(payload)
@@ -2107,6 +2412,57 @@ def _op_write_worker_inbox(root: Path, payload: dict[str, Any]) -> TeamApiEnvelo
         path, content.encode("utf-8"), mode=DATA_FILE_MODE, replace=True
     )
     return _ok("write-worker-inbox", {"worker": worker, "path": str(path)})
+
+
+def _op_write_worker_identity(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    worker = require_safe_id(_require_str(payload, "worker"), label="worker")
+    role = _optional_str(payload, "role") or "worker"
+    generation = payload.get("generation", 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "generation must be a non-negative integer when provided",
+            exit_code=2,
+        )
+    expected_generation = payload.get("expected_generation")
+    if expected_generation is not None and (
+        isinstance(expected_generation, bool)
+        or not isinstance(expected_generation, int)
+        or expected_generation < 0
+    ):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "expected_generation must be a non-negative integer when provided",
+            exit_code=2,
+        )
+    config = _load_config(root, run_id, team_id)
+    if config is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            "team_not_found",
+            details={"error": "team_not_found"},
+        )
+    _require_worker_in_config(config, worker)
+    try:
+        record = write_worker_identity(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            worker_id=worker,
+            role=role,
+            generation=generation,
+            attributes=payload.get("attributes"),
+            expected_generation=expected_generation,
+        )
+    except (IdentityError, ContractValidationError, ValueError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "identity_error"},
+        ) from exc
+    return _ok("write-worker-identity", {"identity": record})
 
 
 def _shutdown_ack_path(root: Path, run_id: str, worker: str) -> Path:
@@ -2447,6 +2803,62 @@ def _op_orphan_cleanup(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     )
 
 
+def _op_cleanup(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    """Leader-only terminal artifact removal after shutdown ack.
+
+    Distinct from orphan-cleanup. Never sets OMG verified.
+    """
+    from omg_cli.team.plane import load_team_meta
+
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"team meta missing: {exc}",
+            details={"error": "team_not_found"},
+        ) from exc
+    config = _load_config(root, run_id, team_id)
+    workers: list[str] = []
+    seen: set[str] = set()
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "").strip()
+        if tid and tid not in seen:
+            require_safe_id(tid, label="worker")
+            workers.append(tid)
+            seen.add(tid)
+    if config is not None:
+        for item in config.get("workers") or []:
+            if not isinstance(item, Mapping):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name and name not in seen:
+                require_safe_id(name, label="worker")
+                workers.append(name)
+                seen.add(name)
+    tasks = _list_tasks(root, run_id, team_id) if config is not None else []
+    try:
+        receipt = cleanup_team_artifacts(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            meta=meta,
+            tasks=tasks,
+            workers=workers,
+        )
+    except CleanupError as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": exc.code, "code": exc.code, **exc.details},
+        ) from exc
+    return _ok("cleanup", receipt)
+
+
 def _op_replace_worker(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
     """Leader-only identity-fenced worker replacement (#69 PR5)."""
     from omg_cli.team.replacement import ReplacementError, replace_worker
@@ -2584,11 +2996,195 @@ def _op_reorder_host_prompt_queue(root: Path, payload: dict[str, Any]) -> TeamAp
     return _ok("reorder-host-prompt-queue", listing)
 
 
+def _public_monitor_body(
+    root: Path, run_id: str, team_id: str
+) -> dict[str, Any]:
+    """Derive a secret-free monitor body from heartbeat + task timestamps."""
+
+    config = _load_config(root, run_id, team_id)
+    tasks = _list_tasks(root, run_id, team_id) if config is not None else []
+    counts = {
+        "total": len(tasks),
+        "pending": 0,
+        "blocked": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    public_tasks: list[dict[str, Any]] = []
+    for task in tasks:
+        status = str(task.get("status") or "")
+        if status in counts:
+            counts[status] += 1
+        claim = task.get("claim") if isinstance(task.get("claim"), Mapping) else None
+        public_tasks.append(
+            {
+                "id": task.get("id"),
+                "status": status,
+                "owner": task.get("owner"),
+                "created_at": task.get("created_at"),
+                "leased_until": None if claim is None else claim.get("leased_until"),
+            }
+        )
+    liveness: list[dict[str, Any]] = []
+    from omg_cli.team.liveness import LivenessError, classify_liveness
+
+    for row in _list_liveness_rows(root, run_id, team_id):
+        try:
+            klass = classify_liveness(row)
+        except (LivenessError, ContractValidationError, ValueError, TypeError):
+            klass = "unknown"
+        liveness.append(
+            {
+                "task_id": row.get("task_id"),
+                "worker_id": row.get("worker_id"),
+                "class": klass,
+                "heartbeat_at": row.get("heartbeat_at"),
+                "claim_expires_at": row.get("claim_expires_at"),
+                "terminal": row.get("terminal"),
+            }
+        )
+    return {
+        "workers": [] if config is None else [item["name"] for item in config["workers"]],
+        "tasks": counts,
+        "task_rows": public_tasks,
+        "liveness": liveness,
+        "derived_from": "heartbeat+task_timestamps",
+    }
+
+
+def _op_read_monitor_snapshot(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    try:
+        record = read_monitor_snapshot(root, run_id=run_id, team_id=team_id)
+    except (MonitorError, ContractValidationError, ValueError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "monitor_error"},
+        ) from exc
+    if record is None:
+        return _ok(
+            "read-monitor-snapshot",
+            {"present": False, "snapshot": None},
+        )
+    return _ok(
+        "read-monitor-snapshot",
+        {"present": True, "snapshot": record},
+    )
+
+
+def _op_write_monitor_snapshot(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    body = payload.get("snapshot")
+    if body is None:
+        body = _public_monitor_body(root, run_id, team_id)
+    elif not isinstance(body, (dict, list)):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "snapshot must be an object or list when provided",
+            exit_code=2,
+        )
+    try:
+        record = write_monitor_snapshot(
+            root, run_id=run_id, team_id=team_id, snapshot=body
+        )
+    except (MonitorError, ContractValidationError, ValueError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "monitor_error"},
+        ) from exc
+    return _ok("write-monitor-snapshot", {"snapshot": record})
+
+
+def _op_read_task_approval(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    task_id = _validate_task_id(_require_str(payload, "task_id"))
+    try:
+        record = read_task_approval(
+            root, run_id=run_id, team_id=team_id, task_id=task_id
+        )
+    except (ApprovalError, ContractValidationError, ValueError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "approval_error"},
+        ) from exc
+    if record is None:
+        return _ok(
+            "read-task-approval",
+            {"task_id": task_id, "present": False, "approval": None},
+        )
+    return _ok(
+        "read-task-approval",
+        {"task_id": task_id, "present": True, "approval": record},
+    )
+
+
+def _op_write_task_approval(root: Path, payload: dict[str, Any]) -> TeamApiEnvelope:
+    run_id = _resolve_run_id(payload, root)
+    team_id = _resolve_team_id(payload)
+    task_id = _validate_task_id(_require_str(payload, "task_id"))
+    decision = _require_str(payload, "decision").strip().lower()
+    allow_terminal = payload.get("allow_terminal", False)
+    if not isinstance(allow_terminal, bool):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "allow_terminal must be a boolean when provided",
+            exit_code=2,
+        )
+    task = _read_visible_task(root, run_id, team_id, task_id)
+    if task is None:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            f"task {task_id!r} not found",
+            details={"error": "task_not_found", "task_id": task_id},
+        )
+    approver = _optional_str(payload, "approver") or "leader"
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        raise TeamApiError(
+            "E_TEAM_API_INVALID_INPUT",
+            "note must be a string when provided",
+            exit_code=2,
+        )
+    try:
+        record = write_task_approval(
+            root,
+            run_id=run_id,
+            team_id=team_id,
+            task_id=task_id,
+            decision=decision,
+            task_status=str(task["status"]),
+            approver=approver,
+            note=note,
+            allow_terminal=allow_terminal,
+        )
+    except (ApprovalError, ContractValidationError, ValueError) as exc:
+        raise TeamApiError(
+            "E_TEAM_API_FAILED",
+            str(exc),
+            details={"error": "approval_error"},
+        ) from exc
+    return _ok(
+        "write-task-approval",
+        {
+            "approval": record,
+            "never_sets_verified": True,
+        },
+    )
+
+
 _HANDLERS: dict[str, Handler] = {
     "send-message": _op_send_message,
     "broadcast": _op_broadcast,
     "mailbox-list": _op_mailbox_list,
     "mailbox-mark-delivered": _op_mailbox_mark_delivered,
+    "mailbox-mark-notified": _op_mailbox_mark_notified,
     "create-task": _op_create_task,
     "bulk-create-tasks": _op_bulk_create_tasks,
     "read-task": _op_read_task,
@@ -2602,6 +3198,7 @@ _HANDLERS: dict[str, Handler] = {
     "read-config": _op_read_config,
     "read-manifest": _op_read_manifest,
     "write-worker-inbox": _op_write_worker_inbox,
+    "write-worker-identity": _op_write_worker_identity,
     "update-worker-heartbeat": _op_update_worker_heartbeat,
     "read-worker-heartbeat": _op_read_worker_heartbeat,
     "read-worker-status": _op_read_worker_status,
@@ -2610,13 +3207,21 @@ _HANDLERS: dict[str, Handler] = {
     "write-shutdown-ack": _op_write_shutdown_ack,
     "read-shutdown-ack": _op_read_shutdown_ack,
     "orphan-cleanup": _op_orphan_cleanup,
+    "cleanup": _op_cleanup,
     "append-event": _op_append_event,
     "read-events": _op_read_events,
+    "await-event": _op_await_event,
+    "read-idle-state": _op_read_idle_state,
+    "read-stall-state": _op_read_stall_state,
     "replace-worker": _op_replace_worker,
     "read-presentation-state": _op_read_presentation_state,
     "enqueue-host-prompt": _op_enqueue_host_prompt,
     "list-host-prompt-queue": _op_list_host_prompt_queue,
     "reorder-host-prompt-queue": _op_reorder_host_prompt_queue,
+    "read-monitor-snapshot": _op_read_monitor_snapshot,
+    "write-monitor-snapshot": _op_write_monitor_snapshot,
+    "read-task-approval": _op_read_task_approval,
+    "write-task-approval": _op_write_task_approval,
 }
 
 
@@ -2697,7 +3302,11 @@ def _apply_worker_identity_matrix(
                 details={"error": "identity_mismatch"},
             )
         out["from_worker"] = identity
-    if operation in ("mailbox-list", "mailbox-mark-delivered"):
+    if operation in (
+        "mailbox-list",
+        "mailbox-mark-delivered",
+        "mailbox-mark-notified",
+    ):
         claimed = out.get("worker")
         if claimed is not None and str(claimed).strip() and str(claimed).strip() != identity:
             raise TeamApiError(

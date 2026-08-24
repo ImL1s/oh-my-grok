@@ -175,9 +175,10 @@ New start/scale also stamp an additive `route` descriptor
   catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) +
   composition lane worker protocol claim/submit (PR13) + fixture-backed
   composition execution (PR14) landed — compile/produce stay
-  `execution_supported=false`; catalog v5 implements broadcast + Team-owned
-  host prompt-queue consume (not host-TUI wiring); hermetic grok job
-  provider is admitted — not live grok/AG job smoke; partial catalog, not full OMX)
+  `execution_supported=false`; catalog v6 implements remaining reserved OMX
+  names on hermetic file stores (42 named / 42 dispatched; not live AG / live
+  grok job smoke / host-TUI prompt-queue); hermetic grok job provider is
+  admitted — not live grok/AG job smoke; catalog names complete, live OMX leftover)
 - No automatic replacement policy / retry scheduler / attempt budgets
 - No pane↔job migration during replacement
 - No TUI / native execution path

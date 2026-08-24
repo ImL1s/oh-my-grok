@@ -137,7 +137,7 @@ def test_catalog_v1_v2_v3_frozen() -> None:
     assert serialize_operation_catalog(
         operations=TEAM_OPERATION_CATALOG_V3, schema_version=3
     ) == json.loads(GOLDEN_V3.read_text(encoding="utf-8"))
-    assert CATALOG_SCHEMA_VERSION == 5
+    assert CATALOG_SCHEMA_VERSION == 6
     assert len(TEAM_OPERATION_CATALOG_V3) == 38
     # Hyperplan is not a Team API catalog operation (composition CLI only).
     blob = catalog_document_json()
@@ -425,7 +425,7 @@ def test_cli_materialize_and_validate(
 
 def test_catalog_v5_does_not_imply_verified_or_hyperplan_api(tmp_path: Path) -> None:
     # Catalog v5 adds broadcast + host prompt-queue; Hyperplan remains composition CLI only.
-    assert CATALOG_SCHEMA_VERSION == 5
+    assert CATALOG_SCHEMA_VERSION == 6
     blob = catalog_document_json()
     assert '"bulk-create-tasks"' in blob
     assert '"enqueue-host-prompt"' in blob
