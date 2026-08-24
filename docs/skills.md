@@ -344,7 +344,7 @@ omg team api await-event --input '{"run_id":"RUN","team_id":"t","timeout_ms":0}'
 omg team api read-idle-state --input '{"run_id":"RUN","team_id":"t"}' --json
 omg team api cleanup --input '{"run_id":"RUN","team_id":"t"}' --json
 omg team status --run RUN --presentation --json
-# Hyperplan V1 hermetic produce + task driver + lane protocol + fixture execute (#69 PR14; compile execution_supported=false):
+# Hyperplan V1 hermetic produce + task driver + lane protocol + execute (#69; compile execution_supported=false; grok via Jobs, not live_verified):
 omg team hyperplan plan --spec SPEC.json --json
 omg team hyperplan materialize --spec SPEC.json --run RUN --json
 omg team hyperplan validate-decision --run RUN --input DECISION.json --json
@@ -353,8 +353,8 @@ omg team hyperplan admit-tasks --run RUN --team-id TEAM --json
 omg team hyperplan collect-tasks --run RUN --team-id TEAM --json
 omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE --json
 omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
-omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
-# Security Research V1 hermetic produce + task driver + lane protocol + fixture execute (#69 PR14; execution_supported=false on compile):
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
+# Security Research V1 hermetic produce + task driver + lane protocol + execute (#69; execution_supported=false on compile; grok via Jobs, not live_verified):
 omg team security-research plan --spec SPEC.json --json
 omg team security-research materialize --spec SPEC.json --run RUN --json
 omg team security-research validate-report --run RUN --input REPORT.json --json
@@ -363,7 +363,7 @@ omg team security-research admit-tasks --run RUN --team-id TEAM --json
 omg team security-research collect-tasks --run RUN --team-id TEAM --json
 omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE --json
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json --json
-omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
 omg team api send-message --input '{"run_id":"RUN","team_id":"t","from_worker":"leader","to_worker":"w1","body":"hi"}' --json
 # P0′ ops + remaining OMX-named file-store handlers; catalog v6 = 42 named / 42 dispatched (see docs/team-operation-catalog-v6.md); v1–v5 goldens unchanged)
 # disable: export OMG_DISABLE_TMUX_TEAM=1

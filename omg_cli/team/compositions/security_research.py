@@ -16,8 +16,9 @@ auto-worker execution lives in ``omg_cli.team.compositions.execution`` and
 writes a separate ``omg.team.composition_execution_v1`` evidence document;
 compile / produce / admit / collect / claim still stamp
 ``execution_supported=false``. Immutable safe-PoC policy is unchanged: this
-module never launches grok/agy/antigravity/cursor, Jobs, tmux, MCP, or PoC
-surfaces, and never sets ``verified`` / ``passes``.
+module never launches agy/claude/codex/cursor, tmux, MCP, or PoC surfaces,
+and never sets ``verified`` / ``passes``. Grok composition execute is
+delegated to ``execution.execute_composition_tasks_v1``.
 """
 
 from __future__ import annotations
@@ -2153,7 +2154,7 @@ def execute_security_research_tasks_v1(
     bundle: Mapping[str, Any] | Any,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Leader-only: fixture workers claim/submit SR lanes, then collect."""
+    """Leader-only: fixture or grok workers claim/submit SR lanes, then collect."""
     from omg_cli.team.compositions.execution import (
         CompositionExecutionError,
         execute_composition_tasks_v1,

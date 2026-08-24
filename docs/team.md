@@ -173,9 +173,10 @@ New start/scale also stamp an additive `route` descriptor
 ## Non-goals (this slice)
 
 - No live Antigravity proof / `live_*` maturity claims
-- No live grok / agy / antigravity / cursor composition auto-workers /
-  live job-backed workers / host-TUI prompt-queue consume / model synthesis /
-  PoC running
+- No live Antigravity / agy / claude / codex / cursor / kimi / omc
+  composition auto-workers / live AG job-backed workers / host-TUI
+  prompt-queue consume / model synthesis / PoC running. Grok composition
+  execute is admitted via Jobs `launch_worker` (not `live_verified`).
   (Security Research hermetic result production landed in PR9;
   Hyperplan hermetic result production landed in PR10;
   catalog v4 task-batch admission (PR11) + composition task driver admit/collect (PR12) +
@@ -190,15 +191,16 @@ New start/scale also stamp an additive `route` descriptor
 - No TUI / native execution path
 - Does **not** close #69
 
-## Hyperplan V1 (hermetic produce + task driver + lane protocol + fixture execute)
+## Hyperplan V1 (hermetic produce + task driver + lane protocol + execute)
 
 See `docs/team-hyperplan-v1.md`. Contract + hermetic result production +
 shared composition task-driver admission/collection + worker-scoped
-claim-lane / submit-lane-result + fixture-backed auto-worker execution
-landed. Compile / produce / admit / collect / claim keep
+claim-lane / submit-lane-result + fixture- or grok-backed auto-worker
+execution landed. Compile / produce / admit / collect / claim keep
 `execution_supported=false`. `omg.team.composition_execution_v1` may stamp
-true only with fixture worker evidence. Live providers / live job-backed
-workers remain open. Hermetic `--worker-topology=job --provider grok` is
+true only with worker evidence. `--executor grok` uses existing Jobs
+`launch_worker` (not `live_verified`). agy/claude/codex/cursor/kimi/omc
+remain refused. Hermetic `--worker-topology=job --provider grok` is
 admitted.
 
 ```bash
@@ -210,16 +212,17 @@ omg team hyperplan admit-tasks --run RUN --team-id TEAM
 omg team hyperplan collect-tasks --run RUN --team-id TEAM
 omg team hyperplan claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team hyperplan submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
-omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
 ```
 
-## Security Research V1 (hermetic produce + task driver + lane protocol + fixture execute)
+## Security Research V1 (hermetic produce + task driver + lane protocol + execute)
 
 See `docs/team-security-research-v1.md`. Contract + hermetic result production
 + shared composition task-driver admission/collection + worker-scoped
-claim-lane / submit-lane-result + fixture-backed auto-worker execution
-landed. Compile / produce stay `execution_supported=false`. Safe-PoC policy
-unchanged (no PoC running). Live providers remain open.
+claim-lane / submit-lane-result + fixture- or grok-backed auto-worker
+execution landed. Compile / produce stay `execution_supported=false`. Safe-PoC
+policy unchanged (no PoC running). agy/claude/codex/cursor/kimi/omc remain
+refused.
 
 ```bash
 omg team security-research plan --spec SPEC.json --json
@@ -230,7 +233,7 @@ omg team security-research admit-tasks --run RUN --team-id TEAM
 omg team security-research collect-tasks --run RUN --team-id TEAM
 omg team security-research claim-lane --run RUN --team-id TEAM --lane-id LANE
 omg team security-research submit-lane-result --run RUN --team-id TEAM --claim-file CLAIM.json --result RESULT.json
-omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
 ```
 
 Refs #69.

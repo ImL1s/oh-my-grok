@@ -6,8 +6,9 @@ protocol claim/submit + fixture-backed auto-worker execution evidence) live
 here. Compile / produce / admit / collect / claim keep
 ``execution_supported=false``. Fixture execution stamps
 ``execution_supported=true`` only on ``omg.team.composition_execution_v1``
-with worker evidence. Live grok/agy/antigravity/cursor auto-execution,
-job-backed workers, and catalog v5 remain out of scope.
+with worker evidence. ``executor=grok`` launches via existing Jobs
+``launch_worker`` (not ``live_verified``). agy/claude/codex/cursor/kimi/omc
+auto-execution remain refused.
 """
 
 from __future__ import annotations

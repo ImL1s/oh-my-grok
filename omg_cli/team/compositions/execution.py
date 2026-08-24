@@ -1,22 +1,23 @@
-"""Composition Execution V1 — fixture-backed auto-worker path (#69 PR14).
+"""Composition Execution V1 — fixture + grok Jobs auto-worker path (#69).
 
 Leader-only driver that runs the existing claim-lane / submit-lane-result
-protocol with **fixture** workers, collects lane results, and persists
+protocol, collects lane results, and persists
 ``omg.team.composition_execution_v1`` **only** after those workers ran.
 
 ``execution_supported=true`` is allowed **only** on that evidence document,
-and only when worker evidence is complete (run ids, fixture pane ids, lane
-result digests). Forged ``{execution_supported: true}`` without evidence is
-refused. ``--input`` is a composition ``ResultBundleV1`` and is normalized
-with the same exact-key / foreign-writer / digest / artifact_kind contract
-as produce-decision / produce-report **before** fixture workers submit
-``LaneTaskResultV1`` payloads. Compile / produce / admit / collect / claim
-contracts keep ``execution_supported=false``.
+and only when worker evidence is complete (run ids, pane ids, lane
+result digests; grok rows also carry ``job_id``). Forged
+``{execution_supported: true}`` without evidence is refused. ``--input`` is a
+composition ``ResultBundleV1`` and is normalized with the same exact-key /
+foreign-writer / digest / artifact_kind contract as produce-decision /
+produce-report **before** workers submit ``LaneTaskResultV1`` payloads.
+Compile / produce / admit / collect / claim keep ``execution_supported=false``.
 
-This slice is fixture-only: grok / agy / antigravity / cursor (and other
-live providers) auto-execution is fail-closed. No PoC, Jobs, tmux, MCP,
-Antigravity, or ``live_*`` promotion. Never writes ``passes`` / ``verified``.
-No catalog v5.
+Executors: ``fixture`` (in-process pane workers) and ``grok`` (existing
+``launch_worker`` Jobs plane; provider=grok). agy / antigravity / claude /
+codex / cursor / kimi / omc remain refused. Grok execute is **not**
+``live_verified``. No PoC, tmux, MCP, or catalog bump. Never writes
+``passes`` / ``verified``.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ from omg_cli.contracts.state_schemas import (
 )
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
+from omg_cli.jobs.models import JobState, JobStoreError
+from omg_cli.jobs.runtime import cancel_job, wait_job
 from omg_cli.state import _safe_run_id
 from omg_cli.team.api import _read_task
 from omg_cli.team.compositions.lane_protocol import (
@@ -66,7 +69,11 @@ from omg_cli.team.compositions.task_driver import (
     parse_lane_task_result_v1,
     resolve_composition_batch_binding_v1,
 )
-from omg_cli.team.launch import WORKER_TOPOLOGY_JOB
+from omg_cli.team.launch import (
+    WORKER_TOPOLOGY_JOB,
+    WorkerLaunchError,
+    launch_worker,
+)
 from omg_cli.team.plane import (
     TEAM_ID_ENV,
     TEAM_LEADER_ROOT_ENV,
@@ -81,8 +88,12 @@ from omg_cli.team.plane import (
 COMPOSITION_EXECUTION_KIND = "omg.team.composition_execution_v1"
 COMPOSITION_EXECUTION_SCHEMA_VERSION = 1
 FIXTURE_EXECUTOR = "fixture"
+GROK_EXECUTOR = "grok"
 HYPERPLAN_EXECUTION_FILENAME = "hyperplan-v1-execution.json"
 SECURITY_RESEARCH_EXECUTION_FILENAME = "security-research-v1-execution.json"
+GROK_JOB_WAIT_S = 30.0
+_SUPPORTED_EXECUTORS = (FIXTURE_EXECUTOR, GROK_EXECUTOR)
+_SUPPORTED_EXECUTORS_TEXT = "fixture, grok"
 
 _REFUSED_LIVE_EXECUTORS = frozenset(
     {
@@ -93,7 +104,6 @@ _REFUSED_LIVE_EXECUTORS = frozenset(
         "cursor",
         "cursor-agent",
         "gemini",
-        "grok",
         "kimi",
         "omc",
         "omx",
@@ -133,11 +143,20 @@ _EVIDENCE_REQUIRED = frozenset(
     }
 )
 _LANE_DIGEST_REQUIRED = frozenset({"lane_id", "digest"})
-_LIMITATIONS = (
+_EVIDENCE_OPTIONAL = frozenset({"job_id"})
+_FIXTURE_LIMITATIONS = (
     "executor=fixture",
     "no_live_providers",
     "no_poc_execution",
     "compile_execution_supported=false",
+)
+_GROK_LIMITATIONS = (
+    "executor=grok",
+    "jobs_plane_headless",
+    "no_agy_claude_codex_cursor_kimi_omc",
+    "no_poc_execution",
+    "compile_execution_supported=false",
+    "not_live_verified",
 )
 _SOURCE_FILENAMES = {
     SOURCE_KIND_HYPERPLAN: HYPERPLAN_EXECUTION_FILENAME,
@@ -177,28 +196,45 @@ def _wrap_lane(exc: CompositionLaneProtocolError) -> CompositionExecutionError:
     )
 
 
-def require_fixture_executor(executor: Any) -> str:
-    """Fail closed unless *executor* is exactly ``fixture``."""
+def require_composition_executor(executor: Any) -> str:
+    """Fail closed unless *executor* is ``fixture`` or ``grok``."""
     if not isinstance(executor, str) or not executor.strip():
         raise CompositionExecutionError(
-            "executor is required (supported: fixture)",
+            f"executor is required (supported: {_SUPPORTED_EXECUTORS_TEXT})",
             code="E_TEAM_COMPOSITION_EXEC_EXECUTOR",
         )
     norm = executor.strip().lower()
     if norm == FIXTURE_EXECUTOR:
         return FIXTURE_EXECUTOR
+    if norm == GROK_EXECUTOR:
+        return GROK_EXECUTOR
     if norm in _REFUSED_LIVE_EXECUTORS:
         raise CompositionExecutionError(
             f"auto-execution executor {executor!r} refused "
-            f"(fixture only; {norm} live workers remain open under #69)",
+            f"(supported: fixture|grok; {norm} live workers remain open under #69)",
             code="E_TEAM_COMPOSITION_EXEC_EXECUTOR",
-            details={"executor": norm, "supported": FIXTURE_EXECUTOR},
+            details={
+                "executor": norm,
+                "supported": list(_SUPPORTED_EXECUTORS),
+            },
         )
     raise CompositionExecutionError(
-        f"unsupported composition executor {executor!r} (supported: fixture)",
+        f"unsupported composition executor {executor!r} "
+        f"(supported: {_SUPPORTED_EXECUTORS_TEXT})",
         code="E_TEAM_COMPOSITION_EXEC_EXECUTOR",
-        details={"executor": norm, "supported": FIXTURE_EXECUTOR},
+        details={"executor": norm, "supported": list(_SUPPORTED_EXECUTORS)},
     )
+
+
+def require_fixture_executor(executor: Any) -> str:
+    """Back-compat alias for :func:`require_composition_executor`."""
+    return require_composition_executor(executor)
+
+
+def _limitations_for(executor: str) -> tuple[str, ...]:
+    if executor == GROK_EXECUTOR:
+        return _GROK_LIMITATIONS
+    return _FIXTURE_LIMITATIONS
 
 
 def fixture_pane_id(worker_id: str) -> str:
@@ -206,6 +242,18 @@ def fixture_pane_id(worker_id: str) -> str:
     try:
         wid = require_safe_id(worker_id, label="worker_id")
         return require_safe_id(f"fx-{wid}", label="pane_id")
+    except ContractValidationError as exc:
+        raise CompositionExecutionError(
+            str(exc),
+            code="E_TEAM_COMPOSITION_EXEC_PANE",
+        ) from exc
+
+
+def grok_job_pane_id(job_id: str) -> str:
+    """Deterministic grok Jobs pane identity (not a tmux ``%N`` pane)."""
+    try:
+        jid = require_safe_id(job_id, label="job_id")
+        return require_safe_id(f"job-{jid}", label="pane_id")
     except ContractValidationError as exc:
         raise CompositionExecutionError(
             str(exc),
@@ -239,14 +287,18 @@ def _digest_core(body: Mapping[str, Any]) -> str:
 
 
 def _parse_worker_evidence_row(
-    raw: Any, *, index: int, expected_run_id: str
+    raw: Any,
+    *,
+    index: int,
+    expected_run_id: str,
+    executor: str = FIXTURE_EXECUTOR,
 ) -> dict[str, Any]:
     try:
         body = require_object(raw, label=f"worker_evidence[{index}]")
         require_exact_keys(
             body,
             required=_EVIDENCE_REQUIRED,
-            optional=frozenset(),
+            optional=_EVIDENCE_OPTIONAL,
             label=f"worker_evidence[{index}]",
         )
         lane_id = require_safe_id(body.get("lane_id"), label="lane_id")
@@ -268,14 +320,42 @@ def _parse_worker_evidence_row(
             "worker_evidence run_id must match document run_id",
             code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
         )
-    expected_pane = fixture_pane_id(worker_id)
-    if pane_id != expected_pane:
-        raise CompositionExecutionError(
-            "fixture pane_id must equal fx-{worker_id}",
-            code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
-            details={"pane_id": pane_id, "expected": expected_pane},
-        )
-    return {
+    job_id: str | None = None
+    if executor == GROK_EXECUTOR:
+        raw_job = body.get("job_id")
+        if raw_job is None or (isinstance(raw_job, str) and not raw_job.strip()):
+            raise CompositionExecutionError(
+                "grok worker_evidence requires job_id",
+                code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
+            )
+        try:
+            job_id = require_safe_id(raw_job, label="job_id")
+        except ContractValidationError as exc:
+            raise CompositionExecutionError(
+                str(exc),
+                code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
+            ) from exc
+        expected_pane = grok_job_pane_id(job_id)
+        if pane_id != expected_pane:
+            raise CompositionExecutionError(
+                "grok pane_id must equal job-{job_id}",
+                code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
+                details={"pane_id": pane_id, "expected": expected_pane},
+            )
+    else:
+        if "job_id" in body:
+            raise CompositionExecutionError(
+                "fixture worker_evidence must not include job_id",
+                code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
+            )
+        expected_pane = fixture_pane_id(worker_id)
+        if pane_id != expected_pane:
+            raise CompositionExecutionError(
+                "fixture pane_id must equal fx-{worker_id}",
+                code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
+                details={"pane_id": pane_id, "expected": expected_pane},
+            )
+    row = {
         "lane_id": lane_id,
         "task_id": task_id,
         "worker_id": worker_id,
@@ -284,12 +364,15 @@ def _parse_worker_evidence_row(
         "result_digest": result_digest,
         "claim_digest": claim_digest,
     }
+    if job_id is not None:
+        row["job_id"] = job_id
+    return row
 
 
 def parse_composition_execution_v1(raw: Any) -> dict[str, Any]:
     """Exact-key ``CompositionExecutionV1`` parser (fail closed).
 
-    ``execution_supported=true`` is accepted only with complete fixture worker
+    ``execution_supported=true`` is accepted only with complete worker
     evidence. A forged ``{execution_supported: true}`` object is refused.
     """
     if isinstance(raw, (bytes, bytearray)):
@@ -357,16 +440,16 @@ def parse_composition_execution_v1(raw: Any) -> dict[str, Any]:
             code="E_TEAM_COMPOSITION_EXEC_WRITER",
         )
     try:
-        executor = require_fixture_executor(body.get("executor"))
+        executor = require_composition_executor(body.get("executor"))
     except CompositionExecutionError:
         raise CompositionExecutionError(
-            "composition execution document executor must be fixture",
+            "composition execution document executor must be fixture or grok",
             code="E_TEAM_COMPOSITION_EXEC_EXECUTOR",
         )
 
     if body.get("execution_supported") is not True:
         raise CompositionExecutionError(
-            "execution_supported=true requires fixture worker evidence "
+            "execution_supported=true requires worker evidence "
             "(forged or missing evidence refused)",
             code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
         )
@@ -381,7 +464,7 @@ def parse_composition_execution_v1(raw: Any) -> dict[str, Any]:
     seen_lanes: set[str] = set()
     for idx, row in enumerate(evidence_raw):
         parsed_row = _parse_worker_evidence_row(
-            row, index=idx, expected_run_id=run_id
+            row, index=idx, expected_run_id=run_id, executor=executor
         )
         lid = parsed_row["lane_id"]
         if lid in seen_lanes:
@@ -437,10 +520,11 @@ def parse_composition_execution_v1(raw: Any) -> dict[str, Any]:
                 code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
             )
 
+    expected_limitations = list(_limitations_for(executor))
     limitations = body.get("limitations")
-    if not isinstance(limitations, list) or [str(x) for x in limitations] != list(
-        _LIMITATIONS
-    ):
+    if not isinstance(limitations, list) or [
+        str(x) for x in limitations
+    ] != expected_limitations:
         raise CompositionExecutionError(
             "composition execution limitations mismatch",
             code="E_TEAM_COMPOSITION_EXEC_PARSE",
@@ -461,7 +545,7 @@ def parse_composition_execution_v1(raw: Any) -> dict[str, Any]:
         "worker_evidence": sorted(evidence, key=lambda r: r["lane_id"]),
         "lane_result_digests": sorted(lane_digests, key=lambda r: r["lane_id"]),
         "collected_digest": collected_digest,
-        "limitations": list(_LIMITATIONS),
+        "limitations": expected_limitations,
         "writer": CLI_WRITER,
     }
     expected = _digest_core(out)
@@ -493,12 +577,12 @@ def compile_composition_execution_v1(
     collected_digest: str,
     executor: str = FIXTURE_EXECUTOR,
 ) -> dict[str, Any]:
-    """Pure: fixture worker evidence → ``CompositionExecutionV1``.
+    """Pure: worker evidence → ``CompositionExecutionV1``.
 
     Stamps ``execution_supported=true`` only when evidence is complete.
     Never accepts a caller-supplied ``execution_supported`` flag.
     """
-    require_fixture_executor(executor)
+    resolved_executor = require_composition_executor(executor)
     try:
         sk = require_safe_id(source_kind, label="source_kind")
         rid = require_safe_id(run_id, label="run_id")
@@ -526,7 +610,9 @@ def compile_composition_execution_v1(
             code="E_TEAM_COMPOSITION_EXEC_EVIDENCE",
         )
     rows = [
-        _parse_worker_evidence_row(row, index=idx, expected_run_id=rid)
+        _parse_worker_evidence_row(
+            row, index=idx, expected_run_id=rid, executor=resolved_executor
+        )
         for idx, row in enumerate(worker_evidence)
     ]
     if not rows:
@@ -547,12 +633,12 @@ def compile_composition_execution_v1(
         "composition_digest": cd,
         "batch_id": bid,
         "batch_digest": bd,
-        "executor": FIXTURE_EXECUTOR,
+        "executor": resolved_executor,
         "execution_supported": True,
         "worker_evidence": sorted(rows, key=lambda r: r["lane_id"]),
         "lane_result_digests": sorted(lane_digests, key=lambda r: r["lane_id"]),
         "collected_digest": collected,
-        "limitations": list(_LIMITATIONS),
+        "limitations": list(_limitations_for(resolved_executor)),
         "writer": CLI_WRITER,
     }
     draft["digest"] = _digest_core(draft)
@@ -757,7 +843,7 @@ def _run_fixture_lane_worker(
     task = _read_task(root, run_id, team_id, str(submitted["task_id"]))
     if task is None or task.get("status") != "completed":
         raise CompositionExecutionError(
-            f"fixture worker did not complete lane {lane_id!r}",
+            f"composition worker did not complete lane {lane_id!r}",
             code="E_TEAM_COMPOSITION_EXEC_WORKER",
         )
     try:
@@ -828,18 +914,102 @@ def _assert_tasks_pending_for_execute(
         status = task.get("status")
         if status != "pending":
             raise CompositionExecutionError(
-                f"fixture execution requires pending lanes "
+                f"composition execution requires pending lanes "
                 f"(lane {lane_id!r} status={status!r})",
                 code="E_TEAM_COMPOSITION_EXEC_STATE",
                 details={"lane_id": lane_id, "status": status},
             )
         if task.get("claim") is not None or task.get("result") is not None:
             raise CompositionExecutionError(
-                f"fixture execution requires claim-free empty results "
+                f"composition execution requires claim-free empty results "
                 f"(lane {lane_id!r})",
                 code="E_TEAM_COMPOSITION_EXEC_STATE",
                 details={"lane_id": lane_id},
             )
+
+
+def _wrap_job(exc: BaseException) -> CompositionExecutionError:
+    code = getattr(exc, "code", None) or "E_TEAM_COMPOSITION_EXEC_JOB"
+    details = getattr(exc, "details", None)
+    return CompositionExecutionError(
+        str(exc),
+        code=str(code),
+        details=details if isinstance(details, Mapping) else None,
+    )
+
+
+def _launch_and_wait_grok_job(
+    *,
+    root: Path,
+    run_id: str,
+    team_id: str,
+    worker_id: str,
+    task_id: str,
+    source_kind: str,
+    composition_id: str,
+    lanes: Sequence[str],
+) -> tuple[str, str]:
+    """Launch one grok worker via existing ``launch_worker`` Jobs machinery.
+
+    Returns ``(job_id, pane_id)``. Does not claim lanes. Never shells
+    agy/claude/codex. Not ``live_verified``.
+    """
+    prompt = (
+        "omg team composition execute executor=grok "
+        f"source_kind={source_kind} run_id={run_id} team_id={team_id} "
+        f"composition_id={composition_id} lanes={','.join(lanes)}"
+    )
+    try:
+        handle = launch_worker(
+            root,
+            worker_id=worker_id,
+            topology=WORKER_TOPOLOGY_JOB,
+            provider=GROK_EXECUTOR,
+            role="executor",
+            run_id=run_id,
+            team_id=team_id,
+            task_id=task_id,
+            prompt_text=prompt,
+            dry_run=False,
+            executor=GROK_EXECUTOR,
+            cwd=root,
+        )
+    except (WorkerLaunchError, JobStoreError) as exc:
+        raise _wrap_job(exc) from exc
+    job_id = handle.job_id
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise CompositionExecutionError(
+            "grok composition launch produced no job_id",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+        )
+    if handle.provider != GROK_EXECUTOR:
+        raise CompositionExecutionError(
+            f"grok composition launch provider mismatch ({handle.provider!r})",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"provider": handle.provider},
+        )
+    try:
+        record, timed_out = wait_job(root, job_id, timeout_s=GROK_JOB_WAIT_S)
+    except JobStoreError as exc:
+        raise _wrap_job(exc) from exc
+    if timed_out:
+        try:
+            cancel_job(root, job_id, reason="composition grok wait timeout")
+        except JobStoreError:
+            pass
+        raise CompositionExecutionError(
+            f"grok composition job {job_id} timed out",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        )
+    if record.state != JobState.SUCCEEDED:
+        raise CompositionExecutionError(
+            f"grok composition job {job_id} did not succeed "
+            f"(state={record.state.value})",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id, "state": record.state.value},
+        )
+    return job_id, grok_job_pane_id(job_id)
 
 
 def _collected_bundle_digest(collected: Mapping[str, Any]) -> str:
@@ -871,13 +1041,16 @@ def execute_composition_tasks_v1(
     bundle: Mapping[str, Any] | Any,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Leader-only: fixture-worker claim/submit → collect → execution evidence.
+    """Leader-only: workers claim/submit → collect → execution evidence.
 
-    Does **not** flip compile/produce ``execution_supported``. Does not launch
-    grok/agy/antigravity/cursor, tmux, Jobs, MCP, or PoC surfaces. Never
-    writes ``passes`` / ``verified``.
+    ``executor=fixture`` uses in-process pane workers. ``executor=grok``
+    launches grok through existing ``launch_worker`` Jobs machinery, waits
+    for SUCCEEDED, then submits the normalized ``--input`` lane results.
+    Does **not** flip compile/produce ``execution_supported``. Does not
+    launch agy/claude/codex/cursor. Never writes ``passes`` / ``verified``.
+    Not ``live_verified``.
     """
-    require_fixture_executor(executor)
+    resolved_executor = require_composition_executor(executor)
     try:
         _require_leader_only_env(env)
     except CompositionTaskDriverError as exc:
@@ -901,10 +1074,13 @@ def execute_composition_tasks_v1(
         raise _wrap_driver(exc) from exc
 
     worker_topo = str(plane.get("worker_topology") or "pane").strip().lower()
-    if worker_topo == WORKER_TOPOLOGY_JOB:
+    if (
+        resolved_executor == FIXTURE_EXECUTOR
+        and worker_topo == WORKER_TOPOLOGY_JOB
+    ):
         raise CompositionExecutionError(
             "job-backed composition execution remains open under #69 "
-            "(this slice is fixture pane workers only)",
+            "(fixture path is pane workers only; use --executor grok)",
             code="E_TEAM_COMPOSITION_EXEC_TOPOLOGY",
             details={"worker_topology": worker_topo},
         )
@@ -912,7 +1088,7 @@ def execute_composition_tasks_v1(
     owner_token = str(plane.get("owner_token") or "").strip()
     if not owner_token:
         raise CompositionExecutionError(
-            "control plane owner_token required for fixture workers",
+            "control plane owner_token required for composition workers",
             code="E_TEAM_COMPOSITION_EXEC_TOKEN",
         )
     worker_id = worker_names[0]
@@ -960,6 +1136,7 @@ def execute_composition_tasks_v1(
             "composition_digest": manifest["digest"],
             "batch_id": compiled["batch_id"],
             "batch_digest": compiled["digest"],
+            "executor": resolved_executor,
         }
         for key, value in expected_ids.items():
             if existing.get(key) != value:
@@ -1006,20 +1183,39 @@ def execute_composition_tasks_v1(
         topo_order=topo_order,
     )
 
+    grok_job_id: str | None = None
+    if resolved_executor == GROK_EXECUTOR:
+        if not topo_order:
+            raise CompositionExecutionError(
+                "grok composition execute requires a non-empty topo_order",
+                code="E_TEAM_COMPOSITION_EXEC_BATCH",
+            )
+        grok_job_id, pane_id = _launch_and_wait_grok_job(
+            root=root_path,
+            run_id=rid,
+            team_id=tid,
+            worker_id=worker_id,
+            task_id=str(mapping[topo_order[0]]),
+            source_kind=adapter.source_kind,
+            composition_id=str(manifest["composition_id"]),
+            lanes=topo_order,
+        )
+
     evidence: list[dict[str, Any]] = []
     for lane_id in topo_order:
-        evidence.append(
-            _run_fixture_lane_worker(
-                root=root_path,
-                run_id=rid,
-                team_id=tid,
-                lane_id=lane_id,
-                adapter=adapter,
-                result=by_lane[lane_id],
-                worker_env=worker_env,
-                pane_id=pane_id,
-            )
+        row = _run_fixture_lane_worker(
+            root=root_path,
+            run_id=rid,
+            team_id=tid,
+            lane_id=lane_id,
+            adapter=adapter,
+            result=by_lane[lane_id],
+            worker_env=worker_env,
+            pane_id=pane_id,
         )
+        if grok_job_id is not None:
+            row["job_id"] = grok_job_id
+        evidence.append(row)
 
     try:
         collected = collect_composition_tasks_v1(
@@ -1044,7 +1240,7 @@ def execute_composition_tasks_v1(
         batch_digest=str(compiled["digest"]),
         worker_evidence=evidence,
         collected_digest=collected_digest,
-        executor=FIXTURE_EXECUTOR,
+        executor=resolved_executor,
     )
 
     compositions = exec_path.parent
@@ -1124,6 +1320,7 @@ __all__ = [
     "COMPOSITION_EXECUTION_KIND",
     "COMPOSITION_EXECUTION_SCHEMA_VERSION",
     "FIXTURE_EXECUTOR",
+    "GROK_EXECUTOR",
     "HYPERPLAN_EXECUTION_FILENAME",
     "SECURITY_RESEARCH_EXECUTION_FILENAME",
     "CompositionExecutionError",
@@ -1131,6 +1328,8 @@ __all__ = [
     "composition_execution_path",
     "execute_composition_tasks_v1",
     "fixture_pane_id",
+    "grok_job_pane_id",
     "parse_composition_execution_v1",
+    "require_composition_executor",
     "require_fixture_executor",
 ]

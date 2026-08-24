@@ -14,8 +14,9 @@ task driver. Fixture-backed auto-worker execution lives in
 ``omg_cli.team.compositions.execution`` and writes a separate
 ``omg.team.composition_execution_v1`` evidence document; compile / produce /
 admit / collect / claim still stamp ``execution_supported=false``. This module
-never launches grok/agy/antigravity/cursor, Jobs, tmux, MCP, or PoC surfaces,
-and never sets ``verified`` / ``passes``.
+never launches agy/claude/codex/cursor, tmux, MCP, or PoC surfaces,
+and never sets ``verified`` / ``passes``. Grok composition execute is
+delegated to ``execution.execute_composition_tasks_v1``.
 """
 
 from __future__ import annotations
@@ -1503,7 +1504,7 @@ def execute_hyperplan_tasks_v1(
     bundle: Mapping[str, Any] | Any,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Leader-only: fixture workers claim/submit Hyperplan lanes, then collect."""
+    """Leader-only: fixture or grok workers claim/submit Hyperplan lanes, then collect."""
     from omg_cli.team.compositions.execution import (
         CompositionExecutionError,
         execute_composition_tasks_v1,

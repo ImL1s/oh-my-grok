@@ -40,6 +40,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#69 leftover: grok composition executor:** `omg team hyperplan|security-research
+  execute --executor grok` no longer raises `E_TEAM_COMPOSITION_EXEC_EXECUTOR`.
+  Grok is admitted and launched through existing `launch_worker` Jobs machinery
+  (provider=grok; hermetic fake grok in tests). `agy` / `antigravity` /
+  `claude` / `codex` / `cursor` / `kimi` / `omc` stay refused. Evidence stamps
+  `executor=grok` with `job-{job_id}` pane ids; compile/produce remain
+  `execution_supported=false`. Does **not** claim `live_verified` and does
+  **not** close #69 (AG workers / host TUI prompt-queue remain open). Refs #69.
 - **#73 leftover: hermetic SCIP protobuf Index:** CodeGraph `index`
   writes a sibling `{local,shared}-index.scip` (Index/Document/Occurrence
   subset, no pip protobuf). `Document.occurrences` is proto field 2;
