@@ -815,12 +815,11 @@ def _interactive_worker_rows(
         if cap.io_mode != IO_MODE_INTERACTIVE_TTY:
             continue
         row = dict(raw)
-        if "generation" not in row:
-            gen = meta.get("identity_generation", 0)
-            if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
-                row["generation"] = gen
-            else:
-                row["generation"] = 0
+        gen = meta.get("identity_generation", 0)
+        if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
+            row["generation"] = gen
+        else:
+            row["generation"] = 0
         rows.append(row)
     return rows
 
@@ -929,11 +928,12 @@ def _filter_interactive_ready_evidence(
         row = _task_row_by_id(meta, tid)
         if row is None:
             continue
-        if "generation" not in row:
-            row["generation"] = (
-                gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
-            )
-        if not evidence_matches_worker_identity(ev, row):
+        row["generation"] = (
+            gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
+        )
+        ev_aligned = dict(ev)
+        ev_aligned["generation"] = row["generation"]
+        if not evidence_matches_worker_identity(ev_aligned, row):
             continue
         if live and _row_has_live_pid(row):
             if not _exact_pane_proof_matches(root, run_id, tid, ev):
@@ -984,17 +984,20 @@ def _promote_interactive_input_ready(
             if not isinstance(marker, str):
                 continue
             # Re-check inside the meta lock — identity may have flipped
-            # after the pre-filter snapshot. Scaled workers may lack a
-            # persisted generation field; use evidence/meta generation.
+            # after the pre-filter snapshot. Always bind the live team
+            # identity_generation so a scale/relaunch bump does not leave
+            # stale per-row generation 0 as immutable identity.
             locked = dict(raw)
-            if "generation" not in locked:
-                gen = ev.get("generation")
-                if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
-                    locked["generation"] = gen
-            if not evidence_matches_locked_row(locked, ev):
+            team_gen = current.get("identity_generation", 0)
+            if isinstance(team_gen, int) and not isinstance(team_gen, bool) and team_gen >= 0:
+                locked["generation"] = team_gen
+            else:
+                locked["generation"] = 0
+            ev_locked = dict(ev)
+            ev_locked["generation"] = locked["generation"]
+            if not evidence_matches_locked_row(locked, ev_locked):
                 continue
-            if "generation" not in raw and "generation" in locked:
-                raw["generation"] = locked["generation"]
+            raw["generation"] = locked["generation"]
             stamp_io_capability(
                 raw,
                 interactive_pane_io_ready(
@@ -1004,9 +1007,7 @@ def _promote_interactive_input_ready(
                     if isinstance(ev.get("provider_pid"), int)
                     else None,
                     attempt=ev.get("attempt") if isinstance(ev.get("attempt"), int) else None,
-                    generation=ev.get("generation")
-                    if isinstance(ev.get("generation"), int)
-                    else None,
+                    generation=locked["generation"],
                 ),
             )
             stamped.append(tid)
@@ -1044,6 +1045,7 @@ def _submit_interactive_inbox_instructions(
     if bool(meta.get("dry_run")):
         return submitted
     run_root = _run_dir(Path(root).resolve(), run_id)
+    delivered: dict[str, dict[str, Any]] = {}
     for tid in task_ids:
         key = str(tid or "").strip()
         if not key:
@@ -1055,6 +1057,15 @@ def _submit_interactive_inbox_instructions(
         rel = row.get("inbox_path")
         if not isinstance(rel, str) or not rel.strip():
             submitted[key] = False
+            continue
+        attempt = row.get("attempt")
+        already = bool(row.get("inbox_instruction_submitted"))
+        if (
+            already
+            and row.get("inbox_instruction_inbox") == rel
+            and row.get("inbox_instruction_attempt") == attempt
+        ):
+            submitted[key] = True
             continue
         inbox = run_root / rel
         instruction = interactive_inbox_instruction(inbox)
@@ -1069,6 +1080,7 @@ def _submit_interactive_inbox_instructions(
                 is_tty=True,
             )
             submitted[key] = True
+            delivered[key] = {"inbox": rel, "attempt": attempt}
         except (OperatorError, TeamError, OSError, TypeError, ValueError):
             submitted[key] = False
     if any(submitted.values()):
@@ -1080,6 +1092,10 @@ def _submit_interactive_inbox_instructions(
                 tid = str(raw.get("task_id") or "").strip()
                 if submitted.get(tid):
                     raw["inbox_instruction_submitted"] = True
+                    info = delivered.get(tid)
+                    if isinstance(info, dict):
+                        raw["inbox_instruction_inbox"] = info.get("inbox")
+                        raw["inbox_instruction_attempt"] = info.get("attempt")
             return current
 
         try:

@@ -1249,6 +1249,101 @@ def test_promote_lock_mismatch_returns_no_stamped_ids(
 
 
 @_POSIX
+def test_promote_restamps_generation_to_current_team_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 0
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        current["tasks"][0]["generation"] = 0
+        current["tasks"][0]["attempt"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == ["t1"]
+
+    def _bump(current: dict) -> dict:
+        current["identity_generation"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _bump)
+    stamped2 = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped2 == ["t1"]
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["generation"] == 1
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 1
+
+
+@_POSIX
+def test_inbox_instruction_skips_same_inbox_and_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    run_id = str(meta["run_id"])
+    inbox_rel = "team/t1.a1.inbox.txt"
+
+    def _seed(current: dict) -> dict:
+        current["dry_run"] = False
+        current["tasks"][0]["inbox_path"] = inbox_rel
+        current["tasks"][0]["attempt"] = 1
+        current["tasks"][0]["inbox_instruction_submitted"] = True
+        current["tasks"][0]["inbox_instruction_inbox"] = inbox_rel
+        current["tasks"][0]["inbox_instruction_attempt"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
+    assert out == {"t1": True}
+
+
+@_POSIX
 def test_promote_lock_mismatch_omits_worker_from_stamped_and_ready(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
