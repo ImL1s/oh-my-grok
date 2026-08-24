@@ -1529,6 +1529,17 @@ def test_resume_for_identity_runs_interactive_readiness_after_relaunch() -> None
     assert "IO_MODE_INTERACTIVE_TTY" in src
 
 
+def test_scale_up_refreshes_readiness_for_all_interactive_workers() -> None:
+    import inspect
+
+    from omg_cli.team.scaling import _scale_up
+
+    src = inspect.getsource(_scale_up)
+    assert "apply_interactive_worker_readiness" in src
+    assert "updated.get(\"tasks\")" in src or "updated.get('tasks')" in src
+    assert "IO_MODE_INTERACTIVE_TTY" in src
+
+
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
 def test_wrapper_no_tui_ready_when_child_never_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

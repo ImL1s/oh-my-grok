@@ -4789,17 +4789,24 @@ def _scale_up(
     # rewrote it (adopted tmux index); otherwise the logical alias.
     window_indices_out = [int(r.get("window_index", -1)) for r in new_records]
     if want_interactive and not effective_dry:
+        from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
         from omg_cli.team.runtime import apply_interactive_worker_readiness
 
-        apply_interactive_worker_readiness(
-            root,
-            run_id,
-            [str(r["task_id"]) for r in new_records],
-        )
         try:
             updated = load_team_meta(root, run_id)
         except TeamError:
-            pass
+            updated = {}
+        interactive_ids = [
+            str(task.get("task_id") or "").strip()
+            for task in (updated.get("tasks") or [])
+            if isinstance(task, dict)
+            and str(task.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY
+        ]
+        apply_interactive_worker_readiness(
+            root,
+            run_id,
+            interactive_ids or [str(r["task_id"]) for r in new_records],
+        )
     return {
         "writer": CLI_WRITER,
         "run_id": run_id,
