@@ -10,6 +10,7 @@ import pytest
 
 from omg_cli.contracts.visual_contract import MAX_EDGE
 from omg_cli.visual_pixels import (
+    MAX_RGBA_BYTES,
     VisualPixelError,
     decode_png_rgba,
     encode_png_rgba,
@@ -162,6 +163,31 @@ def test_oversize_ihdr_refused(tmp_path: Path) -> None:
     path.write_bytes(body)
     with pytest.raises(VisualPixelError, match="dimensions"):
         decode_png_rgba(path)
+
+
+def test_oversize_rgba_working_set_refused(tmp_path: Path) -> None:
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    # Within MAX_EDGE / MAX_PIXELS, but 10000×10000×4 = 400 MiB reconstructed.
+    assert 10000 * 10000 * 4 > MAX_RGBA_BYTES
+    ihdr = struct.pack(">IIBBBBB", 10000, 10000, 1, 0, 0, 0, 0)
+    body = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", b"x")
+        + chunk(b"IEND", b"")
+    )
+    path = tmp_path / "rgba-bomb.png"
+    path.write_bytes(body)
+
+    with pytest.raises(VisualPixelError, match="working-set") as caught:
+        decode_png_rgba(path)
+    assert caught.value.code == "E_VISUAL_PIXEL"
 
 
 def test_dimension_mismatch_refused() -> None:

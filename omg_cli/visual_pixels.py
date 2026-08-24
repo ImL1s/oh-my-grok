@@ -21,6 +21,12 @@ COLOR_INDEXED = 3
 COLOR_GRAY_A = 4
 COLOR_RGBA = 6
 HIGHLIGHT_RGBA = (255, 0, 255, 255)
+# Decoder packed-RGBA8 working-set (width * height * 4). Dedicated cap,
+# slightly above MAX_IMAGE_BYTES (32 MiB), so a 4096×2160 screenshot
+# (~35 MiB) still decodes while a compressible 10000×10000 IHDR (~400 MiB
+# reconstructed) fails closed after IHDR, before zlib / reconstruct.
+# Independent of Visual Contract V1 descriptor MAX_PIXELS.
+MAX_RGBA_BYTES = 48 * 1024 * 1024
 ADAM7 = (
     (0, 0, 8, 8),
     (4, 0, 8, 8),
@@ -248,6 +254,11 @@ def _require_int(value: Any, *, label: str, minimum: int) -> int:
     return value
 
 
+def _ensure_rgba_working_set(width: int, height: int) -> None:
+    if width * height * 4 > MAX_RGBA_BYTES:
+        raise VisualPixelError("decoded PNG RGBA exceeds decoder working-set limit")
+
+
 def _decode_png_bytes(body: bytes) -> tuple[int, int, bytes]:
     if len(body) < 8 or not body.startswith(PNG_SIG):
         raise VisualPixelError("not a PNG")
@@ -257,6 +268,7 @@ def _decode_png_bytes(body: bytes) -> tuple[int, int, bytes]:
     if chunks[-1][0] != b"IEND":
         raise VisualPixelError("truncated PNG")
     width, height, bit_depth, color_type, interlace = _parse_ihdr(chunks[0][1])
+    _ensure_rgba_working_set(width, height)
     palette: list[tuple[int, int, int]] | None = None
     trns: bytes | None = None
     idat = bytearray()
@@ -405,6 +417,7 @@ def _reconstruct(
     palette: list[tuple[int, int, int]] | None,
     trns: bytes | None,
 ) -> bytes:
+    _ensure_rgba_working_set(width, height)
     bpp = max(1, (bits_pp + 7) // 8)
     out = bytearray(width * height * 4)
     if interlace == 0:
@@ -632,6 +645,7 @@ def _sample_rgba(
 
 
 __all__ = [
+    "MAX_RGBA_BYTES",
     "VisualPixelError",
     "decode_png_rgba",
     "encode_png_rgba",
