@@ -305,7 +305,10 @@ def _decode_png_bytes(body: bytes) -> tuple[int, int, bytes]:
         raw = decoder.decompress(bytes(idat), max_raw)
         if decoder.unconsumed_tail:
             raise VisualPixelError("PNG decompression exceeds bound")
-        raw += decoder.flush()
+        tail = decoder.flush()
+        if len(raw) + len(tail) > max_raw:
+            raise VisualPixelError("PNG decompression exceeds bound")
+        raw += tail
     except zlib.error as exc:
         raise VisualPixelError("truncated PNG") from exc
     if len(raw) > max_raw:
