@@ -223,7 +223,7 @@ def _session_failure(args: argparse.Namespace, command: str, code: str, message:
 
 
 def cmd_session(args: argparse.Namespace) -> int:
-    """Host-session argv plus search/friction/replay/observatory/retain (#74)."""
+    """Host-session argv plus search/friction/replay/observatory/retain/acp-resume (#74)."""
     from omg_cli.ag_history import inspect_ag_history
     from omg_cli.host_session import (
         HostSessionError,
@@ -330,6 +330,26 @@ def cmd_session(args: argparse.Namespace) -> int:
         if action == "ag-history":
             payload = inspect_ag_history(root)
             _emit_session_payload(args, "session.ag-history", payload)
+            return 0
+        if action == "acp-resume":
+            from omg_cli.host_acp import AcpError
+            from omg_cli.session_acp import sanitize_acp_cli_error, session_acp_resume
+
+            try:
+                payload = session_acp_resume(
+                    session_id=getattr(args, "acp_session_id", "") or "",
+                    cwd=getattr(args, "acp_cwd", "") or "",
+                    restore_code=bool(getattr(args, "restore_code", False)),
+                )
+            except AcpError as exc:
+                code = getattr(exc, "code", "E_ACP") or "E_ACP"
+                return _session_failure(
+                    args,
+                    "session.acp-resume",
+                    code,
+                    sanitize_acp_cli_error(str(exc), code=code),
+                )
+            _emit_session_payload(args, "session.acp-resume", payload)
             return 0
         print("omg session: action required", file=sys.stderr)
         return 2
@@ -462,7 +482,7 @@ def register_run_parsers(
     p_session = sub.add_parser(
         "session",
         parents=[common],
-        help="host-session argv plus search/friction/replay/observatory (#74)",
+        help="host-session argv plus search/friction/replay/observatory/acp-resume (#74)",
     )
     session_sub = p_session.add_subparsers(dest="session_action")
     p_session_allocate = session_sub.add_parser(
@@ -502,6 +522,33 @@ def register_run_parsers(
         help="known UUID that the child must not reuse (repeatable)",
     )
     p_session_route.set_defaults(func=cmd_session, session_action="route")
+
+    p_session_acp = session_sub.add_parser(
+        "acp-resume",
+        parents=[common],
+        help=(
+            "ACP initialize + session/resume content-free receipt "
+            "(not live Grok; no session/close; restore-code refused)"
+        ),
+    )
+    p_session_acp.add_argument(
+        "--session-id",
+        dest="acp_session_id",
+        required=True,
+        help="existing Grok session UUID",
+    )
+    p_session_acp.add_argument(
+        "--cwd",
+        dest="acp_cwd",
+        required=True,
+        help="working directory bound to the resume",
+    )
+    p_session_acp.add_argument(
+        "--restore-code",
+        action="store_true",
+        help="request restore-code (always refused; resume is not restore)",
+    )
+    p_session_acp.set_defaults(func=cmd_session, session_action="acp-resume")
 
     p_session_search = session_sub.add_parser(
         "search",

@@ -10,6 +10,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#74 leftover ACP session resume CLI:** `omg session acp-resume
+  --session-id UUID --cwd PATH` reuses `host_acp.py` initialize +
+  `session/resume` and prints a content-free receipt (no transcript).
+  Teardown is process-group kill, not ACP `session/close`, and this is
+  not the durable jobs sidecar. `--restore-code` is refused (resume ≠
+  restore). `OMG_ACP_BIN` may point at the hermetic fake peer; that is
+  not live Grok. Live AG history stays unimported. Does not set
+  `verified`. Refs #74 (does not close).
 - **#134 inspect-absent Medley #18 fallback UX:** Stock Grok Build with unset
   inspect reports `inspect_source=absent` and `attempt=null` on
   `omg agents list|explain --json`. Doctor addendum prints
@@ -131,7 +139,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   when the per-store cap is hit. `--project all` is
   required to search sibling stores. AG history is a read-only stub (pin
   `unsupported` / `unknown_version`; never mutates AG files). ACP
-  session/resume transport is still absent and this is not a live smoke.
+  session/resume on the session CLI is `omg session acp-resume` (hermetic
+  fake peer; not live Grok; see leftover above). This is not a live smoke.
   **Refs #74 (does not close).**
 - **#75 visual capture/verdict/ralph:** `omg visual capture|verdict|ralph`
   plus the existing `compare` wrapper. Capture auto-detects

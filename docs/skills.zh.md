@@ -513,7 +513,7 @@ find_references/symbols/diagnostics）、
 
 | 指令 | Contract |
 |---|---|
-| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history` | Host-session argv，加上已脱敏的 search/friction/replay/observatory/retention；AG history 为只读 unsupported stub。Replay 永不重放命令。Refs #74。 |
+| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history\|acp-resume` | Host-session argv，加上已脱敏的 search/friction/replay/observatory/retention；AG history 为只读 unsupported stub。Replay 永不重放命令。`acp-resume` 复用 host ACP initialize+session/resume，只产出无正文 receipt（hermetic `OMG_ACP_BIN` 不是 live Grok；无 session/close；restore-code 一律拒绝；不导入 AG history）。Refs #74。 |
 | `omg trace timeline` | 只读、有界的 lifecycle timeline（`--run` / `--session`）。永不打印原始 prompt。Refs #74。 |
 | `omg recover` | 不可变、受限 JSONL suffix；部分恢复保留 broken-chain/未知纪录警告。 |
 | `omg memory put\|search\|show\|export\|import\|rescan\|layers` | Redacted、确定性的专案 facts，外加只读 memory-layer 目录（不会合并成一份 unbounded memory.json）。 |
