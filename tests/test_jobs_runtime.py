@@ -15,6 +15,7 @@ from omg_cli.jobs.runtime import (
     collect_job,
     job_status,
     list_jobs,
+    prove_job_processes_gone,
     start_job,
     wait_job,
 )
@@ -325,6 +326,45 @@ def test_cancel_idempotent(root: Path) -> None:
     b = cancel_job(root, started.record.job_id)
     assert a.state == JobState.SUCCEEDED
     assert b.state == JobState.SUCCEEDED
+
+
+def test_cancel_reaps_live_pid_on_forged_succeeded_stamp(root: Path) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-deadbeef",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=ident.pid,
+        pgid=ident.pgid,
+        pid_starttime=ident.pid_starttime,
+        result="artifacts/result.md",
+    )
+    from omg_cli.jobs.store import job_dir
+
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(root, rec.job_id, timeout_s=0.1)
+        assert pid_alive(proc.pid)
+        out = cancel_job(root, rec.job_id, grace_s=0.2)
+        assert out.state == JobState.SUCCEEDED
+        prove_job_processes_gone(root, rec.job_id, timeout_s=2.0)
+        assert not pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
 
 
 def test_sibling_isolation_cancel_a_keeps_b(root: Path) -> None:

@@ -46,7 +46,13 @@ from omg_cli.hash_edit import (
     write_confined_regular_file,
 )
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.runtime import cancel_job, collect_job, start_job, wait_job
+from omg_cli.jobs.runtime import (
+    cancel_job,
+    collect_job,
+    prove_job_processes_gone,
+    start_job,
+    wait_job,
+)
 from omg_cli.jobs.store import job_dir, make_job_id
 
 SIMPLIFIER_ROLE: Final[str] = "omg-code-simplifier"
@@ -840,6 +846,32 @@ def _propose_with_grok(
                     assignment,
                     job_id=job_id,
                 )
+            # Terminal job.json is not process-exit proof. A forged SUCCEEDED
+            # stamp used to skip cancel and let a still-live grok mutate the
+            # tree after the one-shot fingerprint.
+            try:
+                prove_job_processes_gone(root, job_id)
+            except JobStoreError as exc:
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-terminal-live",
+                )
+                cancelled = True
+                try:
+                    prove_job_processes_gone(root, job_id)
+                except JobStoreError as prove_exc:
+                    raise SimplifyProviderError(
+                        f"grok simplify job terminal but process still live: {prove_exc}",
+                        assignment,
+                        job_id=job_id,
+                    ) from prove_exc
+                raise SimplifyProviderError(
+                    f"grok simplify job claimed terminal while process was live: {exc}",
+                    assignment,
+                    job_id=job_id,
+                ) from exc
             wait_observed_terminal = True
             if _job_state_value(getattr(waited, "state", None)) != JobState.SUCCEEDED.value:
                 raise SimplifyProviderError(

@@ -280,6 +280,70 @@ def test_simplify_provider_does_not_clobber_concurrent_user_edits(
     assert src.read_text(encoding="utf-8") == "user-edit\n"
 
 
+def test_simplify_provider_fails_closed_when_terminal_record_still_live(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forged SUCCEEDED job.json must not skip cancel while grok is live."""
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.SUCCEEDED,
+                pid=ident.pid,
+                pgid=ident.pgid,
+                pid_starttime=ident.pid_starttime,
+                result="artifacts/result.md",
+            ),
+        )
+        return started
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        assert "still live" in str(payload.get("error", {}).get("message") or payload)
+        assert (project / "app.py").read_text(encoding="utf-8") == "x = 1\n"
+        assert not pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def test_simplify_provider_cancels_job_on_recovery_required(
     project: Path,
     capsys: pytest.CaptureFixture[str],

@@ -1079,6 +1079,58 @@ def wait_job(
         time.sleep(max(0.01, float(poll_s)))
 
 
+def prove_job_processes_gone(
+    project_root: Path,
+    job_id: str,
+    *,
+    timeout_s: float = 2.0,
+) -> None:
+    """Raise ``E_JOB_CANCEL_UNPROVEN`` if runner/provider PIDs are still live.
+
+    A terminal ``job.json`` stamp is not OS-level disappearance. ``wait_job``
+    returns as soon as the persisted state is terminal; callers that then skip
+    cancel must still prove the captured identities are gone.
+    """
+    job_id = safe_job_id(job_id)
+    try:
+        record = read_job_record(project_root, job_id)
+    except JobStoreError as exc:
+        if getattr(exc, "code", "") == "E_JOB_UNKNOWN":
+            return
+        raise
+    captured_runner = _runner_identity(record)
+    if captured_runner is None:
+        captured_runner = _read_spawn_identity_recovery(project_root, job_id)
+    captured_provider = _provider_identity(record)
+    if captured_runner is None and captured_provider is None:
+        return
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        runner_live = captured_runner is not None and _pid_alive(captured_runner.pid)
+        provider_live = (
+            captured_provider is not None and _pid_alive(captured_provider.pid)
+        )
+        if not runner_live and not provider_live:
+            if captured_runner is not None:
+                _reap_child(captured_runner.pid)
+            if captured_provider is not None:
+                _reap_child(captured_provider.pid)
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    still: list[str] = []
+    if captured_runner is not None and _pid_alive(captured_runner.pid):
+        still.append("runner")
+    if captured_provider is not None and _pid_alive(captured_provider.pid):
+        still.append("provider")
+    if still:
+        raise JobStoreError(
+            f"job {job_id} {','.join(still)} still live after terminal record",
+            code="E_JOB_CANCEL_UNPROVEN",
+        )
+
+
 def list_jobs(
     project_root: Path,
     *,
@@ -1289,17 +1341,30 @@ def cancel_job(
     job_id = safe_job_id(job_id)
     record = read_job_record(project_root, job_id)
 
-    # Non-cancel terminals are final (idempotent). CANCELLED is provisional —
-    # live pids may still need a force reap.
+    # Non-cancel terminals are final (idempotent) only when captured identities
+    # are gone. A forged SUCCEEDED/FAILED/LOST stamp must not skip reaping a
+    # still-live runner or provider.
     if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
-        return record
+        captured_runner = _runner_identity(record)
+        if captured_runner is None:
+            captured_runner = _read_spawn_identity_recovery(project_root, job_id)
+        captured_provider = _provider_identity(record)
+        runner_live = (
+            captured_runner is not None and _pid_alive(captured_runner.pid)
+        )
+        provider_live = (
+            captured_provider is not None and _pid_alive(captured_provider.pid)
+        )
+        if not runner_live and not provider_live:
+            return record
 
     if record.state != JobState.CANCELLED:
         record = mark_cancel_requested(
             project_root, job_id, reason=reason or "operator"
         )
-        if record.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.LOST}:
-            return record
+        # mark_cancel_requested is a no-op on SUCCEEDED/FAILED/LOST. Do not
+        # return here: a terminal stamp with live identities must fall
+        # through to the reap gate.
 
     # Fail-closed: claimed launch/bind without complete PID/PGID — do not
     # speculative-kill outer (would orphan agy) and do not claim cancelled.
@@ -3103,6 +3168,7 @@ __all__ = [
     "list_jobs",
     "observe_job",
     "preflight_retry_job",
+    "prove_job_processes_gone",
     "read_acp_sidecar_binding",
     "recover_job",
     "recover_jobs",
