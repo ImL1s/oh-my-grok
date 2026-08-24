@@ -768,6 +768,15 @@ def plan_owned_uninstall(
                     {"id": ident, "path": str(target), "reason": "manifest"}
                 )
                 continue
+            if target.name == "omg.md" and target.parent.name == "rules":
+                preserve.append(
+                    {
+                        "id": ident,
+                        "path": str(target),
+                        "reason": "surgical-guidance",
+                    }
+                )
+                continue
             if (
                 not root_tuple
                 or not _contained(target, root_tuple)

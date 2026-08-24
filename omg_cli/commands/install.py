@@ -262,11 +262,16 @@ def cmd_update(args: argparse.Namespace) -> int:
 def cmd_uninstall(args: argparse.Namespace) -> int:
     from omg_cli.uninstall_cmd import run_uninstall
 
-    root = None
-    try:
-        root = project_root()
-    except Exception:
-        root = None
+    ctx = getattr(args, "omg_ctx", None)
+    root = getattr(ctx, "root", None) if ctx is not None else None
+    explicit = getattr(args, "project_root", None)
+    if root is None and explicit:
+        root = Path(str(explicit))
+    if root is None:
+        try:
+            root = project_root()
+        except Exception:
+            root = None
     return run_uninstall(
         yes=bool(getattr(args, "yes", False)),
         project_root=root,

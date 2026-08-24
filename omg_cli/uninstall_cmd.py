@@ -512,15 +512,11 @@ def run_uninstall(
             return rollback("global hook removal failed")
 
     # 3. strip OMG managed rules block (preserve USER policy / foreign content)
-    skip_legacy_rules = receipt is None and bool(owned_plan.get("has_manifest"))
     try:
         from omg_cli.guidance import GuidanceCorruptionError, uninstall_global_rules
 
-        if skip_legacy_rules:
-            print("omg uninstall: managed guidance left to manifest-owned plan")
-            path, action = rules, "deferred"
-        else:
-            path, action = uninstall_global_rules(home=gh)
+        # Always use block-aware removal so merged user text in omg.md is kept.
+        path, action = uninstall_global_rules(home=gh)
         if receipt is not None:
             from omg_cli.guidance import rules_status
 

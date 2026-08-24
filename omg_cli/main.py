@@ -406,7 +406,10 @@ def main(argv: list[str] | None = None) -> int:
         "capture",
         "verdict",
         "ralph",
+        "overlay",
     }:
+        skip_root = False
+    if command == "uninstall" and getattr(args, "project_root", None):
         skip_root = False
     clear_resolved_project_root()
     root_path: Path | None = None
