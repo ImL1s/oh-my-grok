@@ -10,7 +10,8 @@ Honesty:
 - AST-grep missing → blocked, not fake success.
 - Shared CodeGraph indexes are not worktree-accurate.
 - CodeGraph ``occurrences`` are SCIP-inspired JSON, not SCIP protobuf.
-- Network research is opt-in (``OMG_TOOLS_NETWORK=1``).
+- Network research is opt-in (``OMG_TOOLS_NETWORK=1``); default
+  provider is Wikipedia OpenSearch (no credentials bundled).
 - Never writes ``passes`` / ``verified``.
 """
 
@@ -26,13 +27,19 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, NoReturn, Protocol, Sequence
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlencode, urlparse
 
 SCHEMA = "omg-tools-sidecar/v1"
 MAX_RESULT_BYTES = 65_536
+RESEARCH_USER_AGENT = "oh-my-grok-tools-sidecar/research"
+RESEARCH_TIMEOUT_S = 8.0
+RESEARCH_HIT_LIMIT = 5
+WIKIPEDIA_OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
 MAX_AST_MATCHES = 200
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 ALLOWED_MEDIA_MIMES = frozenset(
@@ -1971,19 +1978,183 @@ def research_enabled(env: Mapping[str, str] | None = None) -> bool:
     return flag in {"1", "true", "yes", "on"}
 
 
+def _research_provider(env: Mapping[str, str] | None = None) -> str | None:
+    """Wikipedia is the default when network is on; none/off stay unconfigured."""
+    if not research_enabled(env):
+        return None
+    raw = str(_env(env).get("OMG_TOOLS_RESEARCH_PROVIDER", "")).strip().lower()
+    if raw in {"none", "off"}:
+        return None
+    if raw in {"", "wikipedia"}:
+        return "wikipedia"
+    return None
+
+
 def research_status(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     enabled = research_enabled(env)
+    provider = _research_provider(env)
+    if not enabled:
+        note = (
+            "network research is opt-in via OMG_TOOLS_NETWORK=1; "
+            "default provider is Wikipedia OpenSearch (credentials are never bundled)"
+        )
+    elif provider == "wikipedia":
+        note = (
+            "network research uses Wikipedia OpenSearch; "
+            "credentials are never bundled; not live Antigravity MCP"
+        )
+    else:
+        note = (
+            "network research is opt-in via OMG_TOOLS_NETWORK=1; "
+            "no provider is configured"
+        )
     return {
         "ok": True,
         "verified": False,
         "enabled": enabled,
-        "provider": None,
+        "provider": provider,
         "credentials_bundled": False,
-        "note": (
-            "network research is opt-in via OMG_TOOLS_NETWORK=1; "
-            "no provider is configured in this first cut"
-        ),
+        "note": note,
     }
+
+
+def _research_urlopen(request: urllib.request.Request, *, timeout: float) -> Any:
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
+def _research_is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower():
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, BaseException):
+        return _research_is_timeout(reason)
+    return reason is not None and "timed out" in str(reason).lower()
+
+
+def _wikipedia_opensearch_bytes(query: str) -> bytes:
+    params = urlencode(
+        {
+            "action": "opensearch",
+            "search": query,
+            "limit": str(RESEARCH_HIT_LIMIT),
+            "namespace": "0",
+            "format": "json",
+        }
+    )
+    request = urllib.request.Request(
+        f"{WIKIPEDIA_OPENSEARCH_URL}?{params}",
+        headers={"User-Agent": RESEARCH_USER_AGENT},
+        method="GET",
+    )
+    try:
+        with _research_urlopen(request, timeout=RESEARCH_TIMEOUT_S) as response:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = getattr(response, "code", None)
+            if status is not None:
+                try:
+                    status_i = int(status)
+                except (TypeError, ValueError) as exc:
+                    raise ToolsError(
+                        "E_NETWORK_PROVIDER",
+                        "wikipedia opensearch returned an invalid HTTP status",
+                    ) from exc
+                if status_i >= 400:
+                    raise ToolsError(
+                        "E_NETWORK_PROVIDER",
+                        f"wikipedia opensearch HTTP {status_i}",
+                        details={"http_status": status_i},
+                    )
+            raw = response.read(MAX_RESULT_BYTES + 1)
+    except ToolsError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            f"wikipedia opensearch HTTP {exc.code}",
+            details={"http_status": exc.code},
+        ) from exc
+    except urllib.error.URLError as exc:
+        if _research_is_timeout(exc):
+            raise ToolsError(
+                "E_NETWORK_PROVIDER",
+                "wikipedia opensearch timed out",
+            ) from exc
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            f"wikipedia opensearch failed: {exc.reason}",
+        ) from exc
+    except TimeoutError as exc:
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch timed out",
+        ) from exc
+    except OSError as exc:
+        if _research_is_timeout(exc):
+            raise ToolsError(
+                "E_NETWORK_PROVIDER",
+                "wikipedia opensearch timed out",
+            ) from exc
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            f"wikipedia opensearch failed: {exc}",
+        ) from exc
+    if not isinstance(raw, bytes | bytearray):
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch returned a non-bytes body",
+        )
+    if len(raw) > MAX_RESULT_BYTES:
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch response exceeds bounded size",
+        )
+    return bytes(raw)
+
+
+def _wikipedia_opensearch_hits(payload: Any) -> list[dict[str, str]]:
+    if not isinstance(payload, list) or len(payload) < 4:
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch returned unexpected shape",
+        )
+    titles, descriptions, urls = payload[1], payload[2], payload[3]
+    if not (
+        isinstance(titles, list)
+        and isinstance(descriptions, list)
+        and isinstance(urls, list)
+    ):
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch returned unexpected shape",
+        )
+    if len(titles) != len(urls) or len(descriptions) != len(titles):
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch returned unexpected shape",
+        )
+    hits: list[dict[str, str]] = []
+    for title, snippet, url in zip(titles, descriptions, urls, strict=True):
+        if len(hits) >= RESEARCH_HIT_LIMIT:
+            break
+        if not isinstance(title, str) or not isinstance(url, str):
+            raise ToolsError(
+                "E_NETWORK_PROVIDER",
+                "wikipedia opensearch returned unexpected shape",
+            )
+        if snippet is None:
+            snippet_text = ""
+        elif isinstance(snippet, str):
+            snippet_text = snippet
+        else:
+            raise ToolsError(
+                "E_NETWORK_PROVIDER",
+                "wikipedia opensearch returned unexpected shape",
+            )
+        hits.append({"title": title, "url": url, "snippet": snippet_text})
+    return hits
 
 
 def research_search(query: str, env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -1994,10 +2165,33 @@ def research_search(query: str, env: Mapping[str, str] | None = None) -> dict[st
             "network research is opt-in; set OMG_TOOLS_NETWORK=1 after choosing a provider",
             details=status,
         )
-    raise ToolsError(
-        "E_NETWORK_NO_PROVIDER",
-        "no research provider configured (credentials are never bundled)",
-        details=status,
+    if status["provider"] != "wikipedia":
+        raise ToolsError(
+            "E_NETWORK_NO_PROVIDER",
+            "no research provider configured (credentials are never bundled)",
+            details=status,
+        )
+    query_text = str(query or "").strip()
+    if not query_text:
+        raise ToolsError("E_NETWORK_PROVIDER", "research query is empty")
+    raw = _wikipedia_opensearch_bytes(query_text)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolsError(
+            "E_NETWORK_PROVIDER",
+            "wikipedia opensearch returned non-JSON",
+        ) from exc
+    hits = _wikipedia_opensearch_hits(payload)
+    return _bounded(
+        {
+            "ok": True,
+            "verified": False,
+            "query": query_text,
+            "provider": "wikipedia",
+            "hits": hits,
+            "count": len(hits),
+        }
     )
 
 

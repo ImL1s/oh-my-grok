@@ -20,7 +20,7 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 - Hover / definition retry on LSP JSON-RPC `-32801` (`content modified`) while the language server indexes, the same way they retry JSON `null`.
 - `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
 - CodeGraph is a **toy local import/symbol scan** with bounded SCIP-inspired JSON `occurrences` (`definition`/`reference`). It is **not** SCIP protobuf, not a real SCIP indexer, and not a branch-accurate shared graph.
-- Network research stays opt-in and **blocked** until a provider and credentials exist (none are bundled).
+- Network research is opt-in (`OMG_TOOLS_NETWORK=1`). When enabled, the default provider is **Wikipedia OpenSearch** (`GET en.wikipedia.org/w/api.php?action=opensearch`). Credentials are **never bundled**. `OMG_TOOLS_RESEARCH_PROVIDER=none` or `off` stays blocked (`E_NETWORK_NO_PROVIDER`). HTTP / timeout / non-JSON / unexpected shape fail closed as `E_NETWORK_PROVIDER` (not fake hits). This is **not** a live Antigravity MCP install.
 - Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
 - Never writes `passes` / `verified`.
 
@@ -59,8 +59,10 @@ Language servers are **never auto-installed**.
   on the next sidecar operation for that URI.
 - `workspace/configuration` is answered with empty settings. Truncated
   documents fail closed (`E_LSP_TRUNCATED`) instead of a prefix analysis.
-- Network research requires `OMG_TOOLS_NETWORK=1` and a configured provider
-  (none is bundled; credentials are never shipped).
+- Network research requires `OMG_TOOLS_NETWORK=1`. Default provider is
+  Wikipedia OpenSearch (`OMG_TOOLS_RESEARCH_PROVIDER=wikipedia`, or unset).
+  `none`/`off` remain unconfigured. Credentials are never shipped. This is
+  not live Antigravity MCP.
 - CodeGraph `shared` results are **not** worktree-accurate. `local` is
   branch-accurate only when an index was built from this tree and is not stale.
   `omg tools codegraph index` writes

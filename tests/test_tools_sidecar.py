@@ -9,6 +9,8 @@ import stat
 import sys
 import time
 import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,8 @@ import pytest
 from omg_cli.mcp.tools import FORBIDDEN_TOOL_NAMES, dispatch_tool
 from omg_cli.tools_sidecar import (
     MAX_RESULT_BYTES,
+    RESEARCH_TIMEOUT_S,
+    RESEARCH_USER_AGENT,
     SIDECAR_TOOL_NAMES,
     FakeLspTransport,
     StdioLspTransport,
@@ -42,6 +46,58 @@ from omg_cli.tools_sidecar import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FakeResearchResponse:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+        self.code = status
+
+    def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            return self._body
+        return self._body[:n]
+
+    def __enter__(self) -> "_FakeResearchResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def _opensearch_json(query: str = "rust-analyzer") -> bytes:
+    return json.dumps(
+        [
+            query,
+            ["Rust (programming language)", "Static program analysis"],
+            [
+                "Rust is a general-purpose programming language.",
+                "Static program analysis is the analysis of computer programs.",
+            ],
+            [
+                "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+                "https://en.wikipedia.org/wiki/Static_program_analysis",
+            ],
+        ]
+    ).encode("utf-8")
+
+
+def _fake_opensearch_urlopen(body: bytes | BaseException):
+    def _urlopen(request: urllib.request.Request, *, timeout: float):
+        assert timeout == RESEARCH_TIMEOUT_S == 8.0
+        headers = {key.lower(): value for key, value in request.header_items()}
+        assert headers.get("user-agent") == RESEARCH_USER_AGENT
+        assert RESEARCH_USER_AGENT == "oh-my-grok-tools-sidecar/research"
+        assert "action=opensearch" in request.full_url
+        assert "limit=5" in request.full_url
+        assert "namespace=0" in request.full_url
+        assert "format=json" in request.full_url
+        if isinstance(body, BaseException):
+            raise body
+        return _FakeResearchResponse(body)
+
+    return _urlopen
 
 
 def test_sidecar_names_do_not_collide_with_mcp_server_forbid_list() -> None:
@@ -262,10 +318,127 @@ def test_research_opt_in_default_off() -> None:
     status = research_status(env={})
     assert status["enabled"] is False
     assert status["credentials_bundled"] is False
+    assert status["provider"] is None
     with pytest.raises(ToolsError, match="E_NETWORK_DISABLED"):
         research_search("grok", env={})
     with pytest.raises(ToolsError, match="E_NETWORK_NO_PROVIDER"):
-        research_search("grok", env={"OMG_TOOLS_NETWORK": "1"})
+        research_search(
+            "grok",
+            env={"OMG_TOOLS_NETWORK": "1", "OMG_TOOLS_RESEARCH_PROVIDER": "none"},
+        )
+
+
+def test_research_network_on_provider_off_is_no_provider() -> None:
+    with pytest.raises(ToolsError, match="E_NETWORK_NO_PROVIDER"):
+        research_search(
+            "grok",
+            env={"OMG_TOOLS_NETWORK": "1", "OMG_TOOLS_RESEARCH_PROVIDER": "off"},
+        )
+
+
+def test_research_search_wikipedia_opensearch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar._research_urlopen",
+        _fake_opensearch_urlopen(_opensearch_json()),
+    )
+    env = {"OMG_TOOLS_NETWORK": "1"}
+    status = research_status(env=env)
+    assert status["enabled"] is True
+    assert status["provider"] == "wikipedia"
+    assert status["credentials_bundled"] is False
+    assert status["verified"] is False
+    result = research_search("rust-analyzer", env=env)
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert result.get("passes") is not True
+    assert result["query"] == "rust-analyzer"
+    assert result["provider"] == "wikipedia"
+    assert result["count"] == 2
+    assert result["hits"][0]["title"] == "Rust (programming language)"
+    assert "wikipedia.org" in result["hits"][0]["url"]
+    assert result["hits"][0]["snippet"]
+    explicit = research_search(
+        "rust-analyzer",
+        env={"OMG_TOOLS_NETWORK": "1", "OMG_TOOLS_RESEARCH_PROVIDER": "wikipedia"},
+    )
+    assert explicit["hits"][0]["url"]
+
+
+def test_cli_research_search_wikipedia(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omg_cli.main import main
+
+    monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
+    monkeypatch.delenv("OMG_TOOLS_RESEARCH_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar._research_urlopen",
+        _fake_opensearch_urlopen(_opensearch_json()),
+    )
+    assert main(["tools", "research", "search", "--query", "rust-analyzer"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert result["ok"] is True
+    assert result["verified"] is False
+    assert payload.get("verified") is not True
+    assert result["provider"] == "wikipedia"
+    assert result["hits"]
+    assert result["hits"][0]["title"]
+    assert "wikipedia.org" in result["hits"][0]["url"]
+
+
+@pytest.mark.parametrize("kind", ("http_500", "timeout", "urlerror_timeout"))
+def test_research_search_http_failure_is_provider_error(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    if kind == "http_500":
+        body: BaseException = urllib.error.HTTPError(
+            "https://en.wikipedia.org/w/api.php",
+            500,
+            "Internal Server Error",
+            None,
+            io.BytesIO(b""),
+        )
+    elif kind == "timeout":
+        body = TimeoutError("timed out")
+    else:
+        body = urllib.error.URLError(TimeoutError("timed out"))
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar._research_urlopen",
+        _fake_opensearch_urlopen(body),
+    )
+    with pytest.raises(ToolsError, match="E_NETWORK_PROVIDER") as caught:
+        research_search("rust-analyzer", env={"OMG_TOOLS_NETWORK": "1"})
+    assert caught.value.code == "E_NETWORK_PROVIDER"
+    if kind == "http_500":
+        assert "500" in caught.value.message
+    else:
+        assert "timed out" in caught.value.message
+
+
+def test_research_search_non_json_is_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar._research_urlopen",
+        _fake_opensearch_urlopen(b"<html>nope</html>"),
+    )
+    with pytest.raises(ToolsError, match="E_NETWORK_PROVIDER"):
+        research_search("rust-analyzer", env={"OMG_TOOLS_NETWORK": "1"})
+
+
+def test_research_search_unexpected_shape_is_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "omg_cli.tools_sidecar._research_urlopen",
+        _fake_opensearch_urlopen(json.dumps({"error": "nope"}).encode("utf-8")),
+    )
+    with pytest.raises(ToolsError, match="E_NETWORK_PROVIDER"):
+        research_search("rust-analyzer", env={"OMG_TOOLS_NETWORK": "1"})
 
 
 def test_doctor_never_verified(tmp_path: Path) -> None:
@@ -280,9 +453,32 @@ def test_doctor_never_verified(tmp_path: Path) -> None:
 
 def test_doctor_strict_fails_enabled_network_without_provider(tmp_path: Path) -> None:
     payload = doctor_payload(
-        root=tmp_path, env={"OMG_TOOLS_NETWORK": "1"}, strict=True
+        root=tmp_path,
+        env={"OMG_TOOLS_NETWORK": "1", "OMG_TOOLS_RESEARCH_PROVIDER": "none"},
+        strict=True,
     )
     assert payload["ok"] is False
+    errors = payload.get("errors") or []
+    assert any("no provider" in str(item) for item in errors)
+
+
+def test_doctor_strict_wikipedia_has_no_provider_error(tmp_path: Path) -> None:
+    payload = doctor_payload(
+        root=tmp_path, env={"OMG_TOOLS_NETWORK": "1"}, strict=True
+    )
+    assert payload["ok"] is True
+    blob = json.dumps(payload)
+    assert "no provider" not in blob
+    research = payload["dependencies"]["network_research"]
+    assert research["provider"] == "wikipedia"
+    assert research["credentials_bundled"] is False
+    explicit = doctor_payload(
+        root=tmp_path,
+        env={"OMG_TOOLS_NETWORK": "1", "OMG_TOOLS_RESEARCH_PROVIDER": "wikipedia"},
+        strict=True,
+    )
+    assert explicit["ok"] is True
+    assert "no provider" not in json.dumps(explicit)
 
 
 def test_mcp_rpc_lists_sidecar_tools_not_forbidden_names(tmp_path: Path) -> None:
@@ -1050,6 +1246,7 @@ def test_cli_doctor_strict_failure_envelope(
     from omg_cli.main import main
 
     monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
+    monkeypatch.setenv("OMG_TOOLS_RESEARCH_PROVIDER", "none")
     assert main(["tools", "doctor", "--strict", "--root", str(tmp_path)]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
@@ -1069,6 +1266,7 @@ def test_cli_doctor_non_strict_success_envelope_stays_consistent(
     from omg_cli.main import main
 
     monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
+    monkeypatch.setenv("OMG_TOOLS_RESEARCH_PROVIDER", "none")
     assert main(["tools", "doctor", "--root", str(tmp_path)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
