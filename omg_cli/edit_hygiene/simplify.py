@@ -240,14 +240,19 @@ def _sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def _restore_originals(root: Path, originals: dict[str, bytes]) -> list[str]:
-    """Restore snapshotted bytes. Return paths that remain dirty."""
+def _restore_originals(
+    root: Path, applied: dict[str, tuple[bytes, bytes]]
+) -> list[str]:
+    """Restore files this invocation published. Concurrent edits are not clobbered."""
 
     dirty: list[str] = []
-    for rel, original in originals.items():
+    for rel, (original, after) in applied.items():
         try:
             current = read_confined_regular_file(root, rel)
             if current == original:
+                continue
+            if current != after:
+                dirty.append(rel)
                 continue
             write_confined_regular_file(root, rel, original)
             restored = read_confined_regular_file(root, rel)
@@ -437,12 +442,17 @@ def run_simplify(
         planned.append((desc, plan))
 
     applied: list[dict[str, Any]] = []
+    published_by_path: dict[str, tuple[bytes, bytes]] = {}
     try:
         for desc, plan in planned:
             result = apply_hash_edit(root, desc, plan)
             published = read_confined_regular_file(root, result.path)
             if _sha256_bytes(published) != result.after_sha256:
                 raise HashEditApplyError("post-apply digest mismatch")
+            published_by_path[result.path] = (
+                originals.get(result.path, b""),
+                published,
+            )
             applied.append(
                 {
                     "path": result.path,
@@ -453,7 +463,7 @@ def run_simplify(
                 }
             )
     except Exception as exc:
-        dirty = _restore_originals(root, originals)
+        dirty = _restore_originals(root, published_by_path)
         if dirty:
             artifact = _record_simplify_dirty(
                 root, stage_id=stage_id, kept=kept, dirty=dirty
