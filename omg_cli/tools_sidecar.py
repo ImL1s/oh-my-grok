@@ -454,7 +454,7 @@ def _await_inspectable_semantic(
     """Retry hover/definition until inspectable or the session deadline."""
     if semantic_result_inspectable(operation, first):
         return first
-    deadline = _lsp_deadline(transport)
+    deadline = time.monotonic() + _lsp_timeout_s(transport)
     last = first
     while time.monotonic() < deadline:
         _pump_or_sleep(
@@ -799,15 +799,10 @@ class StdioLspTransport:
                 self._handle_incoming(msg, None)
 
     def _request_deadline(self) -> float:
-        now = time.monotonic()
-        limit = float(self.timeout_s)
-        session_deadline = getattr(self, "_omg_lsp_deadline", None)
-        if isinstance(session_deadline, (int, float)):
-            remaining = float(session_deadline) - now
-            if remaining <= 0:
-                raise self._timeout_error()
-            limit = min(limit, remaining)
-        return now + limit
+        # Per-request budget. Do not inherit a session-wide deadline — a
+        # long-lived omg tools serve transport would otherwise fail every
+        # later hover after DEFAULT_LSP_TIMEOUT_S from initialize.
+        return time.monotonic() + float(self.timeout_s)
 
     def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
         self._ensure_alive()

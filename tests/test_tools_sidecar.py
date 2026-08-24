@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -1275,6 +1276,58 @@ def test_stdio_replies_workspace_folders_request() -> None:
     assert len(written) == 1
     assert written[0]["id"] == 9
     assert written[0]["result"] == [{"uri": "file:///ws", "name": "ws"}]
+
+
+def test_stdio_request_deadline_is_not_session_sticky(tmp_path: Path) -> None:
+    script = tmp_path / "echo_init.py"
+    script.write_text(
+        "import json, os, sys, time\n"
+        "pending = bytearray()\n"
+        "def read_more():\n"
+        "    chunk = os.read(sys.stdin.fileno(), 4096)\n"
+        "    if not chunk:\n"
+        "        return False\n"
+        "    pending.extend(chunk)\n"
+        "    return True\n"
+        "def read_msg():\n"
+        "    global pending\n"
+        "    while b'\\r\\n\\r\\n' not in pending:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    head, rest = bytes(pending).split(b'\\r\\n\\r\\n', 1)\n"
+        "    length = None\n"
+        "    for line in head.decode('ascii', 'replace').split('\\r\\n'):\n"
+        "        if line.lower().startswith('content-length:'):\n"
+        "            length = int(line.split(':', 1)[1].strip())\n"
+        "    pending = bytearray(rest)\n"
+        "    while len(pending) < length:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    body = bytes(pending[:length]); del pending[:length]\n"
+        "    return json.loads(body.decode('utf-8'))\n"
+        "def write_msg(msg):\n"
+        "    raw = json.dumps(msg).encode('utf-8')\n"
+        "    sys.stdout.buffer.write(\n"
+        "        ('Content-Length: %s\\r\\n\\r\\n' % len(raw)).encode('ascii') + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "while True:\n"
+        "    msg = read_msg()\n"
+        "    if msg is None:\n"
+        "        break\n"
+        "    if msg.get('method') == 'initialize':\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg.get('id'),'result':{}})\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=2.0
+    )
+    try:
+        transport._omg_lsp_deadline = 0.0  # expired session deadline
+        remaining = transport._request_deadline() - time.monotonic()
+        assert remaining > 1.0
+        assert transport.request("initialize", {}) == {}
+    finally:
+        transport.close()
 
 
 def test_normalize_lsp_argv_drops_stdio_for_rust_analyzer() -> None:
