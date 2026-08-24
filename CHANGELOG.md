@@ -61,6 +61,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   to `agent_closed`. Refs #72 (does not close).
 
 ### Added
+- **#73 leftover Wikipedia research provider:** `omg tools research search`
+  uses Wikipedia OpenSearch when `OMG_TOOLS_NETWORK=1` (default
+  `OMG_TOOLS_RESEARCH_PROVIDER=wikipedia`; `none`/`off` still
+  `E_NETWORK_NO_PROVIDER`). Stdlib `urllib`, 8s timeout, User-Agent
+  `oh-my-grok-tools-sidecar/research`, size-bounded. HTTP/timeout/non-JSON
+  / unexpected shape fail closed as `E_NETWORK_PROVIDER` (not fake hits).
+  Credentials are never bundled. Not live AG MCP. Does **not** write
+  `passes`/`verified`. Refs #73 (does not close).
 - **#75 leftover PATH screencapture capture default:** `omg visual capture`
   discovers `screencapture` on PATH (or `/usr/sbin/screencapture`) after
   `capture.command` and `OMG_VISUAL_CAPTURE`, and runs `screencapture -x`
