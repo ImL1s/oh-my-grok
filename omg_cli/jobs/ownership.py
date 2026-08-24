@@ -494,7 +494,7 @@ def same_occupant(expected: ProcessIdentity, observed: ProcessIdentity) -> bool:
         return False
     stamp = expected.pid_starttime
     if not isinstance(stamp, str) or stamp == "":
-        return True
+        return False
     return observed.pid_starttime == stamp
 
 

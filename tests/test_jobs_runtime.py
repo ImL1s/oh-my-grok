@@ -488,6 +488,8 @@ def test_same_occupant_rejects_pid_reuse_with_new_starttime() -> None:
     same = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:a")
     assert same_occupant(original, reused) is False
     assert same_occupant(original, same) is True
+    bare = ProcessIdentity(pid=5, pgid=5, pid_starttime=None)
+    assert same_occupant(bare, original) is False
 
 
 def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:

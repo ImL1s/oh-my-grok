@@ -905,7 +905,9 @@ def _propose_with_grok(
                 )
             supervisor_pid = os.getpid()
             preexisting_children = {
-                child.pid: child for child in child_identities(supervisor_pid)
+                child.pid: child
+                for child in child_identities(supervisor_pid)
+                if isinstance(child.pid_starttime, str) and child.pid_starttime
             }
             started = start_job(
                 root,

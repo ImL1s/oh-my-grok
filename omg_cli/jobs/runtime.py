@@ -1174,7 +1174,11 @@ def prove_job_processes_gone(
     deadline = time.monotonic() + max(0.0, float(timeout_s))
     while True:
         live: list[ProcessIdentity] = []
-        for ident in found.values():
+        for ident in list(found.values()):
+            refreshed = refresh_identity(ident)
+            if refreshed is not None:
+                merge_identity(found, refreshed)
+                ident = found[ident.pid]
             outcome = _probe_gc_identity(ident)
             if outcome is IdentityProbeOutcome.UNPROVEN:
                 raise JobStoreError(
