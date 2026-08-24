@@ -368,6 +368,83 @@ def test_cli_tools_lsp_fake_hover(tmp_path: Path, capsys) -> None:
     assert payload["result"]["result"]["contents"]["value"] == "fake hover"
 
 
+def _assert_fake_semantic_lsp(op: str, envelope: dict) -> None:
+    assert envelope["ok"] is True
+    assert envelope["verified"] is False
+    result = envelope["result"]
+    blob = json.dumps(result)
+    assert result
+    if op == "definition":
+        assert isinstance(result, list) and result
+        loc = result[0]
+        assert loc.get("uri")
+        assert "range" in loc
+        assert "a.py" in loc["uri"] or "Fake" in loc["uri"]
+    elif op == "references":
+        assert isinstance(result, list) and result
+        loc = result[0]
+        assert loc.get("uri")
+        assert "range" in loc
+        assert "Fake" in blob
+    elif op == "document_symbols":
+        assert any(row.get("name") == "Fake" for row in result)
+    elif op == "workspace_symbols":
+        assert any(row.get("name") == "Fake" for row in result)
+        assert "Fake.py" in blob
+    else:
+        raise AssertionError(op)
+
+
+@pytest.mark.parametrize(
+    "op",
+    ("definition", "references", "document_symbols", "workspace_symbols"),
+)
+def test_lsp_operation_fake_semantic_ops(tmp_path: Path, op: str) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    transport = FakeLspTransport()
+    envelope = lsp_operation(
+        op,
+        root=tmp_path,
+        path="a.py",
+        transport=transport,
+        query="Fake",
+    )
+    _assert_fake_semantic_lsp(op, envelope)
+
+
+@pytest.mark.parametrize(
+    "op",
+    ("definition", "references", "document_symbols", "workspace_symbols"),
+)
+def test_cli_tools_lsp_fake_semantic_ops(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], op: str
+) -> None:
+    from omg_cli.main import main
+
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    assert (
+        main(
+            [
+                "tools",
+                "lsp",
+                op,
+                "--fake-lsp",
+                "--path",
+                "a.py",
+                "--query",
+                "Fake",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload.get("verified") is not True
+    _assert_fake_semantic_lsp(op, payload["result"])
+
+
 def test_capabilities_embeds_tools_sidecar() -> None:
     text = (ROOT / "omg_cli" / "commands" / "inspect.py").read_text(encoding="utf-8")
     assert "inspect_tools_sidecar" in text
@@ -1012,6 +1089,125 @@ def test_cli_codegraph_index(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert payload["result"]["index_present"] is True
     assert payload["result"]["verified"] is False
     assert payload["result"]["not_scip"] is True
+
+
+def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
+    (tmp_path / "mod.py").write_text(
+        "import json\n\ndef hello():\n    return json.dumps({})\n",
+        encoding="utf-8",
+    )
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["ok"] is True
+    assert built["verified"] is False
+    assert built["not_scip"] is True
+    index_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.json"
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert payload["not_scip"] is True
+    assert payload.get("verified") is not True
+    assert "SCIP protobuf" in payload["note"]
+    occs = payload["occurrences"]
+    assert isinstance(occs, list) and occs
+    assert all(
+        {"path", "name", "role", "line", "symbol_id"} <= set(row)
+        for row in occs
+    )
+    roles = {(row["name"], row["role"]) for row in occs}
+    assert ("hello", "definition") in roles
+    assert ("json", "reference") in roles
+    hello_hits = codegraph_query(root=tmp_path, mode="local", query="hello")
+    assert hello_hits["ok"] is True
+    assert hello_hits["verified"] is False
+    assert hello_hits["not_scip"] is True
+    assert any(
+        row.get("kind") == "occurrence"
+        and row.get("role") == "definition"
+        and row.get("name") == "hello"
+        for row in hello_hits["hits"]
+    )
+    json_hits = codegraph_query(root=tmp_path, mode="local", query="json")
+    assert any(
+        row.get("kind") == "occurrence"
+        and row.get("role") == "reference"
+        and row.get("name") == "json"
+        for row in json_hits["hits"]
+    )
+    symbol_id = next(row["symbol_id"] for row in occs if row["name"] == "hello")
+    sid_hits = codegraph_query(root=tmp_path, mode="local", query=symbol_id)
+    assert any(row.get("symbol_id") == symbol_id for row in sid_hits["hits"])
+
+
+def test_cli_codegraph_index_query_occurrences(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omg_cli.main import main
+
+    (tmp_path / "mod.py").write_text(
+        "import json\n\ndef hello():\n    return json.dumps({})\n",
+        encoding="utf-8",
+    )
+    assert (
+        main(
+            [
+                "tools",
+                "codegraph",
+                "index",
+                "--mode",
+                "local",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    indexed = json.loads(capsys.readouterr().out)
+    assert indexed["ok"] is True
+    assert indexed["result"]["verified"] is False
+    assert indexed["result"]["not_scip"] is True
+    assert (
+        main(
+            [
+                "tools",
+                "codegraph",
+                "query",
+                "--mode",
+                "local",
+                "--query",
+                "hello",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    hello_payload = json.loads(capsys.readouterr().out)
+    hello_blob = json.dumps(hello_payload)
+    assert hello_payload["ok"] is True
+    assert hello_payload["result"]["verified"] is False
+    assert hello_payload.get("verified") is not True
+    assert "definition" in hello_blob
+    assert "hello" in hello_blob
+    assert (
+        main(
+            [
+                "tools",
+                "codegraph",
+                "query",
+                "--mode",
+                "local",
+                "--query",
+                "json",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    json_payload = json.loads(capsys.readouterr().out)
+    json_blob = json.dumps(json_payload)
+    assert json_payload["ok"] is True
+    assert json_payload["result"]["verified"] is False
+    assert "reference" in json_blob
+    assert "json" in json_blob
 
 
 def test_local_index_stale_after_second_edit(tmp_path: Path) -> None:
