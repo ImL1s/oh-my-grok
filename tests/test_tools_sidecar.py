@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -16,9 +17,11 @@ from omg_cli.tools_sidecar import (
     MAX_RESULT_BYTES,
     SIDECAR_TOOL_NAMES,
     FakeLspTransport,
+    StdioLspTransport,
     ToolsError,
     _astgrep_bin,
     _workspace_configuration_result,
+    ensure_lsp_session,
     ast_replace,
     ast_search,
     codegraph_index,
@@ -1048,3 +1051,30 @@ def test_shared_index_refuses_dirty_git_worktree(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("def shared_sym():\n    return 1\n", encoding="utf-8")
     with pytest.raises(ToolsError, match="E_CODEGRAPH_DIRTY"):
         codegraph_index(root=tmp_path, mode="shared")
+
+
+def test_fake_lsp_answers_workspace_folders(tmp_path: Path) -> None:
+    transport = FakeLspTransport()
+    src = tmp_path / "a.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    ensure_lsp_session(transport, root=tmp_path, path="a.py")
+    folders = transport.request("workspace/workspaceFolders", {})
+    assert isinstance(folders, list)
+    assert folders
+    assert folders[0]["uri"].startswith("file:")
+    assert "name" in folders[0]
+
+
+def test_stdio_replies_workspace_folders_request() -> None:
+    written: list[dict] = []
+    dummy = types.SimpleNamespace(
+        _omg_workspace_folders=[{"uri": "file:///ws", "name": "ws"}],
+        _write_message=written.append,
+    )
+    StdioLspTransport._reply_server_request(
+        dummy,
+        {"jsonrpc": "2.0", "id": 9, "method": "workspace/workspaceFolders"},
+    )
+    assert len(written) == 1
+    assert written[0]["id"] == 9
+    assert written[0]["result"] == [{"uri": "file:///ws", "name": "ws"}]

@@ -333,6 +333,9 @@ class FakeLspTransport:
             raise ToolsError("E_LSP_TIMEOUT", f"fake server timed out on {method}")
         if method == "workspace/configuration":
             return _workspace_configuration_result(body)
+        if method == "workspace/workspaceFolders":
+            folders = getattr(self, "_omg_workspace_folders", None)
+            return list(folders) if isinstance(folders, list) else []
         if method == "initialize":
             return {
                 "capabilities": {
@@ -512,15 +515,21 @@ class StdioLspTransport:
 
     def _reply_server_request(self, msg: Mapping[str, Any]) -> None:
         """Answer server→client requests that would otherwise be dropped by id."""
-        if msg.get("method") != "workspace/configuration":
+        req_id = msg.get("id")
+        if req_id is None:
             return
-        params = msg.get("params")
-        result = _workspace_configuration_result(
-            params if isinstance(params, Mapping) else None
-        )
-        self._write_message(
-            {"jsonrpc": "2.0", "id": msg.get("id"), "result": result}
-        )
+        method = msg.get("method")
+        if method == "workspace/configuration":
+            params = msg.get("params")
+            result = _workspace_configuration_result(
+                params if isinstance(params, Mapping) else None
+            )
+        elif method == "workspace/workspaceFolders":
+            folders = getattr(self, "_omg_workspace_folders", None)
+            result = list(folders) if isinstance(folders, list) else []
+        else:
+            return
+        self._write_message({"jsonrpc": "2.0", "id": req_id, "result": result})
 
     def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
         if self._proc.poll() is not None:
@@ -700,6 +709,14 @@ def ensure_lsp_session(
                 "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
             },
         )
+        try:
+            setattr(
+                transport,
+                "_omg_workspace_folders",
+                [{"uri": root_uri, "name": Path(root).name}],
+            )
+        except (AttributeError, TypeError):
+            pass
         _lsp_notify_or_request(transport, "initialized", {})
         try:
             setattr(transport, "_omg_lsp_initialized", True)
