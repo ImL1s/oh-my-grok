@@ -1129,7 +1129,7 @@ def _submit_interactive_inbox_instructions(
     (operator can retry). Dry-run teams are skipped.
     """
     from omg_cli.state import _run_dir
-    from omg_cli.team.interactive import echo_probe_enabled, interactive_inbox_instruction
+    from omg_cli.team.interactive import interactive_inbox_instruction
     from omg_cli.team.operator import OperatorError, input_worker
 
     submitted: dict[str, bool] = {}
@@ -1138,10 +1138,6 @@ def _submit_interactive_inbox_instructions(
     except TeamError:
         return submitted
     if bool(meta.get("dry_run")):
-        return submitted
-    # Smoke-only echo probe: inbox "execute the assigned task" puts Grok
-    # into a tool-using turn and blocks PROVIDER_ECHO of operator input.
-    if echo_probe_enabled():
         return submitted
     run_root = _run_dir(Path(root).resolve(), run_id)
     delivered: dict[str, dict[str, Any]] = {}

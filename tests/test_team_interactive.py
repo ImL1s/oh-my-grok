@@ -1633,8 +1633,54 @@ def test_echo_probe_skips_inbox_instruction_submit(
 
     mutate_team_meta(tmp_path, run_id, _seed)
     out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
-    assert out == {}
+    assert out == {"t1": False}
     assert called == []
+
+
+@_POSIX
+def test_ambient_echo_probe_env_does_not_skip_non_probe_inbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    monkeypatch.setenv(ECHO_PROBE_ENV, "1")
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    run_id = str(meta["run_id"])
+    called: list[str] = []
+
+    def _capture(*_args: object, **kwargs: object) -> dict[str, object]:
+        called.append(str(kwargs.get("text") or ""))
+        return {"ok": True}
+
+    monkeypatch.setattr("omg_cli.team.operator.input_worker", _capture)
+    inbox_rel = "team/t1.a1.inbox.txt"
+    inbox = tmp_path / ".omg" / "state" / "runs" / run_id / inbox_rel
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text("goal\n", encoding="utf-8")
+
+    def _seed(current: dict) -> dict:
+        current["dry_run"] = False
+        current["tasks"][0]["inbox_path"] = inbox_rel
+        current["tasks"][0]["attempt"] = 1
+        current["tasks"][0]["echo_probe"] = False
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
+    assert out == {"t1": True}
+    assert called
 
 
 @_POSIX

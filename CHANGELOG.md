@@ -48,7 +48,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   so `omg team input --submit` of the unique token never produced
   provider-side `PROVIDER_ECHO` (local composer echo only). Live smoke
   uses `yolo=False` and accepts a leader TUI_READY stamp when grok's
-  splash wipes the marker from pane scrollback. Still does **not**
+  splash wipes the marker from pane scrollback. Inbox skip is per-task
+  `echo_probe`, not process-wide env. Still does **not**
   claim `LIVE_TEAM_INTERACTIVE_TTY_OK` from fixtures. Refs #147
   (does not close).
 - **#74 leftover live Grok ACP vendor chrome:** `grok agent stdio`
