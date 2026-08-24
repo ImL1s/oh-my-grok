@@ -8,6 +8,7 @@ from __future__ import annotations
 import enum
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -344,19 +345,255 @@ def wait_until_gone(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -
     return not pid_alive(pid)
 
 
+def _direct_child_pids(parent_pid: int) -> list[int]:
+    """Best-effort direct children of *parent_pid* (Linux ``/proc`` then ``ps``)."""
+    if parent_pid <= 1:
+        return []
+    out: list[int] = []
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        try:
+            for entry in proc_root.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                child = int(entry.name)
+                if child <= 1 or child == parent_pid:
+                    continue
+                try:
+                    status = (entry / "status").read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for line in status.splitlines():
+                    if line.startswith("PPid:"):
+                        try:
+                            ppid = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            break
+                        if ppid == parent_pid:
+                            out.append(child)
+                        break
+        except OSError:
+            out = []
+        if out:
+            return out
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return out
+    if result.returncode != 0:
+        return out
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid_i = int(parts[0])
+            ppid_i = int(parts[1])
+        except ValueError:
+            continue
+        if ppid_i == parent_pid and pid_i > 1 and pid_i != parent_pid:
+            out.append(pid_i)
+    return out
+
+
+def child_identities(parent_pid: int) -> tuple[ProcessIdentity, ...]:
+    """Capture identities of *parent_pid*'s direct children via OS ppid.
+
+    This is independent of ``job.json``: a hostile provider can forge the
+    durable record, but it cannot fake its parent pid. Used to observe the
+    inner grok/agy process while the job runner is still live.
+    """
+    found: list[ProcessIdentity] = []
+    seen: set[int] = set()
+    for pid in _direct_child_pids(parent_pid):
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            found.append(capture_identity(pid))
+        except JobStoreError:
+            continue
+    return tuple(found)
+
+
+def _pids_in_pgid(pgid: int) -> list[int]:
+    """Best-effort live PIDs that currently share *pgid*."""
+    if pgid <= 1:
+        return []
+    out: list[int] = []
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,pgid="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid_i = int(parts[0])
+            pgid_i = int(parts[1])
+        except ValueError:
+            continue
+        if pgid_i == pgid and pid_i > 1:
+            out.append(pid_i)
+    return out
+
+
+def refresh_identity(ident: ProcessIdentity) -> ProcessIdentity | None:
+    """Re-read pgid when *ident*'s start-time fingerprint still matches.
+
+    Used after ``setsid()``: the process is the same occupant, so disappearance
+    proof must track the new session rather than classify PGID mismatch as
+    reuse.
+    """
+    if ident.pid <= 1:
+        return None
+    if not pid_alive(ident.pid):
+        return None
+    live_start = probe_pid_starttime(ident.pid)
+    expected = ident.pid_starttime
+    if not isinstance(expected, str) or expected == "":
+        return None
+    if live_start is None or live_start != expected:
+        return None
+    try:
+        live_pgid = int(os.getpgid(ident.pid))
+    except (ProcessLookupError, OSError):
+        return None
+    if live_pgid <= 1:
+        return None
+    return ProcessIdentity(
+        pid=ident.pid,
+        pgid=live_pgid,
+        pid_starttime=live_start if isinstance(live_start, str) else expected,
+    )
+
+
+def same_occupant(expected: ProcessIdentity, observed: ProcessIdentity) -> bool:
+    """True when *observed* is still the process recorded in *expected*.
+
+    A later occupant reusing the PID has a different start-time fingerprint.
+    Missing expected fingerprint is treated as the same occupant so we do not
+    signal an unproven replacement.
+    """
+    if expected.pid != observed.pid:
+        return False
+    stamp = expected.pid_starttime
+    if not isinstance(stamp, str) or stamp == "":
+        return False
+    return observed.pid_starttime == stamp
+
+
+def merge_identity(
+    found: dict[int, ProcessIdentity], ident: ProcessIdentity
+) -> bool:
+    """Insert *ident*, or refresh PGID when the start-time fingerprint matches.
+
+    A descendant that later calls ``setsid()`` keeps pid+starttime and gets a
+    new pgid. Treating that as ``REUSED`` would drop a still-live process.
+    A start-time mismatch is a different occupant and is not overwritten.
+    """
+    existing = found.get(ident.pid)
+    if existing is None:
+        found[ident.pid] = ident
+        return True
+    if (
+        existing.pgid == ident.pgid
+        and existing.pid_starttime == ident.pid_starttime
+    ):
+        return False
+    expected = existing.pid_starttime
+    incoming = ident.pid_starttime
+    if (
+        isinstance(expected, str)
+        and expected != ""
+        and incoming == expected
+        and existing.pgid != ident.pgid
+    ):
+        found[ident.pid] = ident
+        return True
+    return False
+
+
+def become_child_subreaper() -> bool:
+    """Linux: inherit orphaned grandchildren after an inner provider ``setsid``.
+
+    Returns True when the kernel accepted ``PR_SET_CHILD_SUBREAPER``. macOS has
+    no equivalent; callers still snapshot live children/pgid members and fail
+    closed when an inner identity is never captured.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        # linux/prctl.h PR_SET_CHILD_SUBREAPER = 36
+        rc = int(libc.prctl(36, 1, 0, 0, 0))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    return rc == 0
+
+
+def pgid_member_identities(pgid: int) -> tuple[ProcessIdentity, ...]:
+    """Capture identities of every live process in *pgid*.
+
+    Inner grok may fork a background child in the same session, close stdio,
+    and exit. Proving only the leader PID is gone is not process-group exit.
+    Snapshot members while the leader is still live; do not rescan a pgid
+    after the leader dies (the id can be reused).
+    """
+    if pgid <= 1:
+        return ()
+    found: list[ProcessIdentity] = []
+    seen: set[int] = set()
+    for pid in _pids_in_pgid(pgid):
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            ident = capture_identity(pid)
+        except JobStoreError:
+            continue
+        if ident.pgid != pgid:
+            continue
+        found.append(ident)
+    return tuple(found)
+
+
 __all__ = [
     "IdentityProbeOutcome",
     "OwnershipOutcome",
     "ProcessIdentity",
     "assert_ownership",
+    "become_child_subreaper",
     "capture_identity",
+    "child_identities",
     "is_json_int",
+    "pgid_member_identities",
     "kill_pgid",
+    "merge_identity",
     "parse_process_identity",
     "pid_alive",
     "probe_identity_for_recovery",
     "probe_identity_liveness",
     "probe_pid_starttime",
+    "refresh_identity",
+    "same_occupant",
     "process_fingerprint_ok",
     "process_identity_id_in_range",
     "process_identity_id_ok",

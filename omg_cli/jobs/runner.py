@@ -27,7 +27,17 @@ from pathlib import Path
 from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes, ensure_managed_dir
 from omg_cli.jobs.lease import DEFAULT_JOB_HEARTBEAT_INTERVAL_S
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
-from omg_cli.jobs.ownership import capture_identity
+from omg_cli.jobs.ownership import (
+    IdentityProbeOutcome,
+    become_child_subreaper,
+    capture_identity,
+    child_identities,
+    kill_pgid,
+    probe_identity_liveness,
+    reap_child,
+    refresh_identity,
+    wait_until_gone,
+)
 from omg_cli.jobs.providers import resolve_job_provider
 from omg_cli.jobs.store import (
     append_jsonl,
@@ -304,31 +314,97 @@ def _stamp_running_terminal(
     )
 
 
+def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
+    """Stay alive as subreaper until adopted children exit; then reap leftovers.
+
+    A provider can fork a detached helper after the last poll. Subreaper
+    adoption is useless if this process then exits on a fixed deadline and
+    reparents the helper to init. After the grace wait, signal remaining
+    direct children (exact captured identities) before returning.
+    """
+    me = os.getpid()
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        kids = child_identities(me)
+        if not kids:
+            return
+        for ident in kids:
+            reap_child(ident.pid)
+        time.sleep(0.05)
+    def _live_or_raise(ident: object) -> object | None:
+        refreshed = refresh_identity(ident)  # type: ignore[arg-type]
+        if refreshed is not None:
+            ident = refreshed
+        outcome = probe_identity_liveness(ident)  # type: ignore[arg-type]
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            pid = getattr(ident, "pid", "?")
+            raise RuntimeError(f"adopted child pid={pid} liveness unproven")
+        if outcome is IdentityProbeOutcome.LIVE:
+            return ident
+        return None
+
+    kids = child_identities(me)
+    for ident in kids:
+        live = _live_or_raise(ident)
+        if live is not None:
+            kill_pgid(live.pgid, signal.SIGTERM)  # type: ignore[attr-defined]
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        kids = child_identities(me)
+        if not kids:
+            return
+        for ident in kids:
+            reap_child(ident.pid)
+        time.sleep(0.05)
+    leftover: list = []
+    for ident in child_identities(me):
+        live = _live_or_raise(ident)
+        if live is None:
+            continue
+        kill_pgid(live.pgid, signal.SIGKILL)  # type: ignore[attr-defined]
+        gone = wait_until_gone(live.pid, timeout_s=2.0)  # type: ignore[attr-defined]
+        still = _live_or_raise(live)
+        if not gone and still is not None:
+            leftover.append(still)
+    if leftover:
+        raise RuntimeError(
+            "adopted child pid(s) "
+            + ",".join(str(ident.pid) for ident in leftover)
+            + " still live after SIGKILL"
+        )
+
+
 def run_job(project_root: Path, job_id: str) -> int:
     """Wait for parent running commit, then Adapter.run, then terminal stamp."""
+    become_child_subreaper()
+    rc = 2
     try:
-        record = read_job_record(project_root, job_id)
-    except JobStoreError as exc:
-        print(f"omg job runner: {exc}", file=sys.stderr)
-        return 2
+        try:
+            record = read_job_record(project_root, job_id)
+        except JobStoreError as exc:
+            print(f"omg job runner: {exc}", file=sys.stderr)
+            return 2
 
-    if record.state in TERMINAL_STATES:
-        return 0
+        if record.state in TERMINAL_STATES:
+            return 0
 
-    jdir = job_dir(project_root, job_id)
-    env_updates: dict[str, str | None] = {
-        "OMG_JOB_ID": job_id,
-        "OMG_JOB_DIR": str(jdir),
-        "OMG_PROJECT_ROOT": str(project_root),
-        # Clear fake-mode leftovers unless worker opts in below.
-        "OMG_JOB_FAKE_FAIL": None,
-        "OMG_JOB_FAKE_LARGE": None,
-        "OMG_JOB_FAKE_IGNORE_SIGTERM": None,
-        "OMG_JOB_FAKE_SLEEP": None,
-    }
+        jdir = job_dir(project_root, job_id)
+        env_updates: dict[str, str | None] = {
+            "OMG_JOB_ID": job_id,
+            "OMG_JOB_DIR": str(jdir),
+            "OMG_PROJECT_ROOT": str(project_root),
+            # Clear fake-mode leftovers unless worker opts in below.
+            "OMG_JOB_FAKE_FAIL": None,
+            "OMG_JOB_FAKE_LARGE": None,
+            "OMG_JOB_FAKE_IGNORE_SIGTERM": None,
+            "OMG_JOB_FAKE_SLEEP": None,
+        }
 
-    with _env_scope(env_updates):
-        return _run_job_with_env(project_root, job_id, record, jdir)
+        with _env_scope(env_updates):
+            rc = _run_job_with_env(project_root, job_id, record, jdir)
+            return rc
+    finally:
+        _wait_adopted_children()
 
 
 def _run_job_with_env(

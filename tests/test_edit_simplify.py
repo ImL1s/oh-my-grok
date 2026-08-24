@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
-from omg_cli.jobs.models import JobState
+from omg_cli.jobs.models import JobRecord, JobState
+from omg_cli.jobs.store import write_job_record
 from omg_cli.main import build_parser, main
 
 JOB_ID = "20260824T000000Z-abcd1234"
@@ -80,12 +81,27 @@ class _FakeGrokJob:
         art = Path(project_root) / ".omg" / "jobs" / self.job_id / "artifacts"
         art.mkdir(parents=True, exist_ok=True)
         (art / "result.md").write_text(self.output, encoding="utf-8")
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=self.job_id,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.FAILED if self.fail else JobState.SUCCEEDED,
+                result="artifacts/result.md",
+            ),
+        )
         return SimpleNamespace(record=SimpleNamespace(job_id=self.job_id), launched=True)
 
     def wait(self, project_root: Path, job_id: str, **kwargs: object) -> tuple[SimpleNamespace, bool]:
-        del project_root, kwargs
+        del project_root
         state = JobState.FAILED if self.fail else JobState.SUCCEEDED
-        return SimpleNamespace(state=state, job_id=job_id), False
+        rec = SimpleNamespace(state=state, job_id=job_id)
+        on_poll = kwargs.get("on_poll")
+        if callable(on_poll):
+            on_poll(rec)
+        return rec, False
 
     def collect(self, project_root: Path, job_id: str) -> dict:
         del project_root
@@ -278,6 +294,432 @@ def test_simplify_provider_does_not_clobber_concurrent_user_edits(
     payload = _out(capsys)
     assert _code(payload) == "E_SIMPLIFY_PROVIDER"
     assert src.read_text(encoding="utf-8") == "user-edit\n"
+
+
+def _runner_with_child() -> tuple[object, object, object]:
+    """Live job-runner stand-in that has already spawned an inner child."""
+    import os
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    assert parent.stdout is not None
+    child_pid = int(parent.stdout.readline())
+    runner = capture_identity(parent.pid, pgid=os.getpgid(parent.pid))
+    child = capture_identity(child_pid, pgid=os.getpgid(child_pid))
+    assert pid_alive(parent.pid)
+    assert pid_alive(child_pid)
+    return parent, runner, child
+
+
+def _kill_proc(proc: object) -> None:
+    import os
+    import signal
+
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 1:
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()  # type: ignore[union-attr]
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=3)  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+
+def test_simplify_provider_proves_start_identity_when_job_json_clears_pids(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forged terminal job.json that drops PIDs must still prove start identity."""
+    from omg_cli.jobs.ownership import pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc, ident, child = _runner_with_child()
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.SUCCEEDED,
+                pid=None,
+                pgid=None,
+                pid_starttime=None,
+                result="artifacts/result.md",
+            ),
+        )
+        started.record.pid = ident.pid
+        started.record.pgid = ident.pgid
+        started.record.pid_starttime = ident.pid_starttime
+        return started
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        message = str(payload.get("error", {}).get("message") or payload)
+        assert "still live" in message
+        assert not pid_alive(proc.pid)
+        assert not pid_alive(child.pid)
+    finally:
+        _kill_proc(proc)
+
+
+def test_simplify_provider_fails_closed_when_terminal_record_still_live(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Start-job runner + inner child must be reaped; job.json PIDs are not trusted."""
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc, ident, child = _runner_with_child()
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.SUCCEEDED,
+                pid=ident.pid,
+                pgid=ident.pgid,
+                pid_starttime=ident.pid_starttime,
+                result="artifacts/result.md",
+            ),
+        )
+        started.record.pid = ident.pid
+        started.record.pgid = ident.pgid
+        started.record.pid_starttime = ident.pid_starttime
+        return started
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        message = str(payload.get("error", {}).get("message") or payload)
+        assert "still live" in message
+        assert (project / "app.py").read_text(encoding="utf-8") == "x = 1\n"
+        assert not pid_alive(proc.pid)
+        assert not pid_alive(child.pid)
+    finally:
+        _kill_proc(proc)
+
+
+def test_simplify_provider_does_not_signal_forged_job_json_pid(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal stamp naming an unrelated process must not be signaled."""
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.SUCCEEDED,
+                pid=ident.pid,
+                pgid=ident.pgid,
+                pid_starttime=ident.pid_starttime,
+                result="artifacts/result.md",
+            ),
+        )
+        return started
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        assert pid_alive(proc.pid)
+    finally:
+        _kill_proc(proc)
+
+
+def test_simplify_provider_fails_closed_when_inner_identity_never_captured(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner-only start identity without an observed inner child is unproven."""
+    import os
+    import subprocess
+
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.SUCCEEDED,
+                pid=None,
+                pgid=None,
+                pid_starttime=None,
+                result="artifacts/result.md",
+            ),
+        )
+        started.record.pid = ident.pid
+        started.record.pgid = ident.pgid
+        started.record.pid_starttime = ident.pid_starttime
+        return started
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", fake.wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        message = str(payload.get("error", {}).get("message") or payload)
+        assert "inner provider identity" in message
+        assert not pid_alive(proc.pid)
+    finally:
+        _kill_proc(proc)
+
+
+def test_reap_start_identities_raises_when_still_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.edit_hygiene.simplify import _reap_start_identities
+    from omg_cli.jobs.models import JobStoreError
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime="lstart:x")
+    monkeypatch.setattr(
+        "omg_cli.edit_hygiene.simplify.probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr("omg_cli.jobs.ownership.kill_pgid", lambda *_a, **_k: True)
+    monkeypatch.setattr("omg_cli.jobs.ownership.wait_until_gone", lambda *_a, **_k: False)
+    with pytest.raises(JobStoreError, match="still live after SIGKILL"):
+        _reap_start_identities((ident,))
+
+
+def test_become_child_subreaper_is_linux_only() -> None:
+    import sys
+
+    from omg_cli.jobs.ownership import become_child_subreaper
+
+    if sys.platform == "linux":
+        become_child_subreaper()
+        return
+    assert become_child_subreaper() is False
+
+
+def test_simplify_provider_reaps_polled_identities_on_recovery(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inner identity discovered during wait must be reaped if wait raises."""
+    from omg_cli.jobs.models import JobStoreError
+    from omg_cli.jobs.ownership import pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    proc, ident, child = _runner_with_child()
+    fake = _FakeGrokJob('{"descriptors": []}')
+
+    def _start(project_root: Path, **kwargs: object) -> object:
+        started = fake.start(project_root, **kwargs)
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=JOB_ID,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.RUNNING,
+                pid=ident.pid,
+                pgid=ident.pgid,
+                pid_starttime=ident.pid_starttime,
+                result="artifacts/result.md",
+            ),
+        )
+        started.record.pid = ident.pid
+        started.record.pgid = ident.pgid
+        started.record.pid_starttime = ident.pid_starttime
+        return started
+
+    def _wait(project_root: Path, job_id: str, **kwargs: object) -> tuple[object, bool]:
+        del project_root, job_id
+        on_poll = kwargs.get("on_poll")
+        if callable(on_poll):
+            on_poll(SimpleNamespace(state=JobState.RUNNING, job_id=JOB_ID))
+        raise JobStoreError(
+            "job requires recovery (health=lease_stale_live)",
+            code="E_JOB_RECOVERY_REQUIRED",
+        )
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", _start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", _wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.collect_job", fake.collect)
+    try:
+        rc = main(
+            [
+                "--json",
+                "edit",
+                "simplify",
+                "--paths",
+                "app.py",
+                "--enable",
+                "--provider",
+                "grok",
+            ]
+        )
+        assert rc == 1
+        payload = _out(capsys)
+        assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+        assert not pid_alive(proc.pid)
+        assert not pid_alive(child.pid)
+    finally:
+        _kill_proc(proc)
+
+
+def test_simplify_linux_subreaper_unavailable_fails_closed(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.sys.platform", "linux")
+    monkeypatch.setattr(
+        "omg_cli.edit_hygiene.simplify.become_child_subreaper", lambda: False
+    )
+    _install_fake(monkeypatch, _FakeGrokJob("{}"))
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert "subreaper" in str(payload.get("error", {}).get("message") or payload)
 
 
 def test_simplify_provider_cancels_job_on_recovery_required(

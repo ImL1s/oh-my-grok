@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from omg_cli.jobs.runtime import (
     collect_job,
     job_status,
     list_jobs,
+    prove_job_processes_gone,
     start_job,
     wait_job,
 )
@@ -325,6 +327,357 @@ def test_cancel_idempotent(root: Path) -> None:
     b = cancel_job(root, started.record.job_id)
     assert a.state == JobState.SUCCEEDED
     assert b.state == JobState.SUCCEEDED
+
+
+def test_prove_job_processes_gone_uses_start_identity_when_record_clears_pids(
+    root: Path,
+) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.runtime import identities_from_start_record
+    from omg_cli.jobs.store import job_dir, write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-cafecafe",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=None,
+        pgid=None,
+        pid_starttime=None,
+        result="artifacts/result.md",
+    )
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    start_ns = SimpleNamespace(
+        pid=ident.pid, pgid=ident.pgid, pid_starttime=ident.pid_starttime
+    )
+    extras = identities_from_start_record(start_ns)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.1, extra_identities=extras
+            )
+        assert pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def test_prove_job_processes_gone_missing_record_is_unproven(root: Path) -> None:
+    with pytest.raises(JobStoreError, match="cannot prove process exit"):
+        prove_job_processes_gone(root, "20260824T000000Z-aaaaaaaa")
+
+
+def test_prove_missing_record_unproven_even_with_dead_extra(root: Path) -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity
+
+    ident = ProcessIdentity(pid=999999, pgid=999999, pid_starttime="lstart:gone")
+    with pytest.raises(JobStoreError, match="cannot prove process exit"):
+        prove_job_processes_gone(
+            root,
+            "20260824T000000Z-aaaaaaaa",
+            extra_identities=(ident,),
+        )
+
+
+def test_prove_does_not_replace_trusted_extra_with_forged_record(root: Path) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-c0de0002",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=ident.pid,
+        pgid=ident.pgid,
+        pid_starttime="lstart:forged",
+        result="artifacts/result.md",
+    )
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.2, extra_identities=(ident,)
+            )
+        assert pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def test_wait_adopted_children_raises_when_liveness_unproven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+    from omg_cli.jobs import runner as runner_mod
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime="lstart:x")
+    monkeypatch.setattr(runner_mod, "child_identities", lambda _pid: (ident,))
+    monkeypatch.setattr(runner_mod, "refresh_identity", lambda _ident: None)
+    monkeypatch.setattr(
+        runner_mod,
+        "probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.UNPROVEN,
+    )
+    monkeypatch.setattr(runner_mod, "reap_child", lambda _pid: None)
+    with pytest.raises(RuntimeError, match="liveness unproven"):
+        runner_mod._wait_adopted_children(timeout_s=0.05)
+
+
+def test_wait_adopted_children_signals_leftover_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs import runner as runner_mod
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+
+    def _kids(_pid: int):
+        return (ident,) if pid_alive(proc.pid) else ()
+
+    monkeypatch.setattr(runner_mod, "child_identities", _kids)
+    try:
+        runner_mod._wait_adopted_children(timeout_s=0.05)
+        assert not pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def test_refresh_identity_refuses_missing_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, refresh_identity
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime=None)
+    monkeypatch.setattr("omg_cli.jobs.ownership.pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_pid_starttime", lambda _pid: "lstart:new"
+    )
+    monkeypatch.setattr("omg_cli.jobs.ownership.os.getpgid", lambda _pid: 99)
+    assert refresh_identity(ident) is None
+
+
+def test_same_occupant_rejects_pid_reuse_with_new_starttime() -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, same_occupant
+
+    original = ProcessIdentity(pid=5, pgid=5, pid_starttime="lstart:a")
+    reused = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:b")
+    same = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:a")
+    assert same_occupant(original, reused) is False
+    assert same_occupant(original, same) is True
+    bare = ProcessIdentity(pid=5, pgid=5, pid_starttime=None)
+    assert same_occupant(bare, original) is False
+
+
+def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, merge_identity
+
+    original = ProcessIdentity(pid=5, pgid=5, pid_starttime="lstart:same")
+    detached = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:same")
+    reused = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:other")
+    found = {5: original}
+    assert merge_identity(found, detached) is True
+    assert found[5].pgid == 9
+    assert merge_identity(found, reused) is False
+    assert found[5].pid_starttime == "lstart:same"
+
+
+def test_pgid_member_identities_includes_same_session_child() -> None:
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.ownership import pgid_member_identities, pid_alive
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        found = {ident.pid for ident in pgid_member_identities(os.getpgid(parent.pid))}
+        assert parent.pid in found
+        assert child_pid in found
+    finally:
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            parent.wait(timeout=3)
+
+
+def test_prove_job_processes_gone_sees_surviving_pgid_member(root: Path) -> None:
+    """Leader PID gone is not proof the captured process group is empty."""
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    child_pid = 0
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        ident = capture_identity(parent.pid, pgid=os.getpgid(parent.pid))
+        rec = JobRecord(
+            job_id="20260824T000000Z-c0de0001",
+            created_at="2026-08-24T00:00:00Z",
+            provider="grok",
+            role="researcher",
+            state=JobState.SUCCEEDED,
+            pid=None,
+            pgid=None,
+            result="artifacts/result.md",
+        )
+        (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+        write_job_record(root, rec)
+        os.kill(parent.pid, 9)
+        parent.wait(timeout=3)
+        assert not pid_alive(parent.pid)
+        assert pid_alive(child_pid)
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.2, extra_identities=(ident,)
+            )
+    finally:
+        if child_pid and pid_alive(child_pid):
+            os.kill(child_pid, 9)
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            try:
+                parent.wait(timeout=3)
+            except Exception:
+                pass
+
+
+def test_child_identities_lists_direct_child() -> None:
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.ownership import child_identities, pid_alive
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        found = {ident.pid for ident in child_identities(parent.pid)}
+        assert child_pid in found
+    finally:
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            parent.wait(timeout=3)
+
+
+def test_cancel_does_not_signal_forged_succeeded_stamp(root: Path) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-deadbeef",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=ident.pid,
+        pgid=ident.pgid,
+        pid_starttime=ident.pid_starttime,
+        result="artifacts/result.md",
+    )
+    from omg_cli.jobs.store import job_dir
+
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(root, rec.job_id, timeout_s=0.1)
+        assert pid_alive(proc.pid)
+        out = cancel_job(root, rec.job_id, grace_s=0.2)
+        assert out.state == JobState.SUCCEEDED
+        # Terminal stamps must not signal PIDs from job.json (may be forged).
+        assert pid_alive(proc.pid)
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root,
+                rec.job_id,
+                timeout_s=0.1,
+                extra_identities=(ident,),
+            )
+        assert pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
 
 
 def test_sibling_isolation_cancel_a_keeps_b(root: Path) -> None:

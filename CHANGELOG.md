@@ -40,6 +40,35 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#76 leftover: prove grok exit after terminal job.json:** `wait_job`
+  returns as soon as the persisted record is terminal. Simplify used that
+  stamp to skip `cancel_job`, so a still-live grok (forged SUCCEEDED)
+  could mutate the tree after the one-shot fingerprint. The proposal
+  path now snapshots `start_job` identities and OS children of a still-live
+  runner during wait (inner grok is a new session, absent from the start
+  record), then `prove_job_processes_gone` with those captures. A missing
+  `job.json` is always unproven, even when extras look gone. Terminal
+  `cancel_job` does not signal PIDs from `job.json` (a forged stamp can
+  name a victim). Reap/prove use exact-identity probes so PID reuse is
+  not signaled. An observed runner without an inner child is unproven.
+  A dead provider leader is not proof its process group is empty:
+  live pgid members captured while the leader was alive (or still listed
+  under that pgid) keep the command fail-closed. Reap requires GONE/REUSED
+  after SIGKILL (unproven/still-live raises). Linux job runners set
+  PR_SET_CHILD_SUBREAPER so a setsid grandchild is reparented to the
+  runner instead of init. A later setsid() on a captured pid with
+  the same start-time fingerprint refreshes PGID instead of treating
+  the mismatch as reuse. Terminal job.json never overwrites captured
+  extras. PGID scans run only while that identity is live. The job
+  runner waits for adopted children before exit so a Linux subreaper
+  is not dropped immediately after the provider returns. Simplify itself
+  also becomes the Linux subreaper before start_job so grok cannot
+  escape by killing the job runner. Poll-discovered identities are
+  synced into cancel/reap even when wait_job raises (recovery).
+  Linux refuses grok simplify if the child subreaper cannot be armed.
+  Pre-start supervisor children are skipped by start-time identity, not
+  PID alone, so a reused PID is still captured.
+  Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait

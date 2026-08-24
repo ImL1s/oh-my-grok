@@ -18,6 +18,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
@@ -46,7 +47,25 @@ from omg_cli.hash_edit import (
     write_confined_regular_file,
 )
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.runtime import cancel_job, collect_job, start_job, wait_job
+from omg_cli.jobs.ownership import (
+    IdentityProbeOutcome,
+    ProcessIdentity,
+    become_child_subreaper,
+    child_identities,
+    merge_identity,
+    pgid_member_identities,
+    probe_identity_liveness,
+    refresh_identity,
+    same_occupant,
+)
+from omg_cli.jobs.runtime import (
+    cancel_job,
+    collect_job,
+    identities_from_start_record,
+    prove_job_processes_gone,
+    start_job,
+    wait_job,
+)
 from omg_cli.jobs.store import job_dir, make_job_id
 
 SIMPLIFIER_ROLE: Final[str] = "omg-code-simplifier"
@@ -614,22 +633,95 @@ def _workspace_content_fingerprint(
     return out
 
 
+def _reap_start_identities(identities: Sequence[Any]) -> None:
+    """Reap start-time PIDs after exact-identity probe (never forged job.json)."""
+    import signal
+
+    from omg_cli.jobs.ownership import kill_pgid, wait_until_gone
+
+    for ident in identities:
+        pid = getattr(ident, "pid", None)
+        pgid = getattr(ident, "pgid", None)
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not isinstance(pgid, int) or pgid <= 1:
+            continue
+        if not isinstance(ident, ProcessIdentity):
+            ident = ProcessIdentity(pid=pid, pgid=pgid, pid_starttime=getattr(ident, "pid_starttime", None))
+        outcome = probe_identity_liveness(ident)
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        kill_pgid(pgid, signal.SIGTERM)
+        wait_until_gone(pid, timeout_s=1.0)
+        outcome = probe_identity_liveness(ident)
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        kill_pgid(pgid, signal.SIGKILL)
+        wait_until_gone(pid, timeout_s=2.0)
+        outcome = probe_identity_liveness(ident)
+        if outcome not in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            raise JobStoreError(
+                f"start identity pid={pid} still live after SIGKILL",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+
+
+def _absorb_runner_children(
+    identities: dict[int, ProcessIdentity],
+    runner_pids: set[int],
+) -> None:
+    """Snapshot OS children and live process-group members (not job.json)."""
+    del runner_pids
+    scanned: set[int] = set()
+    pending = True
+    while pending:
+        pending = False
+        for ident in list(identities.values()):
+            if ident.pid in scanned:
+                continue
+            scanned.add(ident.pid)
+            refreshed = refresh_identity(ident)
+            if refreshed is not None:
+                merge_identity(identities, refreshed)
+                ident = identities[ident.pid]
+            extras: list[ProcessIdentity] = []
+            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                extras.extend(pgid_member_identities(ident.pgid))
+                extras.extend(child_identities(ident.pid))
+            for extra in extras:
+                if merge_identity(identities, extra):
+                    pending = True
+
+
 def _cancel_simplify_job(
     root: Path,
     job_id: str,
     *,
     assignment: dict[str, Any],
     reason: str,
+    start_identities: Sequence[Any] = (),
 ) -> None:
     """Cancel a live simplify job. Unproven cancel is fail-closed."""
     try:
         cancel_job(root, job_id, reason=reason)
     except Exception as exc:
+        _reap_start_identities(start_identities)
         raise SimplifyProviderError(
             f"grok simplify job {reason} and cancel failed: {exc}",
             assignment,
             job_id=job_id,
         ) from exc
+    _reap_start_identities(start_identities)
 
 
 _AUTHORITY_NEEDLES: Final[tuple[str, ...]] = (
@@ -800,8 +892,23 @@ def _propose_with_grok(
     job_succeeded = False
     cancelled = False
     wait_observed_terminal = False
+    start_identities: tuple[Any, ...] = ()
     try:
         try:
+            # Subreaper must be this supervisor, not the job runner: grok can
+            # kill the runner. Linux: refuse if prctl is unavailable. Darwin
+            # has no PR_SET_CHILD_SUBREAPER; inner-identity proof still applies.
+            if not become_child_subreaper() and sys.platform.startswith("linux"):
+                raise SimplifyProviderError(
+                    "linux child subreaper unavailable; refusing grok simplify",
+                    assignment,
+                )
+            supervisor_pid = os.getpid()
+            preexisting_children = {
+                child.pid: child
+                for child in child_identities(supervisor_pid)
+                if isinstance(child.pid_starttime, str) and child.pid_starttime
+            }
             started = start_job(
                 root,
                 provider=GROK_PROVIDER,
@@ -821,18 +928,55 @@ def _propose_with_grok(
                     "grok job start did not return a job_id",
                     assignment,
                 )
-            waited, timed_out = wait_job(
-                root,
-                job_id,
-                timeout_s=float(timeout_s),
-                stop_on_recovery_required=True,
-            )
+            start_identities = identities_from_start_record(record)
+            captured: dict[int, ProcessIdentity] = {
+                ident.pid: ident
+                for ident in start_identities
+                if isinstance(ident, ProcessIdentity)
+            }
+            runner_pids = set(captured)
+            _absorb_runner_children(captured, runner_pids)
+
+            def _sync_start_identities() -> None:
+                nonlocal start_identities
+                start_identities = tuple(captured.values())
+
+            def _absorb_supervisor_children() -> None:
+                if not runner_pids:
+                    return
+                for child in child_identities(supervisor_pid):
+                    old = preexisting_children.get(child.pid)
+                    if old is not None and same_occupant(old, child):
+                        continue
+                    merge_identity(captured, child)
+
+            def _on_poll(_wait_record: object) -> None:
+                _absorb_runner_children(captured, runner_pids)
+                _absorb_supervisor_children()
+                _sync_start_identities()
+
+            _absorb_supervisor_children()
+            _sync_start_identities()
+            try:
+                waited, timed_out = wait_job(
+                    root,
+                    job_id,
+                    timeout_s=float(timeout_s),
+                    poll_s=0.02,
+                    stop_on_recovery_required=True,
+                    on_poll=_on_poll,
+                )
+            finally:
+                _absorb_runner_children(captured, runner_pids)
+                _absorb_supervisor_children()
+                _sync_start_identities()
             if timed_out:
                 _cancel_simplify_job(
                     root,
                     job_id,
                     assignment=assignment,
                     reason="simplify-provider-timeout",
+                    start_identities=start_identities,
                 )
                 cancelled = True
                 raise SimplifyProviderError(
@@ -840,6 +984,54 @@ def _propose_with_grok(
                     assignment,
                     job_id=job_id,
                 )
+            # Terminal job.json is not process-exit proof. A forged SUCCEEDED
+            # stamp used to skip cancel and let a still-live grok mutate the
+            # tree after the one-shot fingerprint. Inner grok is a new session
+            # (not in the runner pgid) and is missing from start_job; capture
+            # it from OS children of the still-live runner during wait.
+            if runner_pids and not (set(captured) - runner_pids):
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-inner-unproven",
+                    start_identities=start_identities,
+                )
+                cancelled = True
+                raise SimplifyProviderError(
+                    "grok simplify inner provider identity was never "
+                    "captured before terminal state",
+                    assignment,
+                    job_id=job_id,
+                )
+            try:
+                prove_job_processes_gone(
+                    root, job_id, extra_identities=start_identities
+                )
+            except JobStoreError as exc:
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-terminal-live",
+                    start_identities=start_identities,
+                )
+                cancelled = True
+                try:
+                    prove_job_processes_gone(
+                        root, job_id, extra_identities=start_identities
+                    )
+                except JobStoreError as prove_exc:
+                    raise SimplifyProviderError(
+                        f"grok simplify job terminal but process still live: {prove_exc}",
+                        assignment,
+                        job_id=job_id,
+                    ) from prove_exc
+                raise SimplifyProviderError(
+                    f"grok simplify job claimed terminal while process was live: {exc}",
+                    assignment,
+                    job_id=job_id,
+                ) from exc
             wait_observed_terminal = True
             if _job_state_value(getattr(waited, "state", None)) != JobState.SUCCEEDED.value:
                 raise SimplifyProviderError(
@@ -876,6 +1068,7 @@ def _propose_with_grok(
                         job_id,
                         assignment=assignment,
                         reason=reason,
+                        start_identities=start_identities,
                     )
                     cancelled = True
                 except SimplifyProviderError as cancel_exc:
@@ -914,6 +1107,7 @@ def _propose_with_grok(
                     job_id,
                     assignment=assignment,
                     reason="simplify-provider-abort",
+                    start_identities=start_identities,
                 )
                 cancelled = True
             except SimplifyProviderError as cancel_exc:
