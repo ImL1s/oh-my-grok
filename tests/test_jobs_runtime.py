@@ -376,7 +376,52 @@ def test_prove_job_processes_gone_missing_record_is_unproven(root: Path) -> None
         prove_job_processes_gone(root, "20260824T000000Z-aaaaaaaa")
 
 
-def test_cancel_reaps_live_pid_on_forged_succeeded_stamp(root: Path) -> None:
+def test_prove_missing_record_unproven_even_with_dead_extra(root: Path) -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity
+
+    ident = ProcessIdentity(pid=999999, pgid=999999, pid_starttime="lstart:gone")
+    with pytest.raises(JobStoreError, match="cannot prove process exit"):
+        prove_job_processes_gone(
+            root,
+            "20260824T000000Z-aaaaaaaa",
+            extra_identities=(ident,),
+        )
+
+
+def test_child_identities_lists_direct_child() -> None:
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.ownership import child_identities, pid_alive
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        found = {ident.pid for ident in child_identities(parent.pid)}
+        assert child_pid in found
+    finally:
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            parent.wait(timeout=3)
+
+
+def test_cancel_does_not_signal_forged_succeeded_stamp(root: Path) -> None:
     import os
     import subprocess
 
@@ -407,8 +452,16 @@ def test_cancel_reaps_live_pid_on_forged_succeeded_stamp(root: Path) -> None:
         assert pid_alive(proc.pid)
         out = cancel_job(root, rec.job_id, grace_s=0.2)
         assert out.state == JobState.SUCCEEDED
-        prove_job_processes_gone(root, rec.job_id, timeout_s=2.0)
-        assert not pid_alive(proc.pid)
+        # Terminal stamps must not signal PIDs from job.json (may be forged).
+        assert pid_alive(proc.pid)
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root,
+                rec.job_id,
+                timeout_s=0.1,
+                extra_identities=(ident,),
+            )
+        assert pid_alive(proc.pid)
     finally:
         if pid_alive(proc.pid):
             proc.kill()

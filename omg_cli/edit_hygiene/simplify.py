@@ -46,6 +46,12 @@ from omg_cli.hash_edit import (
     write_confined_regular_file,
 )
 from omg_cli.jobs.models import JobState, JobStoreError
+from omg_cli.jobs.ownership import (
+    IdentityProbeOutcome,
+    ProcessIdentity,
+    child_identities,
+    probe_identity_liveness,
+)
 from omg_cli.jobs.runtime import (
     cancel_job,
     collect_job,
@@ -622,24 +628,49 @@ def _workspace_content_fingerprint(
 
 
 def _reap_start_identities(identities: Sequence[Any]) -> None:
-    """Reap start-time PIDs that a forged terminal job.json no longer names."""
+    """Reap start-time PIDs after exact-identity probe (never forged job.json)."""
     import signal
 
-    from omg_cli.jobs.ownership import kill_pgid, pid_alive, wait_until_gone
+    from omg_cli.jobs.ownership import kill_pgid, wait_until_gone
 
     for ident in identities:
         pid = getattr(ident, "pid", None)
         pgid = getattr(ident, "pgid", None)
         if not isinstance(pid, int) or pid <= 1:
             continue
-        if not pid_alive(pid):
+        if not isinstance(pgid, int) or pgid <= 1:
             continue
-        if isinstance(pgid, int) and pgid > 1:
-            kill_pgid(pgid, signal.SIGTERM)
+        if not isinstance(ident, ProcessIdentity):
+            ident = ProcessIdentity(pid=pid, pgid=pgid, pid_starttime=getattr(ident, "pid_starttime", None))
+        outcome = probe_identity_liveness(ident)
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        kill_pgid(pgid, signal.SIGTERM)
         wait_until_gone(pid, timeout_s=1.0)
-        if pid_alive(pid) and isinstance(pgid, int) and pgid > 1:
+        outcome = probe_identity_liveness(ident)
+        if outcome is IdentityProbeOutcome.LIVE:
             kill_pgid(pgid, signal.SIGKILL)
             wait_until_gone(pid, timeout_s=2.0)
+
+
+def _absorb_runner_children(
+    identities: dict[int, ProcessIdentity],
+    runner_pids: set[int],
+) -> None:
+    """Snapshot OS children of still-live start-job runners (not job.json)."""
+    for pid in list(runner_pids):
+        ident = identities.get(pid)
+        if ident is None:
+            continue
+        if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
+            continue
+        for child in child_identities(ident.pid):
+            identities.setdefault(child.pid, child)
 
 
 def _cancel_simplify_job(
@@ -854,12 +885,26 @@ def _propose_with_grok(
                     assignment,
                 )
             start_identities = identities_from_start_record(record)
+            captured: dict[int, ProcessIdentity] = {
+                ident.pid: ident
+                for ident in start_identities
+                if isinstance(ident, ProcessIdentity)
+            }
+            runner_pids = set(captured)
+            _absorb_runner_children(captured, runner_pids)
+
+            def _on_poll(_wait_record: object) -> None:
+                _absorb_runner_children(captured, runner_pids)
+
             waited, timed_out = wait_job(
                 root,
                 job_id,
                 timeout_s=float(timeout_s),
                 stop_on_recovery_required=True,
+                on_poll=_on_poll,
             )
+            _absorb_runner_children(captured, runner_pids)
+            start_identities = tuple(captured.values())
             if timed_out:
                 _cancel_simplify_job(
                     root,
@@ -876,7 +921,24 @@ def _propose_with_grok(
                 )
             # Terminal job.json is not process-exit proof. A forged SUCCEEDED
             # stamp used to skip cancel and let a still-live grok mutate the
-            # tree after the one-shot fingerprint.
+            # tree after the one-shot fingerprint. Inner grok is a new session
+            # (not in the runner pgid) and is missing from start_job; capture
+            # it from OS children of the still-live runner during wait.
+            if runner_pids and not (set(captured) - runner_pids):
+                _cancel_simplify_job(
+                    root,
+                    job_id,
+                    assignment=assignment,
+                    reason="simplify-provider-inner-unproven",
+                    start_identities=start_identities,
+                )
+                cancelled = True
+                raise SimplifyProviderError(
+                    "grok simplify inner provider identity was never "
+                    "captured before terminal state",
+                    assignment,
+                    job_id=job_id,
+                )
             try:
                 prove_job_processes_gone(
                     root, job_id, extra_identities=start_identities

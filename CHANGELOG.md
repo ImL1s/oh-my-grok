@@ -44,11 +44,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   returns as soon as the persisted record is terminal. Simplify used that
   stamp to skip `cancel_job`, so a still-live grok (forged SUCCEEDED)
   could mutate the tree after the one-shot fingerprint. The proposal
-  path now calls `prove_job_processes_gone` with identities captured
-  from `start_job` before wait, and, if identities are live, cancels then
-  fails closed. A missing `job.json` is unproven, not disappearance.
-  `cancel_job` no longer no-ops on SUCCEEDED/FAILED/LOST while captured
-  runner/provider PIDs are alive. Refs #76 (does not close).
+  path now snapshots `start_job` identities and OS children of a still-live
+  runner during wait (inner grok is a new session, absent from the start
+  record), then `prove_job_processes_gone` with those captures. A missing
+  `job.json` is always unproven, even when extras look gone. Terminal
+  `cancel_job` does not signal PIDs from `job.json` (a forged stamp can
+  name a victim). Reap/prove use exact-identity probes so PID reuse is
+  not signaled. An observed runner without an inner child is unproven.
+  Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait

@@ -344,12 +344,90 @@ def wait_until_gone(pid: int, *, timeout_s: float = 2.0, poll_s: float = 0.05) -
     return not pid_alive(pid)
 
 
+def _direct_child_pids(parent_pid: int) -> list[int]:
+    """Best-effort direct children of *parent_pid* (Linux ``/proc`` then ``ps``)."""
+    if parent_pid <= 1:
+        return []
+    out: list[int] = []
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        try:
+            for entry in proc_root.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                child = int(entry.name)
+                if child <= 1 or child == parent_pid:
+                    continue
+                try:
+                    status = (entry / "status").read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for line in status.splitlines():
+                    if line.startswith("PPid:"):
+                        try:
+                            ppid = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            break
+                        if ppid == parent_pid:
+                            out.append(child)
+                        break
+        except OSError:
+            out = []
+        if out:
+            return out
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return out
+    if result.returncode != 0:
+        return out
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid_i = int(parts[0])
+            ppid_i = int(parts[1])
+        except ValueError:
+            continue
+        if ppid_i == parent_pid and pid_i > 1 and pid_i != parent_pid:
+            out.append(pid_i)
+    return out
+
+
+def child_identities(parent_pid: int) -> tuple[ProcessIdentity, ...]:
+    """Capture identities of *parent_pid*'s direct children via OS ppid.
+
+    This is independent of ``job.json``: a hostile provider can forge the
+    durable record, but it cannot fake its parent pid. Used to observe the
+    inner grok/agy process while the job runner is still live.
+    """
+    found: list[ProcessIdentity] = []
+    seen: set[int] = set()
+    for pid in _direct_child_pids(parent_pid):
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            found.append(capture_identity(pid))
+        except JobStoreError:
+            continue
+    return tuple(found)
+
+
 __all__ = [
     "IdentityProbeOutcome",
     "OwnershipOutcome",
     "ProcessIdentity",
     "assert_ownership",
     "capture_identity",
+    "child_identities",
     "is_json_int",
     "kill_pgid",
     "parse_process_identity",
