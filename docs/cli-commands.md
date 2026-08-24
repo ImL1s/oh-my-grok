@@ -42,7 +42,7 @@ Related: [cli-contract.md](./cli-contract.md) (exit codes + JSON envelopes).
 | `lsp` | inspect | host-owned .lsp.json inspection |
 | `skill` | inspect | read-only skill catalog inspect (list/show/resolve/resources; #70) |
 | `provider` | inspect | provider probe/run (Antigravity capabilities/doctor/run; #67) |
-| `edit` | inspect | hash-anchored edit plan/apply/comments/simplify (#76; no verified stamp) |
+| `edit` | inspect | hash-anchored edit plan/apply/verify/comments/simplify (#76; no verified stamp) |
 | `visual` | inspect | visual compare/capture/verdict/ralph (scored/blocked; #75) |
 | `job` | run | durable background jobs (start/status/wait/collect/cancel/list/retry/auto-retry/gc/recover; #68 PR1–PR5) |
 | `interview` | workflow | deep-interview gate |

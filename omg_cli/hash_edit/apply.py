@@ -26,7 +26,7 @@ from omg_cli.contracts.path_keys import (
     atomic_write_bytes_at,
     confined_path,
 )
-from omg_cli.contracts.state_schemas import require_integer, require_sha256
+from omg_cli.contracts.state_schemas import require_integer, require_safe_id, require_sha256
 
 from .descriptor import (
     HASH_EDIT_SCHEMA_VERSION,
@@ -49,6 +49,7 @@ from .planner import (
 )
 
 APPLY_RESULT_KIND: Final[str] = "omg.hash_edit.apply_result.v1"
+VERIFY_RESULT_KIND: Final[str] = "omg.hash_edit.verify.v1"
 _NOFOLLOW_ERRNOS = {errno.ELOOP, getattr(errno, "EMLINK", -1), errno.EINVAL}
 
 
@@ -429,3 +430,170 @@ def apply_hash_edit(
     finally:
         os.close(parent_fd)
         os.close(root_fd)
+
+
+def write_confined_regular_file(
+    workspace_root: Path | str,
+    relative: str,
+    body: bytes,
+    *,
+    mode: int | None = None,
+    expected: bytes | None = None,
+) -> int:
+    """Replace a workspace-relative regular file without following a swapped symlink.
+
+    Same pinned ``O_NOFOLLOW`` walk + parent-dir flock as apply. Used to restore
+    original bytes after a later hash-edit in the same invocation fails.
+    When ``expected`` is set, the locked current bytes must match it or the
+    write is skipped and ``HashEditConcurrencyError`` is raised.
+    Returns the permission mask written. Fail-closed on hosts without
+    ``O_NOFOLLOW`` / ``dir_fd``.
+    """
+
+    if not isinstance(body, (bytes, bytearray)):
+        raise HashEditApplyError("restore body must be bytes")
+    payload = bytes(body)
+    if len(payload) > MAX_PLAN_FILE_BYTES:
+        raise HashEditInputError(
+            f"restore bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
+    expected_payload: bytes | None = None
+    if expected is not None:
+        if not isinstance(expected, (bytes, bytearray)):
+            raise HashEditApplyError("expected current bytes must be bytes")
+        expected_payload = bytes(expected)
+    if mode is not None:
+        if isinstance(mode, bool) or not isinstance(mode, int):
+            raise HashEditApplyError("mode must be an integer")
+        if mode < 0 or mode > 0o7777:
+            raise HashEditApplyError("mode is not a permission mask")
+    rel = require_workspace_relpath(relative, label="edit path")
+    if not _posix_nofollow_ready():
+        raise HashEditPathError(
+            "confined target write requires POSIX O_NOFOLLOW/dir_fd"
+        )
+    if fcntl is None:  # pragma: no cover
+        raise HashEditApplyError("advisory locking is unavailable")
+    root = _workspace_root(workspace_root)
+    parts = rel.split("/")
+    _confined_target(root, rel)
+    root_fd = _open_workspace_root_fd(root)
+    try:
+        parent_fd, name = _open_parent_fd(root_fd, parts)
+    except Exception:
+        os.close(root_fd)
+        raise
+    try:
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        try:
+            _current, preserved_mode = _read_regular_at(parent_fd, name)
+            applied_mode = preserved_mode if mode is None else mode
+            if _current == payload and preserved_mode == applied_mode:
+                return applied_mode
+            if expected_payload is not None and _current != expected_payload:
+                raise HashEditConcurrencyError(
+                    "current file bytes do not match expected"
+                )
+            try:
+                atomic_write_bytes_at(
+                    parent_fd,
+                    name,
+                    payload,
+                    mode=applied_mode,
+                    replace=True,
+                )
+            except ContractPathError as exc:
+                raise HashEditPathError(str(exc)) from exc
+            except OSError as exc:
+                raise HashEditApplyError("atomic replace failed") from exc
+            published, published_mode = _read_regular_at(parent_fd, name)
+            if published != payload or published_mode != applied_mode:
+                raise HashEditApplyError("post-replace readback mismatch")
+            return applied_mode
+        finally:
+            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(parent_fd)
+        os.close(root_fd)
+
+
+@dataclass(frozen=True, slots=True)
+class HashEditVerifyResultV1:
+    """Copy-safe verify evidence. Never a ``verified`` / ``passes`` stamp."""
+
+    path: str
+    edit_id: str
+    descriptor_digest: str
+    before_sha256: str
+    after_sha256: str
+    start_offset: int
+    end_offset: int
+    start_line: int
+    end_line: int
+    rebased: bool
+    unified_diff_sha256: str
+
+    def __post_init__(self) -> None:
+        try:
+            require_workspace_relpath(self.path, label="result path")
+            require_safe_id(self.edit_id, label="edit_id")
+            require_sha256(self.descriptor_digest, label="descriptor_digest")
+            require_sha256(self.before_sha256, label="before_sha256")
+            require_sha256(self.after_sha256, label="after_sha256")
+            require_sha256(self.unified_diff_sha256, label="unified_diff_sha256")
+            require_integer(self.start_offset, label="start_offset", minimum=0)
+            require_integer(self.end_offset, label="end_offset", minimum=0)
+            require_integer(self.start_line, label="start_line", minimum=1)
+            require_integer(self.end_line, label="end_line", minimum=1)
+        except Exception as exc:
+            raise HashEditApplyError(str(exc)) from exc
+        if self.end_offset < self.start_offset:
+            raise HashEditApplyError("byte offsets must satisfy start <= end")
+        if self.end_line < self.start_line:
+            raise HashEditApplyError("line range must be ordered")
+        if not isinstance(self.rebased, bool):
+            raise HashEditApplyError("rebased must be a bool")
+
+    @property
+    def kind(self) -> str:
+        return VERIFY_RESULT_KIND
+
+    @property
+    def schema_version(self) -> int:
+        return HASH_EDIT_SCHEMA_VERSION
+
+    @property
+    def status(self) -> str:
+        return "ok"
+
+
+def verify_hash_edit(
+    workspace_root: Path | str,
+    descriptor: HashEditDescriptorV1 | Mapping[str, Any] | bytes | str,
+) -> HashEditVerifyResultV1:
+    """Re-read and re-plan *descriptor*. Never writes the target file.
+
+    Same ``O_NOFOLLOW`` confinement as apply. Stale / ambiguous / path
+    failures raise the planner/apply errors; callers must not treat this
+    as an OMG ``verified`` stamp.
+    """
+
+    desc = _require_descriptor(descriptor)
+    current = read_confined_regular_file(workspace_root, desc.path)
+    plan = plan_hash_edit(
+        desc,
+        HashEditCurrentFact(path=desc.path, current_bytes=current),
+    )
+    return HashEditVerifyResultV1(
+        path=desc.path,
+        edit_id=desc.edit_id,
+        descriptor_digest=plan.descriptor_digest,
+        before_sha256=plan.before_sha256,
+        after_sha256=plan.after_sha256,
+        start_offset=plan.start_offset,
+        end_offset=plan.end_offset,
+        start_line=plan.start_line,
+        end_line=plan.end_line,
+        rebased=plan.rebased,
+        unified_diff_sha256=plan.unified_diff_sha256,
+    )

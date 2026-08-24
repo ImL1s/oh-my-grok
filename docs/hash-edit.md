@@ -1,7 +1,7 @@
 # Hash-anchored edit protocol V1 (#76)
 
 Library contract in `omg_cli.hash_edit`, plus a public CLI
-(`omg edit plan|apply|comments|simplify`). It **supplements** host-native
+(`omg edit plan|apply|verify|comments|simplify`). It **supplements** host-native
 edit tools. It does **not** make unobserved host edits hash-anchored. The
 CLI never writes `passes` / `verified`.
 
@@ -21,6 +21,8 @@ Refs #76. This slice does not close the issue: there is still no
 | `apply_hash_edit` | Confined re-read, re-plan, atomic same-dir replace |
 | `omg edit plan --input <descriptor.json>` | Read-only CLI over parse + plan (no file write) |
 | `omg edit apply --input <descriptor.json>` | CLI apply via `apply_hash_edit` only, after Team / read-only gates |
+| `omg edit verify EDIT_ID\|--input <descriptor.json>` | Re-read + re-plan; report ok/stale/conflict; no file write |
+| `verify_hash_edit` | Same `O_NOFOLLOW` confinement as apply; never writes `verified` |
 | `omg edit comments --input PATH\|--git-diff\|--paths` | Language-aware AI-slop / comment report (optional conservative `--fix`) |
 | `omg edit simplify --paths …` | Bounded simplifier assignment; no LLM in the CLI |
 
@@ -45,6 +47,12 @@ replace). Apply JSON is copy-safe: relative `path`, digests, offsets,
 text, and local absolute paths (including `--input` read failures). Successful
 apply also writes a redacted artifact under `.omg/artifacts/edit/<digest>.json`.
 
+`omg edit verify` takes `EDIT_ID` and/or `--input` (a V1 descriptor JSON;
+positional `EDIT_ID` may be the descriptor file path). It re-reads the
+target through the same pinned `O_NOFOLLOW` walk as apply, re-plans, and
+prints copy-safe JSON (`status=ok` or stale/conflict). It does not mutate
+the target, does not write `.omg/state`, and does not set `verified`.
+
 **Team / role authority:** `apply` (and other mutating edit tools: `comments
 --fix`, `simplify --apply-edits`) refuse when `OMG_CAPABILITY_MODE=read-only`
 (`E_READ_ONLY`). When `--run-id`/`--task-id` or `OMG_RUN_ID`/`OMG_TASK_ID`
@@ -58,11 +66,11 @@ claims OMG accepted the edit. This does **not** claim `omo.edit.hash_anchored`
 host parity.
 
 Library failures map to stable CLI codes (exit `1`). Missing/unreadable
-`--input` is `E_HASH_EDIT_USAGE` (exit `2`).
+`--input` / `EDIT_ID` is `E_HASH_EDIT_USAGE` (exit `2`).
 
 | Code | Library exception |
 |------|-------------------|
-| `E_HASH_EDIT_USAGE` | missing/unreadable `--input` |
+| `E_HASH_EDIT_USAGE` | missing/unreadable `--input` or `EDIT_ID` |
 | `E_HASH_EDIT_DESCRIPTOR` | `HashEditDescriptorError` |
 | `E_HASH_EDIT_INPUT` | `HashEditInputError` |
 | `E_HASH_EDIT_BIND` | `HashEditBindError` |
@@ -111,7 +119,7 @@ The plan carries before/after SHA-256, byte offsets of `old_text`, line
 span, `rebased`, descriptor digest, and a deterministic unified diff +
 digest. Apply **splices at those offsets**. Do not `patch(1)` the diff.
 
-Current-file and planned-file limit: 16 MiB. `omg edit plan|apply` inspects
+Current-file and planned-file limit: 16 MiB. `omg edit plan|apply|verify` inspects
 the target size and performs a bounded read **before** allocating the
 contents (growing a file past the cap is `E_HASH_EDIT_INPUT`). Invalid
 UTF-8 and NUL bytes are rejected.
@@ -168,6 +176,13 @@ The CLI does **not** call an LLM and does not invent edits. With no
 `omg-code-simplifier` (`read-write`) and returns blocked with
 `next_action` to spawn that role then `omg-code-reviewer` (`read-only`).
 The simplifier cannot approve itself.
+
+`--apply-edits` applies descriptors in order. If a later descriptor fails,
+prior successful applies **in that invocation** are rolled back to the
+original bytes (same confined write as apply). Incomplete restore records
+`status=dirty` / `failed` on the simplify guard and a redacted artifact;
+it never writes `passes` / `verified`. A post-apply digest check runs
+without spawning pytest.
 
 ## Out of scope
 
