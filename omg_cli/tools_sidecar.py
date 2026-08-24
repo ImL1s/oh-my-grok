@@ -9,7 +9,9 @@ Honesty:
 - Not a live Antigravity MCP install.
 - AST-grep missing → blocked, not fake success.
 - Shared CodeGraph indexes are not worktree-accurate.
-- CodeGraph ``occurrences`` are SCIP-inspired JSON, not SCIP protobuf.
+- CodeGraph writes SCIP protobuf beside JSON-lite; JSON-only stays
+  ``not_scip``. Homebrew MIP ``scip`` is refused as Sourcegraph SCIP.
+  Not live Antigravity MCP.
 - Network research is opt-in (``OMG_TOOLS_NETWORK=1``); default
   provider is Wikipedia OpenSearch (no credentials bundled).
 - Never writes ``passes`` / ``verified``.
@@ -33,6 +35,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, NoReturn, Protocol, Sequence
 from urllib.parse import unquote, urlencode, urlparse
+
+from omg_cli.scip_codec import (
+    ScipCodecError,
+    decode_index,
+    detect_scip_cli,
+    make_scip_symbol,
+    occurrences_to_index,
+    write_scip_file,
+)
 
 SCHEMA = "omg-tools-sidecar/v1"
 MAX_RESULT_BYTES = 65_536
@@ -1492,6 +1503,26 @@ def _codegraph_index_path(root: Path, kind: str) -> Path:
     return Path(root).resolve() / ".omg" / "artifacts" / "codegraph" / f"{kind}-index.json"
 
 
+def _codegraph_scip_path(root: Path, kind: str) -> Path:
+    return Path(root).resolve() / ".omg" / "artifacts" / "codegraph" / f"{kind}-index.scip"
+
+
+def _load_scip_occurrences(root: Path, kind: str) -> list[dict[str, Any]] | None:
+    path = _codegraph_scip_path(root, kind)
+    try:
+        confined = confine_path(root, path)
+    except ToolsError:
+        return None
+    if not confined.is_file():
+        return None
+    try:
+        blob = confined.read_bytes()
+        occs = decode_index(blob)
+    except (OSError, ScipCodecError):
+        return None
+    return occs
+
+
 def _load_codegraph_index(root: Path, kind: str) -> dict[str, Any] | None:
     path = _codegraph_index_path(root, kind)
     try:
@@ -1632,7 +1663,7 @@ def _scip_lite_occurrences(
                 "name": name,
                 "role": role,
                 "line": int(line),
-                "symbol_id": f"{rel}#{name}",
+                "symbol_id": make_scip_symbol(rel, name),
             }
         )
 
@@ -1755,12 +1786,14 @@ def _codegraph_notes(effective: str, dirty: bool | None) -> str:
     note = {
         "off": "CodeGraph disabled",
         "shared": (
-            "shared/baseline import/symbol index; SCIP-inspired JSON occurrences, "
-            "not SCIP protobuf; does not include uncommitted worktree changes"
+            "shared/baseline import/symbol index; JSON-lite plus SCIP protobuf "
+            "when {shared}-index.scip is present; does not include uncommitted "
+            "worktree changes"
         ),
         "local": (
-            "worktree-local import/symbol index (SCIP-inspired JSON, not SCIP protobuf); "
-            "branch-accurate only when built from this tree and not stale"
+            "worktree-local import/symbol index (JSON-lite plus SCIP protobuf "
+            "when {local}-index.scip is present); branch-accurate only when "
+            "built from this tree and not stale"
         ),
     }[effective]
     if effective == "shared" and dirty:
@@ -1796,6 +1829,14 @@ def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
         note += ". No index on disk; run omg tools codegraph index."
     elif stale:
         note += ". Index is stale relative to HEAD/dirty; re-run index."
+    scip_occs = (
+        None
+        if effective == "off" or not present
+        else _load_scip_occurrences(root, effective)
+    )
+    has_scip = scip_occs is not None
+    if has_scip:
+        note += ". SCIP protobuf index loaded."
     return {
         "ok": True,
         "verified": False,
@@ -1805,7 +1846,13 @@ def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
         "effective_mode": effective,
         "index_kind": None if not present else effective,
         "indexer": CODEGRAPH_INDEXER,
-        "not_scip": True,
+        "not_scip": not has_scip,
+        "scip_path": (
+            None
+            if not has_scip
+            else f".omg/artifacts/codegraph/{effective}-index.scip"
+        ),
+        "scip_occurrence_count": 0 if not has_scip else len(scip_occs or []),
         "branch_accurate": branch_accurate,
         "worktree_dirty": dirty,
         "head_sha": head,
@@ -1843,8 +1890,8 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
         "files": rows,
         "occurrences": occurrences,
         "note": (
-            "toy import/symbol scan with SCIP-inspired JSON occurrences; "
-            "not SCIP protobuf / a real SCIP indexer; "
+            "toy import/symbol scan; JSON-lite is not SCIP protobuf; "
+            "a sibling .scip Index is written for CodeGraph query; "
             + (
                 "not a shared branch-accurate graph"
                 if effective == "shared"
@@ -1858,6 +1905,8 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
     tmp = confined.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, confined)
+    scip_dest = confine_path(root, _codegraph_scip_path(root, effective))
+    write_scip_file(scip_dest, occurrences_to_index(occurrences))
     status = codegraph_status(root=root, mode=effective)
     status["built"] = True
     status["truncated"] = truncated
@@ -1921,7 +1970,9 @@ def codegraph_query(*, root: Path, mode: str = "auto", query: str = "") -> dict[
             if not needle:
                 continue
             hits.append({"path": rel, "kind": "import", "name": name})
-    for occ in index.get("occurrences") or []:
+    scip_occs = _load_scip_occurrences(root, kind)
+    occ_source = scip_occs if scip_occs is not None else (index.get("occurrences") or [])
+    for occ in occ_source:
         if len(hits) >= MAX_CODEGRAPH_HITS:
             break
         if not isinstance(occ, dict):
@@ -1964,7 +2015,7 @@ def codegraph_query(*, root: Path, mode: str = "auto", query: str = "") -> dict[
             "branch_accurate": bool(status["branch_accurate"]),
             "index_stale": bool(status.get("index_stale")),
             "indexer": CODEGRAPH_INDEXER,
-            "not_scip": True,
+            "not_scip": scip_occs is None,
             "query": query,
             "count": len(hits),
             "hits": hits,
@@ -2203,6 +2254,7 @@ def doctor_payload(
 ) -> dict[str, Any]:
     ast_bin = _astgrep_bin()
     research = research_status(env)
+    scip_cli = detect_scip_cli()
     payload: dict[str, Any] = {
         "schema": SCHEMA,
         "ok": True,
@@ -2226,6 +2278,18 @@ def doctor_payload(
                     "do not use shadow-utils /usr/bin/sg"
                 ),
             },
+            "scip": {
+                "present": scip_cli.get("path") is not None,
+                "path": scip_cli.get("path"),
+                "kind": scip_cli.get("kind"),
+                "ok": bool(scip_cli.get("ok")),
+                "not_scip": bool(scip_cli.get("not_scip", True)),
+                "required": False,
+                "remediation": (
+                    "PATH scip must be Sourcegraph SCIP, not Homebrew scipopt MIP. "
+                    "CodeGraph writes a hermetic Index protobuf without that CLI."
+                ),
+            },
             "lsp_servers": inventory_lsp_servers(),
             "codegraph": codegraph_status(root=root, mode="auto"),
             "network_research": research,
@@ -2233,8 +2297,9 @@ def doctor_payload(
         "tool_names": list(SIDECAR_TOOL_NAMES),
         "note": (
             "OMG tools sidecar. Not Grok-native LSP. Not live Antigravity evidence. "
-            "omg lsp remains host-owned. CodeGraph is a toy import/symbol index with "
-            "SCIP-inspired JSON occurrences, not SCIP protobuf. "
+            "omg lsp remains host-owned. CodeGraph writes SCIP protobuf Index "
+            "beside JSON-lite; JSON-only stays not_scip. Homebrew MIP scip is "
+            "not Sourcegraph SCIP. "
             "Detected language servers are not ready until explicitly started."
         ),
     }

@@ -1136,14 +1136,15 @@ def test_codegraph_local_index_and_query(tmp_path: Path) -> None:
     assert built["index_present"] is True
     assert built["effective_mode"] == "local"
     assert built["branch_accurate"] is True
-    assert built["not_scip"] is True
+    assert built["not_scip"] is False
+    assert built["scip_path"] == ".omg/artifacts/codegraph/local-index.scip"
     assert built["indexer"] == "import_symbol_scan"
     status = codegraph_status(root=tmp_path, mode="local")
     assert status["index_present"] is True
     hits = codegraph_query(root=tmp_path, mode="local", query="hello")
     assert hits["answered_by"] == "local"
     assert hits["branch_accurate"] is True
-    assert hits["not_scip"] is True
+    assert hits["not_scip"] is False
     assert hits["verified"] is False
     assert any(row["name"] == "hello" for row in hits["hits"])
     imports = codegraph_query(root=tmp_path, mode="local", query="json")
@@ -1156,7 +1157,7 @@ def test_codegraph_shared_dirty_is_not_branch_accurate(tmp_path: Path) -> None:
     status = codegraph_status(root=tmp_path, mode="shared")
     assert status["index_present"] is True
     assert status["branch_accurate"] is False
-    assert status["not_scip"] is True
+    assert status["not_scip"] is False
     if status["worktree_dirty"]:
         assert "dirty" in status["note"]
 
@@ -1288,7 +1289,7 @@ def test_cli_codegraph_index(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert payload["ok"] is True
     assert payload["result"]["index_present"] is True
     assert payload["result"]["verified"] is False
-    assert payload["result"]["not_scip"] is True
+    assert payload["result"]["not_scip"] is False
 
 
 def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
@@ -1299,7 +1300,7 @@ def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
     built = codegraph_index(root=tmp_path, mode="local")
     assert built["ok"] is True
     assert built["verified"] is False
-    assert built["not_scip"] is True
+    assert built["not_scip"] is False
     index_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.json"
     payload = json.loads(index_path.read_text(encoding="utf-8"))
     assert payload["not_scip"] is True
@@ -1317,7 +1318,7 @@ def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
     hello_hits = codegraph_query(root=tmp_path, mode="local", query="hello")
     assert hello_hits["ok"] is True
     assert hello_hits["verified"] is False
-    assert hello_hits["not_scip"] is True
+    assert hello_hits["not_scip"] is False
     assert any(
         row.get("kind") == "occurrence"
         and row.get("role") == "definition"
@@ -1334,6 +1335,59 @@ def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
     symbol_id = next(row["symbol_id"] for row in occs if row["name"] == "hello")
     sid_hits = codegraph_query(root=tmp_path, mode="local", query=symbol_id)
     assert any(row.get("symbol_id") == symbol_id for row in sid_hits["hits"])
+    from omg_cli.scip_codec import decode_index
+
+    scip_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.scip"
+    assert scip_path.is_file()
+    decoded = decode_index(scip_path.read_bytes())
+    assert any(
+        row["name"] == "hello" and row["role"] == "definition" for row in decoded
+    )
+
+
+def test_codegraph_query_reads_scip_protobuf_not_json_occurrences(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mod.py").write_text(
+        "def hello():\n    return 1\n",
+        encoding="utf-8",
+    )
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["not_scip"] is False
+    index_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.json"
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    payload["occurrences"] = []
+    for row in payload.get("files") or []:
+        if isinstance(row, dict):
+            row["symbols"] = []
+            row["imports"] = []
+    index_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    hits = codegraph_query(root=tmp_path, mode="local", query="hello")
+    assert hits["not_scip"] is False
+    assert any(
+        row.get("kind") == "occurrence"
+        and row.get("role") == "definition"
+        and row.get("name") == "hello"
+        for row in hits["hits"]
+    )
+
+
+def test_doctor_reports_scip_dependency_and_protobuf_after_index(
+    tmp_path: Path,
+) -> None:
+    payload = doctor_payload(root=tmp_path)
+    scip = payload["dependencies"]["scip"]
+    assert scip["required"] is False
+    assert scip["not_scip"] is True
+    assert "protobuf" in payload["note"]
+    (tmp_path / "mod.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+    codegraph_index(root=tmp_path, mode="local")
+    local = codegraph_status(root=tmp_path, mode="local")
+    assert local["not_scip"] is False
+    assert "SCIP protobuf index loaded" in local["note"]
+    after = doctor_payload(root=tmp_path)
+    assert after["verified"] is False
+    assert "protobuf" in after["note"]
 
 
 def test_cli_codegraph_index_query_occurrences(
@@ -1362,7 +1416,7 @@ def test_cli_codegraph_index_query_occurrences(
     indexed = json.loads(capsys.readouterr().out)
     assert indexed["ok"] is True
     assert indexed["result"]["verified"] is False
-    assert indexed["result"]["not_scip"] is True
+    assert indexed["result"]["not_scip"] is False
     assert (
         main(
             [
@@ -1384,6 +1438,7 @@ def test_cli_codegraph_index_query_occurrences(
     assert hello_payload["ok"] is True
     assert hello_payload["result"]["verified"] is False
     assert hello_payload.get("verified") is not True
+    assert hello_payload["result"]["not_scip"] is False
     assert "definition" in hello_blob
     assert "hello" in hello_blob
     assert (
