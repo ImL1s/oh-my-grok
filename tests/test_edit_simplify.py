@@ -258,6 +258,47 @@ def test_simplify_provider_does_not_clobber_concurrent_user_edits(
     assert src.read_text(encoding="utf-8") == "user-edit\n"
 
 
+def test_simplify_provider_cancels_job_on_recovery_required(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.models import JobStoreError
+
+    (project / "app.py").write_text("x = 1\n", encoding="utf-8")
+    fake = _FakeGrokJob("unused")
+    cancelled: list[str] = []
+
+    def _wait(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        raise JobStoreError(
+            "job requires recovery (health=lease_stale_live)",
+            code="E_JOB_RECOVERY_REQUIRED",
+        )
+
+    def _cancel(_root: Path, job_id: str, *, reason: str = "") -> None:
+        cancelled.append(f"{job_id}:{reason}")
+
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.start_job", fake.start)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.wait_job", _wait)
+    monkeypatch.setattr("omg_cli.edit_hygiene.simplify.cancel_job", _cancel)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert cancelled == [f"{JOB_ID}:simplify-provider-recovery"]
+
+
 def test_simplify_provider_grok_job_failure_records_assignment(
     project: Path,
     capsys: pytest.CaptureFixture[str],

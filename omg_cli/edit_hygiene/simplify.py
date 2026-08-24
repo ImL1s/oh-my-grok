@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
@@ -483,6 +484,23 @@ def _write_proposal_sandbox(
     return dest_root.resolve()
 
 
+def _git_porcelain(root: Path) -> str:
+    """Whole-tree mutation detector (tracked + untracked). Empty if not a git repo."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "-uall"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout
+
+
 def _assert_real_tree_untouched(
     root: Path,
     snapshots: Mapping[str, str],
@@ -592,6 +610,7 @@ def _propose_with_grok(
     timeout_s: float,
 ) -> dict[str, Any]:
     snapshots = _snapshot_targets(root, kept, cfg)
+    porcelain_before = _git_porcelain(root)
     prompt = _build_grok_simplify_prompt(
         kept=kept,
         skipped=skipped,
@@ -658,6 +677,11 @@ def _propose_with_grok(
                 exc.job_id = job_id
             pending = exc
         except JobStoreError as exc:
+            if job_id and getattr(exc, "code", "") == "E_JOB_RECOVERY_REQUIRED":
+                try:
+                    cancel_job(root, job_id, reason="simplify-provider-recovery")
+                except Exception:
+                    pass
             pending = SimplifyProviderError(
                 str(exc),
                 assignment,
@@ -688,6 +712,13 @@ def _propose_with_grok(
                 assignment=assignment,
                 job_id=job_id,
             )
+            porcelain_after = _git_porcelain(root)
+            if porcelain_before and porcelain_after != porcelain_before:
+                raise SimplifyProviderError(
+                    "git worktree changed during grok proposal; originals were not overwritten",
+                    assignment,
+                    job_id=job_id,
+                )
         except SimplifyProviderError as exc:
             dirty = exc
         shutil.rmtree(sandbox, ignore_errors=True)
