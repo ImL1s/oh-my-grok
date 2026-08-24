@@ -14,10 +14,14 @@ from omg_cli.hooks_registry import (
     HOST_HOOK_ALLOWLIST,
     REGISTRY_RELATIVE,
     TIMEOUT_KIND,
+    WRAPPER_EMIT_EVENTS,
+    WRAPPER_EVENT_SCHEMA,
+    WRAPPER_SOURCE,
     HooksRegistryError,
     bus_disabled,
     check_antigravity_projection,
     dispatch,
+    emit_wrapper_event,
     inspect_hooks_registry,
     install_antigravity_hook_projection,
     load_hooks_registry,
@@ -50,6 +54,8 @@ def test_repo_registry_loads_and_never_claims_verified() -> None:
     assert payload["observed"] is False
     assert payload["healthy"] is False
     assert "UserPromptSubmit" in payload["note"]
+    assert "emit_wrapper_event" in payload["note"]
+    assert "source=wrapper" in payload["note"]
 
 
 def test_grok_event_map_is_honest() -> None:
@@ -59,6 +65,9 @@ def test_grok_event_map_is_honest() -> None:
     assert GROK_EVENT_MAP["session.start"] == "native_passive"
     assert GROK_EVENT_MAP["subagent.stop"] == "native_passive"
     assert GROK_EVENT_MAP["tool.post"] == "unsupported"
+    assert GROK_EVENT_MAP["job.terminal"] == "wrapper"
+    assert GROK_EVENT_MAP["team.member.transition"] == "wrapper"
+    assert GROK_EVENT_MAP["artifact.created"] == "reconciled"
     assert set(GROK_EVENT_MAP) == set(CANONICAL_EVENTS)
 
 
@@ -702,4 +711,201 @@ def test_bus_event_types_keep_stop_and_tool_failure_nonterminal() -> None:
     assert BUS_EVENT_TYPES["tool.failure"] == "turn_completed"
     assert BUS_EVENT_TYPES["session.end"] == "agent_closed"
     assert BUS_EVENT_TYPES["subagent.stop"] == "agent_closed"
+
+
+def _wrapper_rows(tmp_path: Path) -> list[dict]:
+    from omg_cli.runtime_events import read_runtime_events, source_journal_path
+
+    return read_runtime_events(source_journal_path(tmp_path, WRAPPER_SOURCE))
+
+
+def test_wrapper_observe_hooks_are_registered() -> None:
+    registry = load_hooks_registry(ROOT)
+    ids = registry.by_id()
+    assert ids["omg.artifact.created.observe"].host_capability == "reconciled"
+    assert ids["omg.job.terminal.observe"].host_capability == "wrapper"
+    assert ids["omg.team.member.transition.observe"].host_capability == "wrapper"
+    for hook_id in (
+        "omg.artifact.created.observe",
+        "omg.job.terminal.observe",
+        "omg.team.member.transition.observe",
+    ):
+        hook = ids[hook_id]
+        assert hook.enabled is True
+        assert hook.host_hook is None
+        assert hook.runtime_projection == "omg-cli"
+        assert hook.handler == "observe"
+        assert hook.fail_policy == "fail-open"
+    assert WRAPPER_EMIT_EVENTS <= set(CANONICAL_EVENTS)
+
+
+def test_emit_wrapper_event_refuses_prompt_submit(tmp_path: Path) -> None:
+    with pytest.raises(HooksRegistryError, match="UserPromptSubmit"):
+        emit_wrapper_event(
+            "prompt.submit",
+            {"root": str(tmp_path), "prompt": "do not inject"},
+        )
+    with pytest.raises(HooksRegistryError, match="not a wrapper-emitted event"):
+        emit_wrapper_event("session.end", {"root": str(tmp_path)})
+
+
+def test_emit_wrapper_event_journals_kinds_schema_and_post_hoc(tmp_path: Path) -> None:
+    for kind, extra in (
+        (
+            "artifact.created",
+            {"kind": "omg.test.artifact.v1", "path": ".omg/artifacts/x.json"},
+        ),
+        ("job.terminal", {"job_id": "20990101T000000Z-abcd1234", "from": "running", "to": "succeeded"}),
+        (
+            "team.member.transition",
+            {"worker": "w1", "from": "missing", "to": "live", "reason": "heartbeat"},
+        ),
+    ):
+        result = emit_wrapper_event(
+            kind,
+            {"root": str(tmp_path), "run_id": "run-wrap", **extra},
+        )
+        assert result["ok"] is True
+        assert result["verified"] is False
+        assert result["source"] == WRAPPER_SOURCE
+        assert result["timeout_kind"] == TIMEOUT_KIND
+        assert result["journal"]["ok"] is True
+        assert result["schema"] == WRAPPER_EVENT_SCHEMA
+
+    rows = _wrapper_rows(tmp_path)
+    kinds = [row["payload"]["canonical_event"] for row in rows]
+    assert kinds == ["artifact.created", "job.terminal", "team.member.transition"]
+    for row in rows:
+        assert row["source"] == WRAPPER_SOURCE
+        assert row["payload"]["source"] == WRAPPER_SOURCE
+        assert row["payload"]["schema"] == WRAPPER_EVENT_SCHEMA
+        assert row["payload"]["timeout_kind"] == "post_hoc"
+        assert row["payload"].get("verified") is False
+        assert row["payload"].get("passes") is not True
+        assert isinstance(row["payload"].get("duration_ms"), int)
+
+
+def test_emit_wrapper_event_redacts_secrets_and_omits_verified(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.runtime_events import source_journal_path
+
+    emit_wrapper_event(
+        "job.terminal",
+        {
+            "root": str(tmp_path),
+            "job_id": "20990101T000000Z-abcd1234",
+            "from": "running",
+            "to": "failed",
+            "Authorization": "Bearer raw-token",
+            "prompt": "SECRET USER TEXT",
+            "owner_token": "deadbeefcafebabe",
+            "verified": True,
+            "passes": True,
+        },
+    )
+    path = source_journal_path(tmp_path, WRAPPER_SOURCE)
+    text = path.read_text(encoding="utf-8")
+    assert "raw-token" not in text
+    assert "SECRET USER TEXT" not in text
+    assert "deadbeefcafebabe" not in text
+    assert "job.terminal" in text
+    row = _wrapper_rows(tmp_path)[0]
+    assert row["payload"].get("verified") is False
+    assert "passes" not in row["payload"]
+    assert row["payload"]["to"] == "failed"
+
+
+def test_compact_handoff_emits_artifact_created(tmp_path: Path) -> None:
+    payload = write_compact_handoff(
+        tmp_path, run_id="run-9", session_id="sess-9", task_ids=["t1"]
+    )
+    assert payload["verified"] is False
+    rows = _wrapper_rows(tmp_path)
+    created = [row for row in rows if row["payload"]["canonical_event"] == "artifact.created"]
+    assert created
+    assert created[0]["source"] == WRAPPER_SOURCE
+    assert created[0]["payload"]["path"] == ".omg/artifacts/compact-handoff.json"
+    assert created[0]["payload"].get("verified") is False
+
+
+def test_write_edit_artifact_emits_artifact_created(tmp_path: Path) -> None:
+    from omg_cli.edit_hygiene.artifacts import ARTIFACT_KIND, write_edit_artifact
+
+    rel = write_edit_artifact(
+        tmp_path, {"kind": ARTIFACT_KIND, "note": "classified", "secret": "nope"}
+    )
+    assert rel.startswith(".omg/artifacts/edit/")
+    rows = _wrapper_rows(tmp_path)
+    created = [row for row in rows if row["payload"]["canonical_event"] == "artifact.created"]
+    assert created
+    assert created[0]["payload"]["path"] == rel
+    assert created[0]["payload"]["kind"] == ARTIFACT_KIND
+    text = (
+        tmp_path / ".omg" / "state" / "events"
+    )
+    dumped = "".join(
+        path.read_text(encoding="utf-8") for path in text.glob("*.jsonl")
+    )
+    assert "nope" not in dumped
+
+
+def test_team_shutdown_ack_emits_member_transition(tmp_path: Path) -> None:
+    from omg_cli.team.api import _op_write_shutdown_ack
+
+    envelope = _op_write_shutdown_ack(
+        tmp_path, {"run_id": "run-1", "worker": "worker-1"}
+    )
+    assert envelope["ok"] is True
+    rows = _wrapper_rows(tmp_path)
+    kinds = [row["payload"]["canonical_event"] for row in rows]
+    assert "team.member.transition" in kinds
+    row = next(item for item in rows if item["payload"]["canonical_event"] == "team.member.transition")
+    assert row["source"] == WRAPPER_SOURCE
+    assert row["payload"]["worker"] == "worker-1"
+    assert row["payload"]["to"] == "shutdown_acked"
+    assert row["payload"].get("verified") is False
+
+
+def test_team_heartbeat_emits_member_transition_on_status_change(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.team.api import _op_update_worker_heartbeat
+
+    envelope = _op_update_worker_heartbeat(
+        tmp_path,
+        {
+            "run_id": "run-1",
+            "team_id": "team-1",
+            "worker": "worker-1",
+            "task_id": "worker-1",
+            "generation": 0,
+            "expected_sequence": 0,
+        },
+    )
+    assert envelope["ok"] is True
+    rows = _wrapper_rows(tmp_path)
+    row = next(
+        item
+        for item in rows
+        if item["payload"]["canonical_event"] == "team.member.transition"
+    )
+    assert row["payload"]["from"] == "missing"
+    assert row["payload"]["to"] == "live"
+    assert row["payload"]["reason"] == "heartbeat"
+    assert row["source"] == WRAPPER_SOURCE
+
+
+def test_emit_wrapper_event_disabled_bus_skips_journal(tmp_path: Path) -> None:
+    from omg_cli.runtime_events import source_journal_path
+
+    result = emit_wrapper_event(
+        "job.terminal",
+        {"root": str(tmp_path), "job_id": "20990101T000000Z-abcd1234", "to": "failed"},
+        env={"OMG_DISABLE_HOOKS": "1"},
+    )
+    assert result["ok"] is True
+    assert result["skipped"] == "disabled"
+    assert result["verified"] is False
+    assert not source_journal_path(tmp_path, WRAPPER_SOURCE).exists()
 

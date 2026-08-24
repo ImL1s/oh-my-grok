@@ -367,14 +367,19 @@ def append_bus_event(
     session_id: str | None = None,
     event_id: str | None = None,
     observed_at: str | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """Append one in-process bus observation. Sequence is monotonic per root.
 
     Fail-closed on payload/schema validation. Callers that must not crash a
     session (the hook dispatcher) wrap this and fail open.
+
+    ``source`` defaults to ``omg-hooks-bus``. CLI wrapper events pass
+    ``source=wrapper``.
     """
 
-    source = BUS_SOURCE
+    source = source or BUS_SOURCE
+    require_safe_id(source, label="source")
     root_path = Path(root).resolve()
     cursor_path = _cursor_path(root_path, source)
     _ensure_bus_store(cursor_path.parent)
@@ -398,7 +403,7 @@ def append_bus_event(
         state = _read_cursor(cursor_path, source)
         sequence = int(state["last_sequence"]) + 1
         timestamp = observed_at or _utc_now()
-        source_cursor = f"bus-{sequence}"
+        source_cursor = f"{source}-{sequence}"
         event = normalize_lifecycle_event(
             source=source,
             source_cursor=source_cursor,

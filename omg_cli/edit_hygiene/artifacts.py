@@ -63,4 +63,20 @@ def write_edit_artifact(root: Path, payload: dict[str, Any]) -> str:
     rendered = json.dumps(safe, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     rel = f".omg/artifacts/edit/{digest}.json"
     write_confined_text(root, rel, rendered)
+    try:
+        from omg_cli.hooks_registry import emit_wrapper_event
+
+        emit_wrapper_event(
+            "artifact.created",
+            {
+                "root": str(Path(root).resolve()),
+                "kind": str(safe.get("kind") or ARTIFACT_KIND),
+                "artifact_kind": str(safe.get("kind") or ARTIFACT_KIND),
+                "path": rel,
+                "digest": digest,
+                "schema_version": int(safe.get("schema_version") or 1),
+            },
+        )
+    except Exception:
+        pass
     return rel

@@ -125,6 +125,51 @@
       "privacy_class": "workflow",
       "handler": "continuation_guard",
       "note": "Exactly one continuation owner. refuse/adopt_existing/artifact_only. Never sets verified."
+    },
+    {
+      "id": "omg.artifact.created.observe",
+      "event": "artifact.created",
+      "runtime_projection": "omg-cli",
+      "host_hook": null,
+      "host_capability": "reconciled",
+      "priority": 50,
+      "timeout_ms": 1000,
+      "fail_policy": "fail-open",
+      "enabled": true,
+      "required_capabilities": [],
+      "privacy_class": "observability",
+      "handler": "observe",
+      "note": "CLI wrapper/reconciled: classified artifact write. source=wrapper. Timeout post-hoc. Never verifies."
+    },
+    {
+      "id": "omg.job.terminal.observe",
+      "event": "job.terminal",
+      "runtime_projection": "omg-cli",
+      "host_hook": null,
+      "host_capability": "wrapper",
+      "priority": 50,
+      "timeout_ms": 1000,
+      "fail_policy": "fail-open",
+      "enabled": true,
+      "required_capabilities": [],
+      "privacy_class": "observability",
+      "handler": "observe",
+      "note": "CLI wrapper: job runtime reached a terminal status. source=wrapper. Timeout post-hoc. Never verifies."
+    },
+    {
+      "id": "omg.team.member.transition.observe",
+      "event": "team.member.transition",
+      "runtime_projection": "omg-cli",
+      "host_hook": null,
+      "host_capability": "wrapper",
+      "priority": 50,
+      "timeout_ms": 1000,
+      "fail_policy": "fail-open",
+      "enabled": true,
+      "required_capabilities": [],
+      "privacy_class": "observability",
+      "handler": "observe",
+      "note": "CLI wrapper: team worker status changed (heartbeat/shutdown). source=wrapper. Timeout post-hoc. Never verifies."
     }
   ]
 }

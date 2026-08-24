@@ -14,7 +14,9 @@ Antigravity files under ``docs/parity/projections/antigravity/hooks/`` are
 static projections — not an installed AG plugin and not live AG evidence.
 Timeouts are recorded after the synchronous handler returns (Python cannot
 preempt). Dispatch appends a bounded redacted journal row (fail-open).
-Never sets ``verified``.
+CLI wrapper events (``artifact.created``, ``job.terminal``,
+``team.member.transition``) use ``emit_wrapper_event`` with
+``source=wrapper``. Never UserPromptSubmit inject. Never sets ``verified``.
 """
 
 from __future__ import annotations
@@ -35,6 +37,30 @@ MAX_HANDOFF_BYTES = 8_192
 AGGREGATE_BUDGET_MS = 2_000
 TIMEOUT_KIND = "post_hoc"
 BUS_SOURCE = "omg-hooks-bus"
+WRAPPER_SOURCE = "wrapper"
+WRAPPER_EVENT_SCHEMA = "omg-wrapper-event/v1"
+WRAPPER_EMIT_EVENTS = frozenset(
+    {"artifact.created", "job.terminal", "team.member.transition"}
+)
+_WRAPPER_PUBLIC_KEYS = frozenset(
+    {
+        "kind",
+        "artifact_kind",
+        "schema_version",
+        "path",
+        "digest",
+        "job_id",
+        "provider",
+        "role",
+        "from",
+        "to",
+        "worker",
+        "task_id",
+        "team_id",
+        "status",
+        "reason",
+    }
+)
 
 # Logical names honored by hooks/bin/_common.py hook_disabled().
 _LEGACY_SKIP_ALIASES: dict[str, tuple[str, ...]] = {
@@ -460,7 +486,9 @@ def inspect_hooks_registry(
         "security_hook_ids": list(SECURITY_HANDLER_BINDINGS),
         "note": (
             "Grok PreToolUse/Stop may block; SessionStart/SubagentStop are passive; "
-            "UserPromptSubmit injection is unsupported. Antigravity hook files are "
+            "UserPromptSubmit injection is unsupported. CLI wrapper events "
+            "(artifact.created, job.terminal, team.member.transition) use "
+            "emit_wrapper_event with source=wrapper. Antigravity hook files are "
             "projections only, not live AG evidence. Timeouts are post-hoc after "
             "the synchronous handler returns. Never sets verified."
         ),
@@ -569,6 +597,14 @@ def write_compact_handoff(
             current = parent
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
+    _fail_open_emit_artifact_created(
+        Path(root),
+        artifact_kind=str(payload["schema"]),
+        path=".omg/artifacts/compact-handoff.json",
+        schema_version=1,
+        run_id=str(payload.get("run_id") or "") or None,
+        session_id=str(payload.get("session_id") or "") or None,
+    )
     return payload
 
 
@@ -627,6 +663,84 @@ def _run_handler(record: HookRecord, payload: Mapping[str, Any]) -> dict[str, An
     raise HooksRegistryError(f"unknown handler {handler!r}")
 
 
+def emit_wrapper_event(
+    kind: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    root: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    registry: HooksRegistry | None = None,
+) -> dict[str, Any]:
+    """Emit a CLI-wrapper lifecycle event onto the in-process bus/journal.
+
+    Allowed kinds: ``artifact.created``, ``job.terminal``,
+    ``team.member.transition``. ``prompt.submit`` stays unsupported (Grok
+    UserPromptSubmit stdout is ignored; OMG does not inject). Journal
+    ``source`` is ``wrapper``. Timeout is recorded post-hoc. Never sets
+    ``verified``. Fail-open on journal write.
+    """
+
+    if kind == "prompt.submit":
+        raise HooksRegistryError(
+            "prompt.submit is unsupported (no UserPromptSubmit injection)"
+        )
+    if kind not in WRAPPER_EMIT_EVENTS:
+        raise HooksRegistryError(f"not a wrapper-emitted event: {kind!r}")
+    body = dict(payload or {})
+    body.pop("passes", None)
+    body["source"] = WRAPPER_SOURCE
+    body["schema"] = WRAPPER_EVENT_SCHEMA
+    body["timeout_kind"] = TIMEOUT_KIND
+    body["verified"] = False
+    workspace = root if root is not None else _workspace_from_payload(body)
+    if workspace is not None:
+        body["root"] = str(workspace)
+    result = dispatch(
+        kind,
+        body,
+        root=None,
+        env=env,
+        registry=registry,
+        journal_source=WRAPPER_SOURCE,
+    )
+    result["source"] = WRAPPER_SOURCE
+    result["schema"] = WRAPPER_EVENT_SCHEMA
+    result["verified"] = False
+    result["timeout_kind"] = TIMEOUT_KIND
+    return result
+
+
+def _fail_open_emit_artifact_created(
+    workspace: Path,
+    *,
+    artifact_kind: str,
+    path: str,
+    schema_version: int = 1,
+    digest: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Best-effort ``artifact.created``; never raises; never sets verified."""
+
+    try:
+        payload: dict[str, Any] = {
+            "root": str(workspace),
+            "kind": artifact_kind,
+            "artifact_kind": artifact_kind,
+            "path": path,
+            "schema_version": int(schema_version),
+        }
+        if digest:
+            payload["digest"] = digest
+        if run_id:
+            payload["run_id"] = run_id
+        if session_id:
+            payload["session_id"] = session_id
+        emit_wrapper_event("artifact.created", payload)
+    except Exception:
+        return
+
+
 def dispatch(
     event: str,
     payload: Mapping[str, Any] | None = None,
@@ -635,6 +749,7 @@ def dispatch(
     env: Mapping[str, str] | None = None,
     registry: HooksRegistry | None = None,
     handlers: Mapping[str, Callable[[HookRecord, Mapping[str, Any]], Any]] | None = None,
+    journal_source: str | None = None,
 ) -> dict[str, Any]:
     """Run enabled hooks for *event*. Fail-open unless the hook is fail-closed.
 
@@ -659,7 +774,12 @@ def dispatch(
     result["timeout_kind"] = TIMEOUT_KIND
     result["verified"] = False
     if result.get("skipped") != "disabled":
-        _fail_open_journal(result, event=event, payload=body)
+        _fail_open_journal(
+            result,
+            event=event,
+            payload=body,
+            journal_source=journal_source,
+        )
     return result
 
 
@@ -770,8 +890,26 @@ def _workspace_from_payload(payload: Mapping[str, Any]) -> Path | None:
         return None
 
 
+def _wrapper_journal_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy only bounded public wrapper fields (no prompts/tokens)."""
+    out: dict[str, Any] = {}
+    for key in _WRAPPER_PUBLIC_KEYS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value is None:
+            continue
+        if isinstance(value, bool) or isinstance(value, (str, int, float)):
+            out[key] = value
+    return out
+
+
 def _fail_open_journal(
-    result: dict[str, Any], *, event: str, payload: Mapping[str, Any]
+    result: dict[str, Any],
+    *,
+    event: str,
+    payload: Mapping[str, Any],
+    journal_source: str | None = None,
 ) -> None:
     """Append a bounded redacted bus event. Never raises; never sets verified."""
     workspace = _workspace_from_payload(payload)
@@ -785,7 +923,8 @@ def _fail_open_journal(
     try:
         from omg_cli.runtime_events import append_bus_event
 
-        summary = {
+        source = journal_source or BUS_SOURCE
+        summary: dict[str, Any] = {
             "canonical_event": event,
             "ok": result.get("ok"),
             "skipped": result.get("skipped"),
@@ -804,6 +943,10 @@ def _fail_open_journal(
             ],
             "verified": False,
         }
+        if source == WRAPPER_SOURCE:
+            summary["source"] = WRAPPER_SOURCE
+            summary["schema"] = WRAPPER_EVENT_SCHEMA
+            summary.update(_wrapper_journal_fields(payload))
         journal = append_bus_event(
             workspace,
             canonical_event=event,
@@ -815,6 +958,7 @@ def _fail_open_journal(
                 if isinstance(payload.get("session_id"), str)
                 else None
             ),
+            source=source,
         )
         result["journal"] = {
             "ok": True,
@@ -1001,12 +1145,16 @@ __all__ = [
     "SECURITY_ACTIVE_BINDINGS",
     "SECURITY_HANDLER_BINDINGS",
     "TIMEOUT_KIND",
+    "WRAPPER_EMIT_EVENTS",
+    "WRAPPER_EVENT_SCHEMA",
+    "WRAPPER_SOURCE",
     "HookRecord",
     "HooksRegistry",
     "HooksRegistryError",
     "bus_disabled",
     "check_antigravity_projection",
     "dispatch",
+    "emit_wrapper_event",
     "inspect_hooks_registry",
     "install_antigravity_hook_projection",
     "load_hooks_registry",
