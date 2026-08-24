@@ -648,8 +648,12 @@ def _propose_with_grok(
             if timed_out:
                 try:
                     cancel_job(root, job_id, reason="simplify-provider-timeout")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    raise SimplifyProviderError(
+                        f"grok simplify job timed out after {timeout_s}s and cancel failed",
+                        assignment,
+                        job_id=job_id,
+                    ) from exc
                 raise SimplifyProviderError(
                     f"grok simplify job timed out after {timeout_s}s",
                     assignment,
@@ -680,14 +684,27 @@ def _propose_with_grok(
             if job_id and getattr(exc, "code", "") == "E_JOB_RECOVERY_REQUIRED":
                 try:
                     cancel_job(root, job_id, reason="simplify-provider-recovery")
-                except Exception:
-                    pass
-            pending = SimplifyProviderError(
-                str(exc),
-                assignment,
-                job_id=job_id,
-            )
-            pending.__cause__ = exc
+                except Exception as cancel_exc:
+                    pending = SimplifyProviderError(
+                        f"{exc}; cancel failed: {cancel_exc}",
+                        assignment,
+                        job_id=job_id,
+                    )
+                    pending.__cause__ = cancel_exc
+                else:
+                    pending = SimplifyProviderError(
+                        str(exc),
+                        assignment,
+                        job_id=job_id,
+                    )
+                    pending.__cause__ = exc
+            else:
+                pending = SimplifyProviderError(
+                    str(exc),
+                    assignment,
+                    job_id=job_id,
+                )
+                pending.__cause__ = exc
         except HashEditDescriptorError as exc:
             pending = SimplifyProviderError(
                 f"grok output is not hash-edit descriptors: {exc}",
@@ -713,7 +730,7 @@ def _propose_with_grok(
                 job_id=job_id,
             )
             porcelain_after = _git_porcelain(root)
-            if porcelain_before and porcelain_after != porcelain_before:
+            if porcelain_after != porcelain_before:
                 raise SimplifyProviderError(
                     "git worktree changed during grok proposal; originals were not overwritten",
                     assignment,
