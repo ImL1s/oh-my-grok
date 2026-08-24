@@ -501,6 +501,43 @@ def _git_porcelain(root: Path) -> str:
     return proc.stdout
 
 
+def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
+    """SHA-256 of git-visible files outside ``.omg/`` (dirty-file content, not just status)."""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "-co",
+                "--exclude-standard",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for rel in proc.stdout.splitlines():
+        rel = rel.strip()
+        if not rel or rel.startswith(".omg/") or "/.omg/" in f"/{rel}":
+            continue
+        path = Path(root) / rel
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        out[rel] = hashlib.sha256(data).hexdigest()
+    return out
+
+
 def _assert_real_tree_untouched(
     root: Path,
     snapshots: Mapping[str, str],
@@ -611,6 +648,7 @@ def _propose_with_grok(
 ) -> dict[str, Any]:
     snapshots = _snapshot_targets(root, kept, cfg)
     porcelain_before = _git_porcelain(root)
+    fingerprint_before = _workspace_content_fingerprint(root)
     prompt = _build_grok_simplify_prompt(
         kept=kept,
         skipped=skipped,
@@ -730,7 +768,11 @@ def _propose_with_grok(
                 job_id=job_id,
             )
             porcelain_after = _git_porcelain(root)
-            if porcelain_after != porcelain_before:
+            fingerprint_after = _workspace_content_fingerprint(root)
+            if (
+                porcelain_after != porcelain_before
+                or fingerprint_after != fingerprint_before
+            ):
                 raise SimplifyProviderError(
                     "git worktree changed during grok proposal; originals were not overwritten",
                     assignment,
