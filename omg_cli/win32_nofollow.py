@@ -443,6 +443,7 @@ def write_path_regular(path: Path | str, body: bytes) -> None:
             written += api.write(tmp, payload[written:])
         api.flush(tmp)
         api.rename_replace(tmp, name, root_handle=parent)
+        _close(api, tmp)
         tmp = None
     finally:
         if tmp is not None:
@@ -826,20 +827,26 @@ class CtypesWin32API:
 
     def rename_replace(self, handle: int, dest_name: str, *, root_handle: int) -> None:
         ctypes = self._ctypes
-        encoded = dest_name.encode("utf-16-le") + b"\x00\x00"
+        utf16 = dest_name.encode("utf-16-le")
+        nchars = (len(utf16) // 2) + 1
+
         class _FILE_RENAME_INFO(ctypes.Structure):
             _fields_ = [
-                ("ReplaceIfExists", self._wintypes.BOOLEAN),
+                ("ReplaceIfExists", ctypes.c_ubyte),
                 ("RootDirectory", self._HANDLE),
                 ("FileNameLength", self._wintypes.DWORD),
-                ("FileName", ctypes.c_char * len(encoded)),
+                ("FileName", self._wintypes.WCHAR * nchars),
             ]
 
         info = _FILE_RENAME_INFO()
-        info.ReplaceIfExists = True
+        info.ReplaceIfExists = 1
         info.RootDirectory = self._HANDLE(root_handle)
-        info.FileNameLength = len(encoded) - 2
-        info.FileName[: len(encoded)] = encoded
+        info.FileNameLength = len(utf16)
+        ctypes.memmove(
+            ctypes.addressof(info) + _FILE_RENAME_INFO.FileName.offset,
+            utf16 + b"\x00\x00",
+            len(utf16) + 2,
+        )
         FileRenameInfo = 3
         ok = self._kernel32.SetFileInformationByHandle(
             self._HANDLE(handle),
