@@ -214,10 +214,13 @@ omg accept --yes
 旧版 `worker-ready` v1 收据仅为 `wrapper_ready_legacy`，不能产生
 `startup_status=running`。认证/信任提示 → `blocked_start`。`--no-wait` →
 `unverified_start`。`--io-mode interactive` 不等 supervisor ACK，由 leader
-在同一超时内等待 pane TTY 上的 `TUI_READY:<nonce>` 后再提升 `input_ready`；
-Grok 1.0.4 无原生 ready 行，由 `interactive_wrapper` 仅在 grok 开始读 TTY
-后打印。TUI 首轮种子是位置参数 `grok "<text>"`（没有 `--prompt` 旗标）。
-超时 fail-closed，不会静默降为 headless。
+在同一超时内等待 pane TTY 上的 `TUI_READY:<nonce>`，并在 pane/PID/start
+TOCTOU 再证明后才提升 `input_ready`；就绪后提交 attempt-scoped inbox
+instruction（不是 TUI seed）。interactive 团队的 `scale --add` 用 interactive
+argv/wrapper，不会长出 headless supervisor pane。Grok 1.0.4 无原生 ready 行，
+由 `interactive_wrapper` 仅在 grok 开始读 TTY 后打印。TUI 首轮种子是位置参数
+`grok "<text>"`（没有 `--prompt` 旗标）。超时 / identity mismatch fail-closed，
+不会静默降为 headless。Fixture 不得宣称 `LIVE_TEAM_INTERACTIVE_TTY_OK`。
 
 **静默 bootstrap（#100）：** worker pane 成功启动不打印 JSON / nested-`.omg` 警告；
 失败仅一行提示。详情见 `workers/<id>/bootstrap.log`，用

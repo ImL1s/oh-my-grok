@@ -9,6 +9,25 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+### Changed
+- **#147 leftover: TOCTOU promote, task inbox, interactive scale:**
+  `input_ready` promotion re-proves pane/PID/start against current
+  `team.json` and, on live pid-bound workers, `resolve_live_worker` /
+  ExactPaneProof — identity flip between TUI_READY capture and stamp
+  refuses the promotion. After proven ready, the leader submits
+  `interactive_inbox_instruction` (not the seed / leader transcript)
+  via `team input --submit`. Interactive and API seed inboxes are
+  attempt-scoped (`{task_id}.a{attempt}.inbox.txt` /
+  `{task_id}.a{attempt}.inbox.md`) so relaunch cannot reuse the old
+  file; catalog `inbox.md` remains an alias. `omg team scale --add`
+  on an interactive TTY team uses the interactive argv/wrapper (never
+  supervisor panes); new workers stay `input_ready=false` until their
+  own TUI_READY+TOCTOU proof. Mixed interactive/headless active sets
+  fail closed. Fixture `interactive_tty.py` prints `WINCH:` on
+  SIGWINCH and `INT:` on SIGINT without killing the leader.
+  Default/`auto` stay headless. No `LIVE_TEAM_INTERACTIVE_TTY_OK`
+  claim from fixtures. Refs #147 (does not close).
+
 ### Added
 - **#75 PNG pixel overlay evidence:** `omg visual overlay --reference a.png
   --candidate b.png --json` decodes PNG with stdlib (`struct`/`zlib`; no

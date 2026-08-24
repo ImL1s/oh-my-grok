@@ -196,9 +196,21 @@ def main() -> int:
             winsize["rows"] = int(size.lines)
         except OSError:
             pass
+        print(
+            f"WINCH:{winsize['sigwinch']}:{winsize['rows']}x{winsize['cols']}",
+            flush=True,
+        )
+
+    def _on_int(_signum, _frame) -> None:
+        # Observable Ctrl-C; do not raise and do not kill the leader pane.
+        print("INT:", flush=True)
 
     try:
         signal.signal(signal.SIGWINCH, _on_winch)
+    except (AttributeError, ValueError, OSError):
+        pass
+    try:
+        signal.signal(signal.SIGINT, _on_int)
     except (AttributeError, ValueError, OSError):
         pass
 

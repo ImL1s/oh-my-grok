@@ -837,12 +837,121 @@ def _capture_interactive_pane(
         return ""
 
 
+def _task_row_by_id(
+    meta: Mapping[str, Any], task_id: str
+) -> dict[str, Any] | None:
+    tid = str(task_id or "").strip()
+    if not tid:
+        return None
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("task_id") or "").strip() == tid:
+            return dict(raw)
+    return None
+
+
+def _row_has_live_pid(row: Mapping[str, Any] | None) -> bool:
+    if not isinstance(row, Mapping):
+        return False
+    pid = row.get("pid")
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _exact_pane_proof_matches(
+    root: Path | str,
+    run_id: str,
+    task_id: str,
+    evidence: Mapping[str, Any],
+) -> bool:
+    """Re-prove ExactPaneProof against captured TUI-ready identity (TOCTOU)."""
+    from omg_cli.team.operator import (
+        OperatorError,
+        STATUS_LIVE,
+        probe_exact_worker,
+        resolve_live_worker,
+    )
+
+    try:
+        proof = resolve_live_worker(root, run_id, task_id)
+    except (OperatorError, TeamError, OSError, TypeError, ValueError):
+        return False
+    ev_pane = evidence.get("pane_id")
+    if proof.pane_id != ev_pane:
+        return False
+    ev_pid = evidence.get("provider_pid")
+    if (
+        isinstance(ev_pid, int)
+        and not isinstance(ev_pid, bool)
+        and ev_pid > 0
+        and proof.expected_pid != ev_pid
+    ):
+        return False
+    ev_start = evidence.get("pid_start")
+    if (
+        isinstance(ev_start, str)
+        and ev_start
+        and isinstance(proof.expected_pid_start, str)
+        and proof.expected_pid_start
+        and proof.expected_pid_start != ev_start
+    ):
+        return False
+    try:
+        status = probe_exact_worker(proof)
+    except (OperatorError, OSError, TypeError, ValueError):
+        return False
+    return status == STATUS_LIVE
+
+
+def _filter_interactive_ready_evidence(
+    root: Path | str,
+    run_id: str,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Drop TUI-ready evidence whose pane/PID/start no longer match.
+
+    Live teams with a bound pid must also pass ``resolve_live_worker`` /
+    ExactPaneProof. Dry-run / pid-less hermetic rows compare team.json
+    identity only so unit tests can exercise the stamp path.
+    """
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return {}
+    live = not bool(meta.get("dry_run"))
+    gen = meta.get("identity_generation", 0)
+    filtered: dict[str, dict[str, Any]] = {}
+    for tid, ev in evidence_by_id.items():
+        if not isinstance(tid, str) or not isinstance(ev, Mapping):
+            continue
+        row = _task_row_by_id(meta, tid)
+        if row is None:
+            continue
+        if "generation" not in row:
+            row["generation"] = (
+                gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
+            )
+        if not evidence_matches_worker_identity(ev, row):
+            continue
+        if live and _row_has_live_pid(row):
+            if not _exact_pane_proof_matches(root, run_id, tid, ev):
+                continue
+        filtered[tid] = dict(ev)
+    return filtered
+
+
 def _promote_interactive_input_ready(
     root: Path | str,
     run_id: str,
     evidence_by_id: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """CLI-only ``input_ready`` promotion after proven TUI-ready evidence."""
+    """CLI-only ``input_ready`` promotion after proven TUI-ready evidence.
+
+    Refuses to stamp when pane/PID/start flipped between capture and this
+    call (TOCTOU). Live workers additionally re-prove ExactPaneProof.
+    """
     from omg_cli.team.io_capability import (
         IO_MODE_INTERACTIVE_TTY,
         interactive_pane_io_ready,
@@ -850,11 +959,7 @@ def _promote_interactive_input_ready(
         stamp_io_capability,
     )
 
-    proven = {
-        str(tid): dict(ev)
-        for tid, ev in evidence_by_id.items()
-        if isinstance(tid, str) and isinstance(ev, Mapping)
-    }
+    proven = _filter_interactive_ready_evidence(root, run_id, evidence_by_id)
 
     def _apply(current: dict[str, Any]) -> dict[str, Any]:
         tasks = current.get("tasks")
@@ -872,6 +977,10 @@ def _promote_interactive_input_ready(
                 continue
             marker = ev.get("ready_marker")
             if not isinstance(marker, str):
+                continue
+            # Re-check inside the meta lock — identity may have flipped
+            # after the pre-filter snapshot.
+            if not evidence_matches_locked_row(raw, ev):
                 continue
             stamp_io_capability(
                 raw,
@@ -892,6 +1001,110 @@ def _promote_interactive_input_ready(
     return mutate_team_meta(root, run_id, _apply)
 
 
+def evidence_matches_locked_row(raw: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+
+    return evidence_matches_worker_identity(ev, raw)
+
+
+def _submit_interactive_inbox_instructions(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+) -> dict[str, bool]:
+    """Submit the post-ready inbox instruction via operator input --submit.
+
+    Only after TUI-ready promotion. Failures do not demote ``input_ready``
+    (operator can retry). Dry-run teams are skipped.
+    """
+    from omg_cli.state import _run_dir
+    from omg_cli.team.interactive import interactive_inbox_instruction
+    from omg_cli.team.operator import OperatorError, input_worker
+
+    submitted: dict[str, bool] = {}
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return submitted
+    if bool(meta.get("dry_run")):
+        return submitted
+    run_root = _run_dir(Path(root).resolve(), run_id)
+    for tid in task_ids:
+        key = str(tid or "").strip()
+        if not key:
+            continue
+        row = _task_row_by_id(meta, key)
+        if row is None:
+            submitted[key] = False
+            continue
+        rel = row.get("inbox_path")
+        if not isinstance(rel, str) or not rel.strip():
+            submitted[key] = False
+            continue
+        inbox = run_root / rel
+        instruction = interactive_inbox_instruction(inbox)
+        try:
+            input_worker(
+                root,
+                run_id,
+                key,
+                instruction,
+                submit=True,
+                operator_override=True,
+                is_tty=True,
+            )
+            submitted[key] = True
+        except (OperatorError, TeamError, OSError, TypeError, ValueError):
+            submitted[key] = False
+    if any(submitted.values()):
+
+        def _mark(current: dict[str, Any]) -> dict[str, Any]:
+            for raw in current.get("tasks") or []:
+                if not isinstance(raw, dict):
+                    continue
+                tid = str(raw.get("task_id") or "").strip()
+                if submitted.get(tid):
+                    raw["inbox_instruction_submitted"] = True
+            return current
+
+        try:
+            mutate_team_meta(root, run_id, _mark)
+        except TeamError:
+            pass
+    return submitted
+
+
+def apply_interactive_worker_readiness(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+    *,
+    timeout_ms: int | None = None,
+    env: Mapping[str, str] | None = None,
+    poll_s: float = _ACK_POLL_S,
+) -> dict[str, Any]:
+    """TUI-ready wait + TOCTOU promote for a subset of interactive workers.
+
+    Used after start and after interactive ``scale --add``. New workers stay
+    ``input_ready=false`` until this proves their own pane.
+    """
+    rows = _interactive_worker_rows(root, run_id=run_id, expected_workers=list(task_ids))
+    if not rows:
+        return {
+            "ready_workers": [],
+            "missing_workers": [str(t) for t in task_ids if str(t).strip()],
+            "startup_status": "failed_start",
+        }
+    return _interactive_startup_payload(
+        root,
+        run_id=run_id,
+        workers=rows,
+        timeout_ms=timeout_ms,
+        env=env,
+        poll_s=poll_s,
+    )
+
+
 def _interactive_startup_payload(
     root: Path | str,
     *,
@@ -904,6 +1117,7 @@ def _interactive_startup_payload(
     """Bounded TUI-ready wait. Never silently downgrades to headless."""
     from omg_cli.team.interactive import (
         INTERACTIVE_GATE_PHASE,
+        evidence_matches_worker_identity,
         wait_for_interactive_tui_ready,
     )
 
@@ -922,6 +1136,13 @@ def _interactive_startup_payload(
     except TeamError:
         socket = None
 
+    def _refresh(tid: str) -> Mapping[str, Any] | None:
+        rows = _interactive_worker_rows(root, run_id=run_id, expected_workers=[tid])
+        return rows[0] if rows else None
+
+    def _prove(row: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
+        return evidence_matches_worker_identity(ev, row)
+
     waited = wait_for_interactive_tui_ready(
         workers,
         timeout_ms=ms,
@@ -929,12 +1150,18 @@ def _interactive_startup_payload(
         capture_fn=lambda pane_id: _capture_interactive_pane(
             pane_id, socket_path=socket
         ),
+        refresh_fn=_refresh,
+        prove_fn=_prove,
     )
-    ready = list(waited.get("ready_workers") or [])
-    missing = list(waited.get("missing_workers") or [])
-    evidence = waited.get("evidence") if isinstance(waited.get("evidence"), Mapping) else {}
-    if ready and isinstance(evidence, Mapping) and evidence:
+    raw_evidence = waited.get("evidence") if isinstance(waited.get("evidence"), Mapping) else {}
+    evidence = _filter_interactive_ready_evidence(
+        root, run_id, raw_evidence if isinstance(raw_evidence, Mapping) else {}
+    )
+    ready = [tid for tid in expected if tid in evidence]
+    missing = [tid for tid in expected if tid not in evidence]
+    if evidence:
         _promote_interactive_input_ready(root, run_id, evidence)
+        _submit_interactive_inbox_instructions(root, run_id, list(evidence))
     if expected and not missing:
         status = "running"
         note = (
@@ -1189,33 +1416,48 @@ def _create_api_tasks_and_inboxes(
                         },
                     )
             from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
+            from omg_cli.team.interactive import (
+                InteractiveTeamError,
+                api_worker_inbox_basename,
+                write_worker_inbox,
+            )
 
-            inbox = _worker_dir(root, run_id, team_id, logical) / "inbox.md"
+            attempt = 1
+            worker_dir = _worker_dir(root, run_id, team_id, logical)
+            inbox_body = "\n".join(
+                [
+                    f"# Worker inbox — {logical}",
+                    "",
+                    f"Team: {team_id}",
+                    f"Run: {run_id}",
+                    f"Role: {task.get('role')}",
+                    f"Board task id: {api_task_id}",
+                    f"Attempt: {attempt}",
+                    "",
+                    "## Assignment",
+                    subject,
+                    "",
+                    *team_worker_protocol_lines(
+                        run_id=run_id,
+                        team_id=team_id,
+                        worker_id=logical,
+                        api_task_id=api_task_id,
+                    ),
+                ]
+            )
+            inbox = worker_dir / api_worker_inbox_basename(logical, attempt)
             created_paths.append(inbox)
             ensure_managed_dir(inbox.parent)
-            inbox.write_text(
-                "\n".join(
-                    [
-                        f"# Worker inbox — {logical}",
-                        "",
-                        f"Team: {team_id}",
-                        f"Run: {run_id}",
-                        f"Role: {task.get('role')}",
-                        f"Board task id: {api_task_id}",
-                        "",
-                        "## Assignment",
-                        subject,
-                        "",
-                        *team_worker_protocol_lines(
-                            run_id=run_id,
-                            team_id=team_id,
-                            worker_id=logical,
-                            api_task_id=api_task_id,
-                        ),
-                    ]
-                ),
-                encoding="utf-8",
-            )
+            try:
+                write_worker_inbox(dest=inbox, body=inbox_body + "\n")
+                # Catalog ``write-worker-inbox`` still uses inbox.md; keep an alias
+                # so headless workers that look for the historical name still see
+                # the seed. Replace/relaunch must write a new attempt-scoped file.
+                alias = worker_dir / "inbox.md"
+                created_paths.append(alias)
+                write_worker_inbox(dest=alias, body=inbox_body + "\n")
+            except InteractiveTeamError as exc:
+                raise TeamError(f"inbox write refused: {exc}") from exc
         return seeded
     except Exception:
         for path in reversed(created_paths):

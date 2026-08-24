@@ -24,6 +24,7 @@ import shlex
 import signal
 import stat as stat_mod
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -312,6 +313,87 @@ def _active_tasks(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _team_wants_interactive_scale(tasks: Sequence[Mapping[str, Any]]) -> bool:
+    """True when every active worker is interactive TTY; mixed I/O fails closed."""
+    from omg_cli.team.io_capability import (
+        IO_MODE_INTERACTIVE_TTY,
+        normalize_worker_io_capability,
+    )
+
+    flags: set[bool] = set()
+    for raw in _active_tasks(tasks):
+        cap = normalize_worker_io_capability(raw)
+        flags.add(cap.io_mode == IO_MODE_INTERACTIVE_TTY)
+    if True in flags and False in flags:
+        raise TeamError(
+            "scale --add refused: mixed interactive/headless I/O on active workers"
+        )
+    return True in flags
+
+
+def _overlay_interactive_scale_worker(
+    *,
+    root: Path,
+    run_id: str,
+    task_id: str,
+    attempt: int,
+    worktree: Path | str,
+    goal: str,
+    executor_norm: str | None,
+    posture: str,
+    yolo: bool,
+    safe: bool,
+    model: str | None,
+) -> dict[str, Any]:
+    """Materialize interactive exec/inbox for a scale-up worker (never supervisor)."""
+    from omg_cli.team.interactive import (
+        InteractiveTeamError,
+        echo_probe_enabled,
+        overlay_interactive_launch,
+        resolve_effective_io_mode,
+    )
+
+    use_fixture = executor_norm == "fixture"
+    provider = "fixture" if use_fixture else "grok"
+    try:
+        resolve_effective_io_mode(
+            requested="interactive",
+            worker_topology="pane",
+            provider=provider,
+            executor=executor_norm,
+        )
+    except InteractiveTeamError as exc:
+        raise TeamError(str(exc)) from exc
+    tdir = team_dir(root, run_id)
+    try:
+        overlay = overlay_interactive_launch(
+            team_dir=tdir,
+            task_id=task_id,
+            attempt=attempt,
+            worktree=worktree,
+            goal=goal,
+            use_fixture=use_fixture,
+            posture=posture,
+            model=model,
+            safe=safe,
+            yolo=yolo,
+            echo_probe=echo_probe_enabled(),
+            python_executable=sys.executable,
+            pythonpath=(
+                None if use_fixture else str(Path(__file__).resolve().parents[2])
+            ),
+        )
+    except InteractiveTeamError as exc:
+        raise TeamError(str(exc)) from exc
+    inbox_path = Path(overlay["inbox_path"])
+    try:
+        inbox_rel = str(inbox_path.relative_to(_run_dir(root, run_id)))
+    except ValueError:
+        inbox_rel = str(inbox_path)
+    overlay["inbox_relpath"] = inbox_rel
+    return overlay
+
+
 def _next_worker_index(meta: Mapping[str, Any]) -> int:
     """Monotonic window/worker index; never reuse an index."""
     stored = meta.get("next_worker_index")
@@ -534,6 +616,7 @@ def _build_pane_record(
     authority_generation: int = 0,
     authority_attempt: int = 1,
     publish_authority: bool = False,
+    want_interactive: bool = False,
 ) -> dict[str, Any]:
     from omg_cli.contracts.path_keys import (
         DATA_FILE_MODE,
@@ -686,15 +769,48 @@ def _build_pane_record(
         )
         artifact_paths.extend([last_prompt_path, prompt_path])
 
+    rec_inbox: str | None = None
+    interactive_nonce: str | None = None
+    if want_interactive:
+        overlay = _overlay_interactive_scale_worker(
+            root=root,
+            run_id=run_id,
+            task_id=tid,
+            attempt=int(authority_attempt) if isinstance(authority_attempt, int) else 1,
+            worktree=wt,
+            goal=goal,
+            executor_norm=executor_norm,
+            posture=posture,
+            yolo=yolo,
+            safe=safe,
+            model=(
+                resolved.for_role(role).model
+                if multi_cli and resolved is not None
+                else None
+            ),
+        )
+        argv = list(overlay["argv"])
+        pane_cmd = str(overlay["pane_command"])
+        provider = str(overlay.get("provider") or provider)
+        needs_pty = True
+        prompt_delivery = "interactive-tty"
+        rec_inbox = overlay["inbox_relpath"]
+        interactive_nonce = str(overlay["interactive_nonce"])
+        artifact_paths = [
+            Path(overlay["inbox_path"]),
+            Path(overlay["exec_script"]),
+        ]
+
     argv_path = tdir / f"{tid}.argv.json"
     expected_bodies = {
-        prompt_path: prompt.encode("utf-8"),
         argv_path: (json.dumps(argv, indent=2, ensure_ascii=False) + "\n").encode(
             "utf-8"
         ),
     }
-    if not multi_cli:
-        expected_bodies[last_prompt_path] = prompt.encode("utf-8")
+    if not want_interactive:
+        expected_bodies[prompt_path] = prompt.encode("utf-8")
+        if not multi_cli:
+            expected_bodies[last_prompt_path] = prompt.encode("utf-8")
     for path, expected in expected_bodies.items():
         try:
             atomic_write_bytes(path, expected, mode=DATA_FILE_MODE, replace=False)
@@ -724,6 +840,8 @@ def _build_pane_record(
         "posture": posture,
         "needs_pty": needs_pty,
         "prompt_delivery": prompt_delivery,
+        "inbox_path": rec_inbox,
+        "attempt": int(authority_attempt) if isinstance(authority_attempt, int) else 1,
         "pid": None,
         "pgid": None,
         "pid_start": None,
@@ -731,13 +849,18 @@ def _build_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
-    # #147 PR1: scale-up pane workers are supervisor-owned headless.
+    if interactive_nonce:
+        record["interactive_nonce"] = interactive_nonce
     from omg_cli.team.io_capability import (
+        interactive_pane_io_defaults,
         stamp_io_capability,
         supervisor_pane_io_defaults,
     )
 
-    stamp_io_capability(record, supervisor_pane_io_defaults())
+    stamp_io_capability(
+        record,
+        interactive_pane_io_defaults() if want_interactive else supervisor_pane_io_defaults(),
+    )
     from omg_cli.team.presentation import stamp_route_on_task
 
     stamp_route_on_task(
@@ -773,6 +896,7 @@ def _reuse_prepared_pane_record(
     authority_generation: int = 0,
     authority_attempt: int = 1,
     publish_authority: bool = False,
+    want_interactive: bool = False,
 ) -> dict[str, Any] | None:
     """Strictly reuse a complete deterministic prompt/argv preparation set."""
     from omg_cli.contracts.path_keys import (
@@ -940,14 +1064,44 @@ def _reuse_prepared_pane_record(
             **authority_kw,
         )
 
+    rec_inbox: str | None = None
+    interactive_nonce: str | None = None
+    if want_interactive:
+        overlay = _overlay_interactive_scale_worker(
+            root=root,
+            run_id=run_id,
+            task_id=task_id,
+            attempt=int(authority_attempt) if isinstance(authority_attempt, int) else 1,
+            worktree=worktree,
+            goal=goal,
+            executor_norm=executor_norm,
+            posture=posture,
+            yolo=yolo,
+            safe=safe,
+            model=(
+                resolved.for_role(role).model
+                if multi_cli and resolved is not None
+                else None
+            ),
+        )
+        expected_argv = list(overlay["argv"])
+        pane_cmd = str(overlay["pane_command"])
+        provider = str(overlay.get("provider") or provider)
+        needs_pty = True
+        prompt_delivery = "interactive-tty"
+        rec_inbox = overlay["inbox_relpath"]
+        interactive_nonce = str(overlay["interactive_nonce"])
+        candidates = [argv_path]
+
     expected_bodies = {
         argv_path: (
             json.dumps(expected_argv, indent=2, ensure_ascii=False) + "\n"
         ).encode("utf-8"),
-        task_prompt_path: prompt.encode("utf-8"),
     }
-    if not multi_cli:
-        expected_bodies[last_prompt_path] = prompt.encode("utf-8")
+    if not want_interactive:
+        expected_bodies[task_prompt_path] = prompt.encode("utf-8")
+        if not multi_cli:
+            expected_bodies[last_prompt_path] = prompt.encode("utf-8")
 
     observed: dict[Path, bytes] = {}
     missing: list[Path] = []
@@ -985,9 +1139,15 @@ def _reuse_prepared_pane_record(
             raise TeamError(
                 f"scale-up preparation materialization failed task={task_id}"
             ) from exc
-    artifact_paths = [argv_path, task_prompt_path]
-    if not multi_cli:
-        artifact_paths.append(last_prompt_path)
+    artifact_paths = [argv_path]
+    if want_interactive:
+        artifact_paths.extend(
+            [Path(overlay["inbox_path"]), Path(overlay["exec_script"])]
+        )
+    else:
+        artifact_paths.append(task_prompt_path)
+        if not multi_cli:
+            artifact_paths.append(last_prompt_path)
     record = {
         "task_id": task_id,
         "window_index": window_index,
@@ -1000,6 +1160,8 @@ def _reuse_prepared_pane_record(
         "posture": posture,
         "needs_pty": needs_pty,
         "prompt_delivery": prompt_delivery,
+        "inbox_path": rec_inbox,
+        "attempt": int(authority_attempt) if isinstance(authority_attempt, int) else 1,
         "pid": None,
         "pgid": None,
         "pid_start": None,
@@ -1007,13 +1169,18 @@ def _reuse_prepared_pane_record(
         "scaled_in_at": _utc_now(),
         "_artifact_paths": [str(path.relative_to(root)) for path in artifact_paths],
     }
-    # #147 PR1: scale-up pane workers are supervisor-owned headless.
+    if interactive_nonce:
+        record["interactive_nonce"] = interactive_nonce
     from omg_cli.team.io_capability import (
+        interactive_pane_io_defaults,
         stamp_io_capability,
         supervisor_pane_io_defaults,
     )
 
-    stamp_io_capability(record, supervisor_pane_io_defaults())
+    stamp_io_capability(
+        record,
+        interactive_pane_io_defaults() if want_interactive else supervisor_pane_io_defaults(),
+    )
     from omg_cli.team.presentation import stamp_route_on_task
 
     stamp_route_on_task(
@@ -3965,13 +4132,7 @@ def _scale_up(
     tasks_json: str | Sequence[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     tasks_all = list(meta.get("tasks") or [])
-    from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
-
-    if any(str(t.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY for t in tasks_all):
-        raise TeamError(
-            "scale --add refused for interactive TTY teams "
-            "(scale-up still materializes headless supervisor panes; remaining #147)"
-        )
+    want_interactive = _team_wants_interactive_scale(tasks_all)
     active = _active_tasks(tasks_all)
     effective_dry = bool(dry_run or meta.get("dry_run"))
     pending_generation = int(meta.get("identity_generation", 0)) + 1
@@ -4157,7 +4318,8 @@ def _scale_up(
                     ),
                     authority_generation=pending_generation,
                     authority_attempt=1,
-                    publish_authority=not effective_dry,
+                    publish_authority=not effective_dry and not want_interactive,
+                    want_interactive=want_interactive,
                 )
                 rec = None
                 if not effective_dry:
@@ -4181,28 +4343,56 @@ def _scale_up(
                             else None
                         ),
                     )
+                    nonce = rec.get("interactive_nonce")
+                    if isinstance(nonce, str) and nonce:
+                        from omg_cli.team.interactive import INTERACTIVE_NONCE_ENV
+
+                        merged = dict(rec["_env_pairs"])
+                        merged[INTERACTIVE_NONCE_ENV] = nonce
+                        rec["_env_pairs"] = sorted(
+                            merged.items(), key=lambda kv: kv[0]
+                        )
                 new_records.append(rec)
+
+            if want_interactive:
+                from omg_cli.team.interactive import (
+                    InteractiveTeamError,
+                    assert_not_supervisor_pane_command,
+                )
+
+                for rec in new_records:
+                    try:
+                        assert_not_supervisor_pane_command(
+                            str(rec.get("pane_command") or "")
+                        )
+                    except InteractiveTeamError as exc:
+                        raise TeamError(str(exc)) from exc
+                    if rec.get("input_ready") is True:
+                        raise TeamError(
+                            "scale --add interactive worker must not start input_ready"
+                        )
 
             if not effective_dry:
                 assert scale_wal is not None
                 _apply_scale_wal_plan(new_records, scale_wal)
-                _publish_scale_supervisor_authorities(
-                    root,
-                    run_id,
-                    team_id=str(meta.get("team_id") or "team"),
-                    owner_token=(
-                        str(meta["owner_token"])
-                        if meta.get("owner_token")
-                        else ""
-                    ),
-                    generation=pending_generation,
-                    records=new_records,
-                )
-                authorities_published = [
-                    (str(rec["task_id"]), int(rec.get("attempt") or 1))
-                    for rec in new_records
-                ]
-                authority_generation = pending_generation
+                if not want_interactive:
+                    _publish_scale_supervisor_authorities(
+                        root,
+                        run_id,
+                        team_id=str(meta.get("team_id") or "team"),
+                        owner_token=(
+                            str(meta["owner_token"])
+                            if meta.get("owner_token")
+                            else ""
+                        ),
+                        generation=pending_generation,
+                        records=new_records,
+                    )
+                    authorities_published = [
+                        (str(rec["task_id"]), int(rec.get("attempt") or 1))
+                        for rec in new_records
+                    ]
+                    authority_generation = pending_generation
 
             if not effective_dry:
                 assert authority is not None
@@ -4578,6 +4768,18 @@ def _scale_up(
     # Deprecated window_indices: prefer live window_index when legacy path
     # rewrote it (adopted tmux index); otherwise the logical alias.
     window_indices_out = [int(r.get("window_index", -1)) for r in new_records]
+    if want_interactive and not effective_dry:
+        from omg_cli.team.runtime import apply_interactive_worker_readiness
+
+        apply_interactive_worker_readiness(
+            root,
+            run_id,
+            [str(r["task_id"]) for r in new_records],
+        )
+        try:
+            updated = load_team_meta(root, run_id)
+        except TeamError:
+            pass
     return {
         "writer": CLI_WRITER,
         "run_id": run_id,
@@ -6702,6 +6904,27 @@ def _relaunch_dead_incomplete_workers_locked(
                 prev_attempt = 1
             rec["attempt"] = max(1, prev_attempt) + 1
             rec["resumed_at"] = str(plan["started_at"])
+            from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
+            from omg_cli.team.interactive import (
+                InteractiveTeamError,
+                interactive_inbox_basename,
+                write_worker_inbox,
+            )
+
+            if str(rec.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY:
+                tdir = team_dir(root_path, rid)
+                inbox = tdir / interactive_inbox_basename(tid, int(rec["attempt"]))
+                try:
+                    write_worker_inbox(
+                        dest=inbox,
+                        body=(
+                            f"task_id={tid}\nattempt={int(rec['attempt'])}\n"
+                            f"{meta.get('goal') or ''}\n"
+                        ),
+                    )
+                except InteractiveTeamError as exc:
+                    raise TeamError(str(exc)) from exc
+                rec["inbox_path"] = str(inbox.relative_to(_run_dir(root_path, rid)))
             rec["relaunch_nonce"] = relaunch_nonce
             rec["pane_owner_nonce"] = relaunch_nonce
             rec["status_before_resume"] = STATUS_NEEDS_COLLECT

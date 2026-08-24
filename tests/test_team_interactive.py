@@ -16,9 +16,13 @@ from omg_cli.team.interactive import (
     GROK_INTERACTIVE_SEED_PROMPT,
     INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
+    api_worker_inbox_basename,
     capture_contains_provider_echo,
     capture_contains_tui_ready,
+    evidence_matches_worker_identity,
     grok_interactive_argv,
+    interactive_inbox_basename,
+    interactive_inbox_instruction,
     make_interactive_nonce,
     pane_command_for_exec_script,
     resolve_effective_io_mode,
@@ -273,6 +277,8 @@ def test_dry_run_interactive_fixture_skips_supervisor(
     assert rec["provider"] == "fixture"
     assert any("interactive_tty.py" in str(x) for x in rec["argv"])
     assert rec.get("inbox_path")
+    assert str(rec["inbox_path"]).endswith("t1.a1.inbox.txt")
+    assert "t1.inbox.txt" not in str(rec["inbox_path"]).replace("t1.a1.inbox.txt", "")
     nonce = rec.get("interactive_nonce")
     assert isinstance(nonce, str) and nonce
     exec_path = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.sh"
@@ -598,6 +604,84 @@ def test_fixture_echoes_payload_after_stray_pty_bytes() -> None:
             proc.wait(timeout=3)
 
 
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
+def test_fixture_sigint_prints_int_and_does_not_exit() -> None:
+    import select
+    import subprocess
+    import time
+
+    pty = pytest.importorskip("pty")
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "providers"
+        / "interactive_tty.py"
+    )
+    master, slave = pty.openpty()
+    slave_open = True
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        env = {
+            **os.environ,
+            "OMG_TEAM_INTERACTIVE_NONCE": "sigintab",
+            "OMG_TEAM_PROVIDER_HOLD_S": "8",
+            "OMG_TEAM_PROVIDER_LINGER_S": "8",
+            "TERM": "xterm",
+        }
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(script)],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave)
+        slave_open = False
+
+        def _read_until(needle: bytes, timeout_s: float) -> bytes:
+            deadline = time.monotonic() + timeout_s
+            buf = b""
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if needle in buf:
+                    return buf
+            return buf
+
+        ready_buf = _read_until(b"TUI_READY:sigintab", 5.0)
+        assert b"TUI_READY:sigintab" in ready_buf, ready_buf
+        proc.send_signal(signal.SIGINT)
+        int_buf = ready_buf + _read_until(b"INT:", 5.0)
+        assert b"INT:" in int_buf, int_buf
+        assert proc.poll() is None
+        os.write(master, b"after-int\r")
+        echo_buf = int_buf + _read_until(b"PROVIDER_ECHO:after-int", 5.0)
+        assert b"PROVIDER_ECHO:after-int" in echo_buf, echo_buf
+    finally:
+        if slave_open:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def test_wait_for_tui_ready_does_not_write_or_self_promote() -> None:
     nonce = "abc123de"
     seen: list[str] = []
@@ -657,6 +741,92 @@ def test_wait_wrong_nonce_is_not_ready() -> None:
         sleep_fn=lambda _s: None,
     )
     assert out["ready_workers"] == []
+
+
+def test_evidence_matches_worker_identity_refuses_pane_pid_start_flip() -> None:
+    ev = {
+        "pane_id": "%7",
+        "provider_pid": 111,
+        "pid_start": "start-a",
+        "attempt": 1,
+        "generation": 0,
+    }
+    row = {
+        "pane_id": "%7",
+        "pid": 111,
+        "pid_start": "start-a",
+        "attempt": 1,
+        "generation": 0,
+    }
+    assert evidence_matches_worker_identity(ev, row)
+    assert not evidence_matches_worker_identity(ev, {**row, "pane_id": "%8"})
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": 222})
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": "start-b"})
+    assert not evidence_matches_worker_identity(ev, {**row, "attempt": 2})
+
+
+def test_wait_for_tui_ready_prove_fn_refuse_is_not_ready() -> None:
+    nonce = "abc123de"
+    out = wait_for_interactive_tui_ready(
+        [
+            {
+                "task_id": "t1",
+                "pane_id": "%12",
+                "pid": 100,
+                "pid_start": "A",
+                "interactive_nonce": nonce,
+            }
+        ],
+        timeout_ms=0,
+        poll_s=0.01,
+        capture_fn=lambda _pane: f"TUI_READY:{nonce}\n",
+        sleep_fn=lambda _s: None,
+        prove_fn=lambda _row, _ev: False,
+    )
+    assert out["ready_workers"] == []
+    assert out["missing_workers"] == ["t1"]
+
+
+def test_overlay_reuses_nonce_and_attempt_inbox(tmp_path: Path) -> None:
+    from omg_cli.team.interactive import overlay_interactive_launch
+
+    if os.name != "posix":
+        pytest.skip("managed inbox write requires POSIX")
+    first = overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=1,
+        worktree=tmp_path,
+        goal="do the work",
+        use_fixture=True,
+    )
+    nonce = first["interactive_nonce"]
+    assert (tmp_path / "t1.a1.inbox.txt").is_file()
+    assert "supervisor" not in first["pane_command"]
+    second = overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=2,
+        worktree=tmp_path,
+        goal="do the work again",
+        use_fixture=True,
+    )
+    assert second["interactive_nonce"] == nonce
+    assert (tmp_path / "t1.a2.inbox.txt").is_file()
+    assert (tmp_path / "t1.a1.inbox.txt").is_file()
+    assert "attempt=2" in (tmp_path / "t1.a2.inbox.txt").read_text(encoding="utf-8")
+
+
+def test_inbox_basenames_include_task_id_and_attempt() -> None:
+    assert interactive_inbox_basename("t1", 1) == "t1.a1.inbox.txt"
+    assert interactive_inbox_basename("t1", 2) == "t1.a2.inbox.txt"
+    assert api_worker_inbox_basename("w1", 3) == "w1.a3.inbox.md"
+    path = "/tmp/run/team/t1.a2.inbox.txt"
+    text = interactive_inbox_instruction(path)
+    assert "t1.a2.inbox.txt" in text
+    assert GROK_INTERACTIVE_SEED_PROMPT not in text
+    with pytest.raises(InteractiveTeamError):
+        interactive_inbox_basename("", 1)
 
 
 def test_leader_ready_stamp_requires_tui_marker() -> None:
@@ -811,7 +981,69 @@ def test_leader_promotes_input_ready_after_tui_ready(
 
 
 @_POSIX
-def test_scale_up_refuses_interactive_team(
+def test_promote_refuses_when_identity_flips_between_capture_and_stamp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.interactive as interactive_mod
+    from omg_cli.team.plane import mutate_team_meta
+    from omg_cli.team.runtime import apply_start_readiness
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+    real_wait = interactive_mod.wait_for_interactive_tui_ready
+
+    def _wait_then_flip(*args: object, **kwargs: object):
+        out = real_wait(*args, **kwargs)
+
+        def _flip(current: dict) -> dict:
+            current["tasks"][0]["pane_id"] = "%99"
+            current["tasks"][0]["pid"] = 999
+            current["tasks"][0]["pid_start"] = "flipped"
+            return current
+
+        mutate_team_meta(tmp_path, run_id, _flip)
+        return out
+
+    monkeypatch.setattr(
+        interactive_mod, "wait_for_interactive_tui_ready", _wait_then_flip
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: f"TUI_READY:{nonce}\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "2000"},
+    )
+    assert out["tasks"][0]["input_ready"] is False
+    assert out["startup_status"] == "failed_start"
+    assert "%99" == out["tasks"][0]["pane_id"]
+
+
+@_POSIX
+def test_scale_up_interactive_team_uses_exec_wrapper_not_supervisor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _enable(monkeypatch)
@@ -827,7 +1059,56 @@ def test_scale_up_refuses_interactive_team(
         env={EXPERIMENTAL_ENV: "1"},
     )
     assert meta["tasks"][0]["io_mode"] == IO_MODE_INTERACTIVE_TTY
-    with pytest.raises(TeamError, match="interactive TTY"):
+    out = scale_team(tmp_path, meta["run_id"], add=1, dry_run=True)
+    added = out.get("tasks_added") or []
+    assert len(added) == 1
+    rec = added[0]
+    assert rec["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert rec["input_ready"] is False
+    assert rec["operator_input_supported"] is True
+    assert rec["provider_tty_owner"] == "provider"
+    pane = str(rec.get("pane_command") or "")
+    assert "supervisor" not in pane
+    assert "omg_cli.main" not in pane
+    assert "interactive.sh" in pane or pane.startswith("exec /bin/sh")
+    assert rec.get("inbox_path")
+    assert ".a1.inbox.txt" in str(rec["inbox_path"])
+    assert rec.get("interactive_nonce")
+    assert "--prompt-file" not in json.dumps(rec.get("argv") or [])
+
+
+@_POSIX
+def test_scale_up_refuses_mixed_interactive_headless(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.io_capability import (
+        stamp_io_capability,
+        supervisor_pane_io_defaults,
+    )
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"]},
+            {"task_id": "t2", "title": "two", "owned_files": ["LICENSE"]},
+        ],
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+
+    def _mix(current: dict) -> dict:
+        stamp_io_capability(current["tasks"][1], supervisor_pane_io_defaults())
+        return current
+
+    mutate_team_meta(tmp_path, str(meta["run_id"]), _mix)
+    with pytest.raises(TeamError, match="mixed interactive/headless"):
         scale_team(tmp_path, meta["run_id"], add=1, dry_run=True)
 
 

@@ -115,33 +115,32 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
         assert meta.get("startup_gate_phase") == "tui_ready"
         assert task.get("input_ready") is True
 
-        ready_cap = leader.capture_pane(pane_id)
-        assert marker in ready_cap
-        if "PROVIDER_ECHO:" in ready_cap:
-            raise AssertionError(
-                "fixture printed PROVIDER_ECHO before operator send "
-                f"(spurious TTY consume): {ready_cap!r}"
-            )
-
-        line = f"omg147-echo-{os.getpid()}"
-        operator.input_worker(
-            repo,
-            run_id,
-            worker_id,
-            line,
-            submit=True,
-            operator_override=True,
-            is_tty=True,
+        from omg_cli.team.interactive import (
+            GROK_INTERACTIVE_SEED_PROMPT,
+            capture_contains_provider_echo,
+            interactive_inbox_instruction,
         )
+        from omg_cli.team.plane import team_dir
+
+        rel = task.get("inbox_path")
+        assert isinstance(rel, str) and rel
+        inbox = team_dir(repo, run_id) / f"{worker_id}.a1.inbox.txt"
+        assert inbox.is_file()
+        assert inbox.name.endswith(".a1.inbox.txt")
+        instruction = interactive_inbox_instruction(inbox)
 
         scroll_holder = {"text": ""}
 
         def _echoed() -> bool:
             scroll_holder["text"] = leader.capture_pane(pane_id)
-            return f"PROVIDER_ECHO:{line}" in scroll_holder["text"]
+            return capture_contains_provider_echo(scroll_holder["text"], instruction)
 
         try:
-            wait_until(_echoed, timeout_s=15.0, label="PROVIDER_ECHO after TTY read")
+            wait_until(
+                _echoed,
+                timeout_s=15.0,
+                label="PROVIDER_ECHO of inbox instruction (not seed)",
+            )
         except TimeoutError as exc:
             panes = leader.server.tmux(
                 "list-panes",
@@ -154,12 +153,9 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
                 f"panes={(panes.stdout or '').strip()!r} rc={panes.returncode}"
             ) from exc
         scroll = scroll_holder["text"]
-        assert f"PROVIDER_ECHO:{line}" in scroll
-        # Local echo of the typed bytes (if any) is not the proof.
-        assert scroll.count(f"PROVIDER_ECHO:{line}") >= 1
-        # Bare send-keys appearance without the fixture prefix is insufficient.
-        bare_only = line in scroll and f"PROVIDER_ECHO:{line}" not in scroll
-        assert not bare_only
+        assert capture_contains_provider_echo(scroll, instruction)
+        assert not capture_contains_provider_echo(scroll, GROK_INTERACTIVE_SEED_PROMPT)
+        assert marker in scroll
     finally:
         stop_team(repo, meta["run_id"])
 
@@ -219,5 +215,67 @@ def test_interactive_input_refuses_before_ready_even_with_override(
             )
         assert exc.value.code == E_OPERATOR_INPUT_NOT_READY
         send_literal.assert_not_called()
+    finally:
+        stop_team(repo, meta["run_id"])
+
+
+def test_interactive_resize_and_ctrl_c_are_observable(
+    tmux_server: IsolatedTmuxServer,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tmux resize-pane delivers SIGWINCH; team key C-c prints INT: (leader lives)."""
+    from omg_cli.team import operator
+    from omg_cli.team.plane import load_team_meta
+
+    leader = _leader(tmux_server)
+    _bind_leader(monkeypatch, leader)
+    monkeypatch.setenv("OMG_TEAM_PROVIDER_LINGER_S", "30")
+    meta = launch_team_inside(
+        root=repo,
+        leader=leader,
+        workers=1,
+        monkeypatch=monkeypatch,
+        io_mode="interactive",
+        env={
+            "OMG_TEAM_READY_TIMEOUT_MS": "25000",
+            "OMG_TEAM_PROVIDER_HOLD_S": "40",
+            "OMG_TEAM_PROVIDER_LINGER_S": "30",
+        },
+    )
+    try:
+        task = (meta.get("tasks") or [{}])[0]
+        pane_id = str(task.get("pane_id") or "")
+        worker_id = str(task.get("task_id") or "w1")
+        run_id = str(meta["run_id"])
+        assert pane_id.startswith("%")
+        leader.server.require_ok("resize-pane", "-t", pane_id, "-x", "88", "-y", "28")
+        wait_until(
+            lambda: "WINCH:" in leader.capture_pane(pane_id),
+            timeout_s=10.0,
+            label="WINCH after resize-pane",
+        )
+        operator.key_worker(
+            repo,
+            run_id,
+            worker_id,
+            "C-c",
+            operator_override=True,
+            is_tty=True,
+        )
+        wait_until(
+            lambda: "INT:" in leader.capture_pane(pane_id),
+            timeout_s=10.0,
+            label="INT: after team key C-c",
+        )
+        live = load_team_meta(repo, run_id)
+        assert live.get("stop_state") not in {"stopped", "stopping"}
+        assert str(live.get("session") or "")
+        leader_pane = leader.leader
+        assert leader_pane is not None
+        probe = leader.server.tmux(
+            "display-message", "-p", "-t", leader_pane.pane_id, "#{pane_dead}"
+        )
+        assert (probe.stdout or "").strip() != "1"
     finally:
         stop_team(repo, meta["run_id"])
