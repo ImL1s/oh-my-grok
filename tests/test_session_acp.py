@@ -257,6 +257,20 @@ def test_session_acp_resume_invalid_uuid_fail_closed(
     assert err.get("code") == "E_ACP_SESSION_ID" or envelope.get("error_code") == "E_ACP_SESSION_ID"
 
 
+def test_sanitize_acp_cli_error_never_echoes_peer_text() -> None:
+    from omg_cli.session_acp import sanitize_acp_cli_error
+
+    leaked = "sk-live-secret SECRET_REPLAY /Users/iml1s/.ssh/id_rsa"
+    out = sanitize_acp_cli_error(leaked, code="E_ACP_RPC")
+    assert "sk-live-secret" not in out
+    assert "SECRET_REPLAY" not in out
+    assert ".ssh" not in out
+    assert out == "ACP peer rejected initialize or session/resume"
+    restore = sanitize_acp_cli_error(leaked, code="E_ACP_RESTORE_CODE")
+    assert "sk-live-secret" not in restore
+    assert "restore" in restore.lower()
+
+
 def test_session_acp_resume_function_happy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

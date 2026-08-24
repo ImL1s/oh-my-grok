@@ -342,11 +342,12 @@ def cmd_session(args: argparse.Namespace) -> int:
                     restore_code=bool(getattr(args, "restore_code", False)),
                 )
             except AcpError as exc:
+                code = getattr(exc, "code", "E_ACP") or "E_ACP"
                 return _session_failure(
                     args,
                     "session.acp-resume",
-                    getattr(exc, "code", "E_ACP") or "E_ACP",
-                    sanitize_acp_cli_error(str(exc)),
+                    code,
+                    sanitize_acp_cli_error(str(exc), code=code),
                 )
             _emit_session_payload(args, "session.acp-resume", payload)
             return 0

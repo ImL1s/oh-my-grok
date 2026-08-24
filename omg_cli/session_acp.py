@@ -41,16 +41,26 @@ _RECEIPT_BANNED_KEYS = (
 )
 
 
-def sanitize_acp_cli_error(text: str) -> str:
-    """Strip likely replay bodies / home paths from failure text."""
-    out = text
-    home = str(Path.home())
-    if home:
-        out = out.replace(home, "[redacted]")
-    for token in ("SECRET_REPLAY", "LATE_SECRET"):
-        if token in out:
-            out = out.replace(token, "[redacted]")
-    return out[:500]
+_STATIC_ACP_ERRORS: dict[str, str] = {
+    "E_ACP_RESTORE_CODE": (
+        "ACP session resume does not restore code "
+        "(resume is not restore; host restore_code_explicit stays BLOCKED)"
+    ),
+    "E_ACP_SESSION_ID": "session id must be a canonical UUID",
+    "E_ACP_CWD": "ACP cwd is not a directory",
+    "E_ACP_BINARY": "ACP binary is not available",
+    "E_ACP_IO": "ACP spawn failed",
+    "E_ACP_RECEIPT": "ACP receipt was refused",
+    "E_ACP_MALFORMED": "ACP peer response was malformed",
+}
+
+
+def sanitize_acp_cli_error(text: str, *, code: str | None = None) -> str:
+    """Never echo peer-controlled JSON-RPC error text to the CLI."""
+    del text
+    if code and code in _STATIC_ACP_ERRORS:
+        return _STATIC_ACP_ERRORS[code]
+    return "ACP peer rejected initialize or session/resume"
 
 
 def _canonical_session_uuid(value: str) -> str:
