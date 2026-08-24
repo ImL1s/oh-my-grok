@@ -1,6 +1,6 @@
 """Install-family CLI handlers (#29 Phase 2).
 
-Commands: setup, install-hook, doctor, update, uninstall.
+Commands: setup, setup import, setup migrate, install-hook, doctor, update, uninstall.
 Parser construction: ``register_install_parsers`` (#29 Phase 4').
 """
 
@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
+from omg_cli.cli_envelope import emit_json, failure, success, wants_json
 from omg_cli.cli_util import project_root
 
 
@@ -108,6 +110,132 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 2
 
 
+def _setup_scope_runtime(args: argparse.Namespace) -> tuple[str, str]:
+    runtime = getattr(args, "setup_runtime", None) or "grok"
+    scope = getattr(args, "setup_scope", None) or "project"
+    return runtime, scope
+
+
+def _setup_project_root(args: argparse.Namespace, scope: str) -> Path | None:
+    if scope == "user":
+        return None
+    return project_root()
+
+
+def _emit_setup_op(
+    args: argparse.Namespace,
+    command: str,
+    result: dict,
+) -> int:
+    payload = success(command, **{k: v for k, v in result.items() if k != "ok"})
+    payload["ok"] = bool(result.get("ok", True))
+    payload["dry_run"] = bool(result.get("dry_run", False))
+    payload["verified"] = False
+    payload["observed"] = False
+    payload["healthy"] = False
+    if wants_json(args):
+        emit_json(payload)
+        return 0 if payload["ok"] else 1
+    print(f"omg {command}: {'dry-run' if payload['dry_run'] else 'applied'}")
+    emit_json(payload)
+    return 0 if payload["ok"] else 1
+
+
+def _emit_setup_error(
+    args: argparse.Namespace,
+    command: str,
+    code: str,
+    message: str,
+    *,
+    dry_run: bool = False,
+) -> int:
+    # Never include source bytes / secret material in the envelope.
+    payload = failure(command, code, message)
+    payload["dry_run"] = bool(dry_run)
+    payload["verified"] = False
+    payload["observed"] = False
+    payload["healthy"] = False
+    if wants_json(args):
+        emit_json(payload)
+    else:
+        print(f"omg {command}: {code}: {message}", file=sys.stderr)
+    return 1
+
+
+def cmd_setup_import(args: argparse.Namespace) -> int:
+    from omg_cli import __version__
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.install_manifest import InstallManifestError
+    from omg_cli.install_migrate import InstallMigrateError, run_import
+
+    runtime, scope = _setup_scope_runtime(args)
+    dry_run = bool(getattr(args, "setup_dry_run", False))
+    source = Path(str(getattr(args, "from_path", "") or ""))
+    try:
+        root = _setup_project_root(args, scope)
+        result = run_import(
+            source,
+            project_root=root,
+            scope=scope,
+            runtime=runtime,
+            dry_run=dry_run,
+            source_version=__version__,
+        )
+        return _emit_setup_op(args, "setup.import", result)
+    except InstallMigrateError as exc:
+        return _emit_setup_error(
+            args, "setup.import", exc.code, exc.message, dry_run=dry_run
+        )
+    except InstallManifestError as exc:
+        return _emit_setup_error(
+            args, "setup.import", exc.code, exc.message, dry_run=dry_run
+        )
+    except ContractPathError:
+        return _emit_setup_error(
+            args, "setup.import", "E_PATH", "refusing unsafe import path", dry_run=dry_run
+        )
+
+
+def cmd_setup_migrate(args: argparse.Namespace) -> int:
+    from omg_cli import __version__
+    from omg_cli.contracts.path_keys import ContractPathError
+    from omg_cli.hook_install import grok_home as hook_grok_home
+    from omg_cli.install_manifest import InstallManifestError
+    from omg_cli.install_migrate import InstallMigrateError, run_migrate
+
+    runtime, scope = _setup_scope_runtime(args)
+    dry_run = bool(getattr(args, "setup_dry_run", False))
+    source = Path(str(getattr(args, "from_path", "") or ""))
+    try:
+        root = _setup_project_root(args, scope)
+        result = run_migrate(
+            source,
+            project_root=root,
+            scope=scope,
+            runtime=runtime,
+            dry_run=dry_run,
+            grok_home=hook_grok_home(),
+            source_version=__version__,
+        )
+        return _emit_setup_op(args, "setup.migrate", result)
+    except InstallMigrateError as exc:
+        return _emit_setup_error(
+            args, "setup.migrate", exc.code, exc.message, dry_run=dry_run
+        )
+    except InstallManifestError as exc:
+        return _emit_setup_error(
+            args, "setup.migrate", exc.code, exc.message, dry_run=dry_run
+        )
+    except ContractPathError:
+        return _emit_setup_error(
+            args,
+            "setup.migrate",
+            "E_PATH",
+            "refusing unsafe migrate path",
+            dry_run=dry_run,
+        )
+
+
 def cmd_install_hook(args: argparse.Namespace) -> int:
     from omg_cli.hook_install import main as hook_install_main
 
@@ -134,7 +262,16 @@ def cmd_update(args: argparse.Namespace) -> int:
 def cmd_uninstall(args: argparse.Namespace) -> int:
     from omg_cli.uninstall_cmd import run_uninstall
 
-    return run_uninstall(yes=bool(getattr(args, "yes", False)))
+    root = None
+    try:
+        root = project_root()
+    except Exception:
+        root = None
+    return run_uninstall(
+        yes=bool(getattr(args, "yes", False)),
+        project_root=root,
+        include_user_manifest=True,
+    )
 
 
 
@@ -199,6 +336,49 @@ def register_install_parsers(
             help="replace user-owned/foreign targets (default: preserve)",
         )
         p_setup.set_defaults(func=cmd_setup)
+        setup_sub = p_setup.add_subparsers(
+            dest="setup_action",
+            required=False,
+            metavar="ACTION",
+        )
+        p_setup_import = setup_sub.add_parser(
+            "import",
+            parents=[common],
+            help="copy-safe ingest of user artifacts into the install manifest",
+        )
+        p_setup_import.add_argument(
+            "--from",
+            dest="from_path",
+            required=True,
+            metavar="PATH",
+            help="file or directory of user artifacts (never follows symlinks)",
+        )
+        p_setup_import.add_argument(
+            "--dry-run",
+            dest="setup_dry_run",
+            action="store_true",
+            help="print planned rows; write nothing",
+        )
+        p_setup_import.set_defaults(func=cmd_setup_import, setup_action="import")
+        p_setup_migrate = setup_sub.add_parser(
+            "migrate",
+            parents=[common],
+            help="classify a legacy layout into the install manifest (no clobber)",
+        )
+        p_setup_migrate.add_argument(
+            "--from",
+            dest="from_path",
+            required=True,
+            metavar="PATH",
+            help="legacy GROK_HOME or project tree to classify in place",
+        )
+        p_setup_migrate.add_argument(
+            "--dry-run",
+            dest="setup_dry_run",
+            action="store_true",
+            help="print planned classification; write nothing",
+        )
+        p_setup_migrate.set_defaults(func=cmd_setup_migrate, setup_action="migrate")
 
         p_install_hook = sub.add_parser(
             "install-hook",
@@ -250,6 +430,8 @@ __all__ = [
     "cmd_doctor",
     "cmd_install_hook",
     "cmd_setup",
+    "cmd_setup_import",
+    "cmd_setup_migrate",
     "cmd_uninstall",
     "cmd_update",
 ]

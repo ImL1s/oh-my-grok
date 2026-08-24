@@ -42,6 +42,8 @@ from omg_cli.commands.install import (  # #29 Phase 2+4' — install family
     cmd_doctor,  # noqa: F401
     cmd_install_hook,  # noqa: F401
     cmd_setup,  # noqa: F401
+    cmd_setup_import,  # noqa: F401
+    cmd_setup_migrate,  # noqa: F401
     cmd_uninstall,  # noqa: F401
     cmd_update,  # noqa: F401
     register_install_parsers,

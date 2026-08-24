@@ -8,6 +8,8 @@ from omg_cli.main import (
     cmd_doctor,
     cmd_install_hook,
     cmd_setup,
+    cmd_setup_import,
+    cmd_setup_migrate,
     cmd_uninstall,
     cmd_update,
 )
@@ -24,6 +26,8 @@ INSTALL_CMDS = (
 
 def test_main_reexports_install_handlers() -> None:
     assert cmd_setup is install_cmds.cmd_setup
+    assert cmd_setup_import is install_cmds.cmd_setup_import
+    assert cmd_setup_migrate is install_cmds.cmd_setup_migrate
     assert cmd_install_hook is install_cmds.cmd_install_hook
     assert cmd_doctor is install_cmds.cmd_doctor
     assert cmd_update is install_cmds.cmd_update
@@ -44,6 +48,10 @@ def test_parser_wires_install_handlers() -> None:
         ns = parser.parse_args(samples[name])
         assert callable(getattr(ns, "func", None))
         assert ns.func.__module__ == "omg_cli.commands.install", name
+    imported = parser.parse_args(["setup", "import", "--from", "SKILL.md"])
+    assert imported.func is install_cmds.cmd_setup_import
+    migrated = parser.parse_args(["setup", "migrate", "--from", "."])
+    assert migrated.func is install_cmds.cmd_setup_migrate
 
 
 def test_install_help_lists_commands() -> None:

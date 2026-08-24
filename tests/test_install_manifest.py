@@ -25,6 +25,8 @@ from omg_cli.install_manifest import (
     classify_path,
     desired_artifacts,
     inspect_install_manifest,
+    load_manifest,
+    persist_manifest,
     refuse_home_project,
     rollback_interrupted,
     run_scoped_setup,
@@ -1078,3 +1080,22 @@ def test_cmd_setup_does_not_call_run_setup(
     assert rc == 0
     assert captured.get("install_rules") is False
     assert captured.get("install_hook") is False
+
+
+def test_persist_manifest_stamps_honesty_flags(tmp_path: Path) -> None:
+    dest = persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [{"id": "imported.skill.demo", "target": "x"}],
+        },
+        project_root=tmp_path,
+        scope="project",
+    )
+    raw = json.loads(dest.read_text(encoding="utf-8"))
+    assert raw["verified"] is False
+    assert raw["observed"] is False
+    assert raw["healthy"] is False
+    loaded = load_manifest(project_root=tmp_path, scope="project", strict=True)
+    assert loaded is not None
+    assert loaded["kind"] == "omg_install_manifest"
