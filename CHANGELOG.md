@@ -72,7 +72,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 - **#76 leftover grok-backed simplify proposal:** `omg edit simplify
   --enable --provider grok` still records the assignment/guard, then
   starts a Jobs grok job (`omg_cli.jobs.runtime.start_job`, role
-  `omg-code-simplifier`, `prompt_text`, bounded timeout) that must emit
+  `omg-code-simplifier`, `prompt_text`, bounded timeout, cwd confined to
+  `.omg/artifacts/simplify-sandbox/`) that must emit
   hash-edit descriptor JSON. Writes
   `.omg/artifacts/` `omg.edit.simplify.proposal.v1` (job_id,
   provider=grok, descriptors). Does **not** apply, does **not** write

@@ -190,6 +190,8 @@ def test_simplify_provider_grok_writes_proposal_without_applying(
     assert "ONLY JSON" in prompt
     assert "x = 1" in prompt
     assert fake.start_calls[0]["provider_timeout_s"] == 90.0
+    cwd = Path(str(fake.start_calls[0]["cwd"]))
+    assert "simplify-sandbox" in cwd.as_posix()
 
     proposal_rel = payload["proposal"]
     assert proposal_rel == payload["artifact"]
@@ -216,6 +218,44 @@ def test_simplify_provider_grok_writes_proposal_without_applying(
             text = path.read_text(encoding="utf-8")
             assert '"verified": true' not in text
             assert '"passes": true' not in text
+
+
+def test_simplify_provider_does_not_clobber_concurrent_user_edits(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    src = project / "app.py"
+    src.write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_edit(project_root: Path, job_id: str, **kwargs: object):
+        src.write_text("user-edit\n", encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_edit  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert src.read_text(encoding="utf-8") == "user-edit\n"
 
 
 def test_simplify_provider_grok_job_failure_records_assignment(

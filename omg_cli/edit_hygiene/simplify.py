@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
@@ -71,6 +72,7 @@ DEFAULT_MAX_BYTES: Final[int] = 262_144
 GROK_PROVIDER: Final[str] = "grok"
 PROVIDER_TIMEOUT_S: Final[float] = 90.0
 PROPOSAL_KIND: Final[str] = "omg.edit.simplify.proposal.v1"
+SANDBOX_REL: Final[str] = ".omg/artifacts/simplify-sandbox"
 _BEGIN_FILE: Final[str] = "-----BEGIN FILE-----"
 _END_FILE: Final[str] = "-----END FILE-----"
 _SKIP_PARTS = (
@@ -461,7 +463,27 @@ def _snapshot_targets(root: Path, kept: Sequence[str], cfg: Mapping[str, Any]) -
     return out
 
 
-def _assert_targets_unchanged(
+def _sandbox_rel(stage_id: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stage_id)[:64]
+    return f"{SANDBOX_REL}/{safe or 'stage'}"
+
+
+def _write_proposal_sandbox(
+    root: Path, snapshots: Mapping[str, str], stage_id: str
+) -> Path:
+    """Copy kept files into an artifacts sandbox; grok cwd must stay here."""
+    rel_base = _sandbox_rel(stage_id)
+    dest_root = Path(root) / rel_base
+    if dest_root.exists():
+        shutil.rmtree(dest_root)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    for rel, text in snapshots.items():
+        nested = f"{rel_base}/{posix_relpath(rel)}"
+        write_confined_text(root, nested, text)
+    return dest_root.resolve()
+
+
+def _assert_real_tree_untouched(
     root: Path,
     snapshots: Mapping[str, str],
     cfg: Mapping[str, Any],
@@ -469,6 +491,7 @@ def _assert_targets_unchanged(
     assignment: dict[str, Any],
     job_id: str | None,
 ) -> None:
+    """Detect mutation of the real --paths set. Never overwrite user bytes."""
     mutated: list[str] = []
     max_bytes = int(cfg["max_bytes"])
     for rel, original in snapshots.items():
@@ -477,16 +500,11 @@ def _assert_targets_unchanged(
         except WorkspacePathError:
             mutated.append(rel)
             continue
-        if current == original:
-            continue
-        mutated.append(rel)
-        try:
-            write_confined_text(root, rel, original)
-        except WorkspacePathError:
-            pass
+        if current != original:
+            mutated.append(rel)
     if mutated:
         raise SimplifyProviderError(
-            "grok job mutated workspace files; originals restored when possible",
+            "workspace files changed during grok proposal; originals were not overwritten",
             assignment,
             job_id=job_id,
         )
@@ -580,86 +598,109 @@ def _propose_with_grok(
         snapshots=snapshots,
         stage_id=stage_id,
     )
+    sandbox = _write_proposal_sandbox(root, snapshots, stage_id)
     job_id: str | None = None
+    pending: SimplifyProviderError | None = None
+    descriptors: list[Any] | None = None
     try:
-        started = start_job(
-            root,
-            provider=GROK_PROVIDER,
-            role=SIMPLIFIER_ROLE,
-            prompt_text=prompt,
-            run_id=run_id,
-            provider_timeout_s=float(timeout_s),
+        try:
+            started = start_job(
+                root,
+                provider=GROK_PROVIDER,
+                role=SIMPLIFIER_ROLE,
+                prompt_text=prompt,
+                run_id=run_id,
+                provider_timeout_s=float(timeout_s),
+                cwd=sandbox,
+            )
+            record = getattr(started, "record", None)
+            job_id = str(getattr(record, "job_id", "") or "").strip() or None
+            if not job_id:
+                raise SimplifyProviderError(
+                    "grok job start did not return a job_id",
+                    assignment,
+                )
+            waited, timed_out = wait_job(
+                root,
+                job_id,
+                timeout_s=float(timeout_s),
+                stop_on_recovery_required=True,
+            )
+            if timed_out:
+                try:
+                    cancel_job(root, job_id, reason="simplify-provider-timeout")
+                except Exception:
+                    pass
+                raise SimplifyProviderError(
+                    f"grok simplify job timed out after {timeout_s}s",
+                    assignment,
+                    job_id=job_id,
+                )
+            if _job_state_value(getattr(waited, "state", None)) != JobState.SUCCEEDED.value:
+                raise SimplifyProviderError(
+                    "grok simplify job did not succeed",
+                    assignment,
+                    job_id=job_id,
+                )
+            summary = collect_job(root, job_id)
+            if _job_state_value(summary.get("state")) != JobState.SUCCEEDED.value:
+                raise SimplifyProviderError(
+                    "grok simplify job did not succeed",
+                    assignment,
+                    job_id=job_id,
+                )
+            raw_text = _read_job_result_text(root, summary)
+            descriptors = _descriptors_from_provider_json(_extract_json_value(raw_text))
+        except SimplifyProviderError as exc:
+            if exc.assignment is None:
+                exc.assignment = assignment
+            if exc.job_id is None:
+                exc.job_id = job_id
+            pending = exc
+        except JobStoreError as exc:
+            pending = SimplifyProviderError(
+                str(exc),
+                assignment,
+                job_id=job_id,
+            )
+            pending.__cause__ = exc
+        except HashEditDescriptorError as exc:
+            pending = SimplifyProviderError(
+                f"grok output is not hash-edit descriptors: {exc}",
+                assignment,
+                job_id=job_id,
+            )
+            pending.__cause__ = exc
+        except OSError as exc:
+            pending = SimplifyProviderError(
+                f"grok simplify job I/O failed: {exc}",
+                assignment,
+                job_id=job_id,
+            )
+            pending.__cause__ = exc
+    finally:
+        dirty: SimplifyProviderError | None = None
+        try:
+            _assert_real_tree_untouched(
+                root,
+                snapshots,
+                cfg,
+                assignment=assignment,
+                job_id=job_id,
+            )
+        except SimplifyProviderError as exc:
+            dirty = exc
+        shutil.rmtree(sandbox, ignore_errors=True)
+    if dirty is not None:
+        raise dirty
+    if pending is not None:
+        raise pending
+    if descriptors is None:
+        raise SimplifyProviderError(
+            "grok simplify job produced no descriptors",
+            assignment,
+            job_id=job_id,
         )
-        record = getattr(started, "record", None)
-        job_id = str(getattr(record, "job_id", "") or "").strip() or None
-        if not job_id:
-            raise SimplifyProviderError(
-                "grok job start did not return a job_id",
-                assignment,
-            )
-        waited, timed_out = wait_job(
-            root,
-            job_id,
-            timeout_s=float(timeout_s),
-            stop_on_recovery_required=True,
-        )
-        if timed_out:
-            try:
-                cancel_job(root, job_id, reason="simplify-provider-timeout")
-            except Exception:
-                pass
-            raise SimplifyProviderError(
-                f"grok simplify job timed out after {timeout_s}s",
-                assignment,
-                job_id=job_id,
-            )
-        if _job_state_value(getattr(waited, "state", None)) != JobState.SUCCEEDED.value:
-            raise SimplifyProviderError(
-                "grok simplify job did not succeed",
-                assignment,
-                job_id=job_id,
-            )
-        summary = collect_job(root, job_id)
-        if _job_state_value(summary.get("state")) != JobState.SUCCEEDED.value:
-            raise SimplifyProviderError(
-                "grok simplify job did not succeed",
-                assignment,
-                job_id=job_id,
-            )
-        raw_text = _read_job_result_text(root, summary)
-        descriptors = _descriptors_from_provider_json(_extract_json_value(raw_text))
-    except SimplifyProviderError as exc:
-        if exc.assignment is None:
-            exc.assignment = assignment
-        if exc.job_id is None:
-            exc.job_id = job_id
-        raise
-    except JobStoreError as exc:
-        raise SimplifyProviderError(
-            str(exc),
-            assignment,
-            job_id=job_id,
-        ) from exc
-    except HashEditDescriptorError as exc:
-        raise SimplifyProviderError(
-            f"grok output is not hash-edit descriptors: {exc}",
-            assignment,
-            job_id=job_id,
-        ) from exc
-    except OSError as exc:
-        raise SimplifyProviderError(
-            f"grok simplify job I/O failed: {exc}",
-            assignment,
-            job_id=job_id,
-        ) from exc
-
-    _assert_targets_unchanged(
-        root,
-        snapshots,
-        cfg,
-        assignment=assignment,
-        job_id=job_id,
-    )
     kept_set = {Path(rel).as_posix() for rel in kept}
     for desc in descriptors:
         desc_path = Path(str(desc.path)).as_posix()
