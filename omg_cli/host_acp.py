@@ -3,6 +3,8 @@
 Owns the JSON-RPC wire for ``grok agent stdio`` (argv-only, shell=False).
 Does **not** set verified/passes, replay transcripts, or call session/close.
 Conversation-content ``session/update`` notifications fail closed (no-replay).
+Grok vendor notifications whose method starts with ``_x.ai/`` are chrome
+(discarded; bodies are never logged — they may carry MCP env).
 
 ``session/resume`` request params are ``sessionId`` + ``cwd`` only. The
 result allowlist is ``modes`` / ``models`` / ``configOptions`` / ``_meta``
@@ -30,6 +32,10 @@ RECEIPT_KIND = "grok_acp_resume_receipt/v1"
 TRANSPORT_KIND = "acp_stdio_job"
 
 # Explicit conversation / transcript replay shapes — forbidden (no-replay).
+# Live ``grok agent stdio`` emits these during initialize/resume (MCP
+# inventory, model list, announcements). Treat as chrome. Never log params.
+_ACP_VENDOR_CHROME_PREFIXES = ("_x.ai/",)
+
 _FORBIDDEN_SESSION_UPDATE_TYPES = frozenset(
     {
         "agent_message_chunk",
@@ -214,6 +220,13 @@ def allowlisted_acp_env(base: Mapping[str, str] | None = None) -> dict[str, str]
         if isinstance(val, str) and val:
             out[key] = val
     return out
+
+
+def is_vendor_chrome_method(method: Any) -> bool:
+    """True for Grok ``_x.ai/*`` stdio chrome (not conversation replay)."""
+    if not isinstance(method, str):
+        return False
+    return method.startswith(_ACP_VENDOR_CHROME_PREFIXES)
 
 
 def classify_session_update(params: Mapping[str, Any]) -> str:
@@ -1136,9 +1149,13 @@ class AcpStdioSession:
         self, msg: Mapping[str, Any], *, phase: str
     ) -> None:
         method = msg.get("method")
+        if is_vendor_chrome_method(method):
+            # Discard. Params may include MCP env; never copy into errors.
+            return
         if method != "session/update":
+            label = method if isinstance(method, str) else type(method).__name__
             raise AcpError(
-                f"ACP disallowed notification method {method!r} in {phase}",
+                f"ACP disallowed notification method {label!r} in {phase}",
                 code="E_ACP_PROTOCOL",
             )
         params = msg.get("params")
@@ -1302,6 +1319,7 @@ __all__ = [
     "discover_grok_binary",
     "hash_cwd",
     "hash_session_id",
+    "is_vendor_chrome_method",
     "spawn_acp_stdio",
     "validate_receipt",
     "validate_resume_result",

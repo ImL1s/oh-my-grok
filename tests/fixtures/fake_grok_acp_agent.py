@@ -8,6 +8,8 @@ Scenarios via ``OMG_ACP_FAKE_SCENARIO``:
   replay           — conversation update before resume response
   late_replay      — conversation update during quiet window after resume
   chrome           — non-conversation chrome before/after resume
+  vendor_chrome    — Grok ``_x.ai/*`` notifications + available_commands_update
+                     before resume result (secret in params must not leak)
   hang             — never respond to initialize
   hang_after_init  — initialize OK, then sleep forever (never read/respond to resume)
   overflow         — emit oversized line
@@ -241,6 +243,42 @@ def main() -> int:
     params = resume.get("params") or {}
     # Echo validated binding for tests (not written to OMG receipts).
     _ = params.get("sessionId"), params.get("cwd")
+
+    if scenario == "vendor_chrome":
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "method": "_x.ai/mcp/init_progress",
+                "params": {"phase": "start"},
+            }
+        )
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "method": "_x.ai/mcp/servers_updated",
+                "params": {
+                    "mcpServers": [
+                        {
+                            "name": "x",
+                            "env": [
+                                {
+                                    "name": "API_TOKEN",
+                                    "value": "ACP_VENDOR_SECRET_TOKEN_DO_NOT_ECHO",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+        _write(
+            {
+                "jsonrpc": "2.0",
+                "method": "_x.ai/session_notification",
+                "params": {"kind": "ready"},
+            }
+        )
+        _notify_update("available_commands_update")
 
     if scenario == "replay":
         _notify_update(

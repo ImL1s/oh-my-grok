@@ -40,6 +40,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#74 leftover live Grok ACP vendor chrome:** `grok agent stdio`
+  emits `_x.ai/mcp/*`, `_x.ai/session_notification`, and similar
+  notifications during initialize/`session/resume`. The handshake
+  previously fail-closed those as `E_ACP_PROTOCOL`. They are now
+  discarded as chrome; params are never logged (MCP env). Conversation
+  `session/update` replay still fail-closes. Hermetic
+  `vendor_chrome` peer. Not Antigravity history import. Refs #74
+  (does not close).
 - **#72 job.terminal does not close the launching session:**
   `BUS_EVENT_TYPES["job.terminal"]` maps to lifecycle `turn_completed`
   (session state `active`) instead of `agent_closed`. Wrapper journal

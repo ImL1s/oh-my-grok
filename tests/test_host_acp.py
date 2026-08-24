@@ -36,6 +36,7 @@ from omg_cli.host_acp import (
     bind_constructor_identity,
     build_receipt_from_dict,
     classify_session_update,
+    is_vendor_chrome_method,
     hash_cwd,
     hash_session_id,
     spawn_acp_stdio,
@@ -243,6 +244,31 @@ def test_acp_resume_allows_non_conversation_chrome(tmp_path: Path) -> None:
     try:
         receipt = sess.handshake(timeout_s=5.0)
         assert receipt.no_replay_observed is True
+    finally:
+        sess.close()
+
+
+def test_is_vendor_chrome_method_prefix() -> None:
+    assert is_vendor_chrome_method("_x.ai/mcp/servers_updated") is True
+    assert is_vendor_chrome_method("_x.ai/session_notification") is True
+    assert is_vendor_chrome_method("session/update") is False
+    assert is_vendor_chrome_method("session/resume") is False
+    assert is_vendor_chrome_method(None) is False
+
+
+def test_acp_resume_allows_grok_vendor_chrome_without_leaking_params(
+    tmp_path: Path,
+) -> None:
+    proc, argv = _spawn("vendor_chrome", tmp_path)
+    sess = _session(proc, argv, tmp_path, quiet=0.08)
+    try:
+        receipt = sess.handshake(timeout_s=5.0)
+        assert receipt.initialized is True
+        assert receipt.resume_matched is True
+        assert receipt.no_replay_observed is True
+        blob = json.dumps(receipt.to_dict())
+        assert "ACP_VENDOR_SECRET_TOKEN_DO_NOT_ECHO" not in blob
+        assert "mcpServers" not in blob
     finally:
         sess.close()
 
