@@ -19,6 +19,7 @@ from omg_cli.tools_sidecar import (
     StdioLspTransport,
     ToolsError,
     ast_replace,
+    lsp_command_argv,
     ast_search,
     codegraph_index,
     codegraph_query,
@@ -83,11 +84,10 @@ def _transport_from_args(args: argparse.Namespace, root: Path):
     fake = bool(getattr(args, "fake_lsp", False))
     command = list(getattr(args, "lsp_command", None) or [])
     extra = list(getattr(args, "lsp_extra", None) or [])
-    argv = command + extra
     if fake:
         return FakeLspTransport()
-    if argv:
-        return StdioLspTransport(argv, cwd=root)
+    if command or extra:
+        return StdioLspTransport(lsp_command_argv(command, extra), cwd=root)
     return None
 
 
@@ -265,7 +265,8 @@ def register_tools_parsers(
         default=None,
         help=(
             "language server argv wired into MCP omg.tools.lsp.* tools; "
-            "put server flags after -- (e.g. -- --stdio)"
+            "rust-analyzer uses default stdio (do not pass --stdio); "
+            "other servers that need a flag: -- --stdio"
         ),
     )
     p_serve.add_argument(
@@ -314,7 +315,8 @@ def register_tools_parsers(
         default=None,
         help=(
             "language server argv (not auto-installed); "
-            "put server flags after -- (e.g. -- --stdio)"
+            "rust-analyzer uses default stdio (do not pass --stdio); "
+            "other servers that need a flag: -- --stdio"
         ),
     )
     p_lsp.add_argument(
