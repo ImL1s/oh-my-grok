@@ -8,6 +8,7 @@ required; this command cannot approve itself. The once-per-stage marker
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Final, Sequence
@@ -23,10 +24,13 @@ from omg_cli.edit_hygiene.workspace import (
     write_confined_text,
 )
 from omg_cli.hash_edit import (
+    HashEditApplyError,
     HashEditCurrentFact,
     apply_hash_edit,
     parse_hash_edit_descriptor,
     plan_hash_edit,
+    read_confined_regular_file,
+    write_confined_regular_file,
 )
 
 SIMPLIFIER_ROLE: Final[str] = "omg-code-simplifier"
@@ -103,6 +107,23 @@ class SimplifyBlocked(SimplifyError):
     def __init__(self, message: str, assignment: dict[str, Any]) -> None:
         super().__init__(message)
         self.assignment = assignment
+
+
+class SimplifyRollback(SimplifyError):
+    """Partial apply could not be fully restored. Not a verified stamp."""
+
+    code = "E_SIMPLIFY_ROLLBACK"
+
+    def __init__(
+        self,
+        message: str,
+        dirty_paths: list[str],
+        *,
+        artifact: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.dirty_paths = list(dirty_paths)
+        self.artifact = artifact
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -213,6 +234,61 @@ def _collect_targets(
             f"simplifier exceeds max_bytes={cfg['max_bytes']} (got {total})"
         )
     return kept, skipped, total
+
+
+def _sha256_bytes(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+
+
+def _restore_originals(root: Path, originals: dict[str, bytes]) -> list[str]:
+    """Restore snapshotted bytes. Return paths that remain dirty."""
+
+    dirty: list[str] = []
+    for rel, original in originals.items():
+        try:
+            current = read_confined_regular_file(root, rel)
+            if current == original:
+                continue
+            write_confined_regular_file(root, rel, original)
+            restored = read_confined_regular_file(root, rel)
+            if restored != original:
+                dirty.append(rel)
+        except Exception:
+            dirty.append(rel)
+    return dirty
+
+
+def _record_simplify_dirty(
+    root: Path,
+    *,
+    stage_id: str,
+    kept: list[str],
+    dirty: list[str],
+) -> str:
+    _write_guard(
+        root,
+        {
+            "kind": "omg.simplify.guard.v1",
+            "schema_version": 1,
+            "stage": stage_id,
+            "status": "dirty",
+            "failed": True,
+            "paths": kept,
+            "dirty_paths": dirty,
+        },
+    )
+    return write_edit_artifact(
+        root,
+        {
+            "kind": "omg.edit.simplify.dirty.v1",
+            "command": "edit.simplify",
+            "stage": stage_id,
+            "status": "dirty",
+            "failed": True,
+            "paths": kept,
+            "dirty_paths": dirty,
+        },
+    )
 
 
 def _load_descriptors(raw: Any) -> list[Any]:
@@ -345,7 +421,7 @@ def run_simplify(
 
     kept_set = {Path(rel).as_posix() for rel in kept}
     planned: list[tuple[Any, Any]] = []
-    from omg_cli.hash_edit.apply import read_confined_regular_file
+    originals: dict[str, bytes] = {}
 
     for desc in descriptors:
         desc_path = Path(str(desc.path)).as_posix()
@@ -355,21 +431,39 @@ def run_simplify(
             )
         assert_mutative_edit_allowed(root, desc.path, run_id=run_id, task_id=task_id)
         current = read_confined_regular_file(root, desc.path)
+        if desc.path not in originals:
+            originals[desc.path] = current
         plan = plan_hash_edit(desc, HashEditCurrentFact(path=desc.path, current_bytes=current))
         planned.append((desc, plan))
 
     applied: list[dict[str, Any]] = []
-    for desc, plan in planned:
-        result = apply_hash_edit(root, desc, plan)
-        applied.append(
-            {
-                "path": result.path,
-                "descriptor_digest": result.descriptor_digest,
-                "before_sha256": result.before_sha256,
-                "after_sha256": result.after_sha256,
-                "unified_diff_sha256": result.unified_diff_sha256,
-            }
-        )
+    try:
+        for desc, plan in planned:
+            result = apply_hash_edit(root, desc, plan)
+            published = read_confined_regular_file(root, result.path)
+            if _sha256_bytes(published) != result.after_sha256:
+                raise HashEditApplyError("post-apply digest mismatch")
+            applied.append(
+                {
+                    "path": result.path,
+                    "descriptor_digest": result.descriptor_digest,
+                    "before_sha256": result.before_sha256,
+                    "after_sha256": result.after_sha256,
+                    "unified_diff_sha256": result.unified_diff_sha256,
+                }
+            )
+    except Exception as exc:
+        dirty = _restore_originals(root, originals)
+        if dirty:
+            artifact = _record_simplify_dirty(
+                root, stage_id=stage_id, kept=kept, dirty=dirty
+            )
+            raise SimplifyRollback(
+                "simplifier apply rolled back incompletely; files may be dirty",
+                dirty,
+                artifact=artifact,
+            ) from exc
+        raise
 
     _write_guard(
         root,

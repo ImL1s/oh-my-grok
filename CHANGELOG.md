@@ -137,6 +137,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   and redacts bounded stderr before it is persisted. Visual Ralph is a bounded evidence loop (repair prompt artifact, no agent
   spawn, no `verified` stamp). Hermetic: `tests/test_visual_cli.py`. Refs #75
   (does not close — no live screenshot smoke / no AG vision model).
+- **#76 leftover: `omg edit verify` + simplify apply rollback:** `omg edit verify
+  EDIT_ID|--input` re-reads the target through the same `O_NOFOLLOW` walk as
+  apply, re-plans, and reports `ok` / stale / conflict JSON without writing the
+  file. `omg edit simplify --apply-edits` restores original bytes when a later
+  descriptor in that invocation fails; incomplete restore records
+  `status=dirty` / `failed` (never `passes`/`verified`). CLI still does not
+  call an LLM and does **not** claim `omo.edit.hash_anchored` host parity.
+  Hermetic: `tests/test_edit_verify.py`. Refs #76 (does not close).
 - **#76 comment checker, simplifier, Team authority:** `omg edit comments`
   (`--input` / `--git-diff` / `--paths`, report-only unless `--fix`) and
   `omg edit simplify` (disabled unless `--enable` or `.omg/simplify.json`;

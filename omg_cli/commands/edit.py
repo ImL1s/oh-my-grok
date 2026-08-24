@@ -1,11 +1,12 @@
 """omg edit — hash-anchored apply plus comment/simplifier hygiene (#76).
 
-Commands: ``omg edit {plan,apply,comments,simplify}``.
+Commands: ``omg edit {plan,apply,verify,comments,simplify}``.
 
-``plan`` is read-only. ``apply`` calls :func:`omg_cli.hash_edit.apply_hash_edit`
-(re-read, re-plan, atomic same-dir replace) after Team / read-only gates.
-``comments`` is report-only unless ``--fix``. ``simplify`` is disabled unless
-``--enable`` or project config; the CLI never calls an LLM.
+``plan`` and ``verify`` are read-only. ``apply`` calls
+:func:`omg_cli.hash_edit.apply_hash_edit` (re-read, re-plan, atomic same-dir
+replace) after Team / read-only gates. ``verify`` re-reads and re-plans
+without writing. ``comments`` is report-only unless ``--fix``. ``simplify``
+is disabled unless ``--enable`` or project config; the CLI never calls an LLM.
 
 None of these commands write ``passes`` / ``verified``. This does not claim
 ``omo.edit.hash_anchored`` host parity.
@@ -40,11 +41,13 @@ from omg_cli.edit_hygiene.comments import (
 )
 from omg_cli.edit_hygiene.simplify import (
     SimplifyError,
+    SimplifyRollback,
     run_simplify,
 )
 from omg_cli.edit_hygiene.workspace import WorkspacePathError
 from omg_cli.hash_edit import (
     APPLY_RESULT_KIND,
+    VERIFY_RESULT_KIND,
     HashEditAmbiguousError,
     HashEditApplyError,
     HashEditBindError,
@@ -61,12 +64,14 @@ from omg_cli.hash_edit import (
     parse_hash_edit_descriptor,
     plan_hash_edit,
     read_confined_regular_file,
+    verify_hash_edit,
 )
 from omg_cli.redaction import redact_text
 
 PLAN_RESULT_KIND: Final[str] = "omg.hash_edit.plan.v1"
 COMMAND_PLAN: Final[str] = "edit.plan"
 COMMAND_APPLY: Final[str] = "edit.apply"
+COMMAND_VERIFY: Final[str] = "edit.verify"
 COMMAND_COMMENTS: Final[str] = "edit.comments"
 COMMAND_SIMPLIFY: Final[str] = "edit.simplify"
 
@@ -91,11 +96,36 @@ APPLY_RESULT_JSON_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Copy-safe verify JSON keys. Never include verified/passes, raw source,
+# replacement, unified-diff text, or local absolute paths.
+VERIFY_RESULT_JSON_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "status",
+        "path",
+        "edit_id",
+        "descriptor_digest",
+        "before_sha256",
+        "after_sha256",
+        "start_offset",
+        "end_offset",
+        "start_line",
+        "end_line",
+        "rebased",
+        "unified_diff_sha256",
+    }
+)
+
 
 class HashEditCliUsageError(ValueError):
     """Usage error before the library runs (missing/unreadable --input)."""
 
     code = "E_HASH_EDIT_USAGE"
+
+    def __init__(self, message: str, *, next_action: str | None = None) -> None:
+        super().__init__(message)
+        self.next_action = next_action
 
 
 def _root(args: argparse.Namespace) -> Path:
@@ -109,7 +139,11 @@ def _error_for(exc: BaseException) -> tuple[str, str]:
     """Map library exceptions to stable CLI codes (most-specific first)."""
 
     if isinstance(exc, HashEditCliUsageError):
-        return "E_HASH_EDIT_USAGE", "Pass --input PATH to a V1 descriptor JSON file"
+        hint = getattr(exc, "next_action", None)
+        return (
+            "E_HASH_EDIT_USAGE",
+            hint or "Pass --input PATH to a V1 descriptor JSON file",
+        )
     if isinstance(exc, ReadOnlyEditError):
         return "E_READ_ONLY", "Use a read-write capability_mode for mutating edit tools"
     if isinstance(exc, OwnershipEditError):
@@ -122,6 +156,11 @@ def _error_for(exc: BaseException) -> tuple[str, str]:
         return (
             "E_SIMPLIFY_ASSIGNMENT",
             "spawn omg-code-simplifier read-write then omg-code-reviewer read-only",
+        )
+    if isinstance(exc, SimplifyRollback):
+        return (
+            "E_SIMPLIFY_ROLLBACK",
+            "Inspect dirty_paths; restore originals failed after a later apply error",
         )
     if isinstance(exc, SimplifyError):
         return getattr(exc, "code", "E_SIMPLIFY"), "See simplifier bounds, --enable, or --apply-edits"
@@ -255,6 +294,60 @@ def _apply_json(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _verify_json(result: Any) -> dict[str, Any]:
+    payload = {
+        "kind": result.kind,
+        "schema_version": result.schema_version,
+        "status": result.status,
+        "path": result.path,
+        "edit_id": result.edit_id,
+        "descriptor_digest": result.descriptor_digest,
+        "before_sha256": result.before_sha256,
+        "after_sha256": result.after_sha256,
+        "start_offset": result.start_offset,
+        "end_offset": result.end_offset,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "rebased": result.rebased,
+        "unified_diff_sha256": result.unified_diff_sha256,
+    }
+    extra = set(payload) - VERIFY_RESULT_JSON_KEYS
+    if extra:
+        raise HashEditApplyError(f"verify JSON is not copy-safe: extra keys {sorted(extra)}")
+    if payload["kind"] != VERIFY_RESULT_KIND:
+        raise HashEditApplyError("verify JSON kind is not HashEditVerifyResultV1")
+    if "verified" in payload or "passes" in payload:
+        raise HashEditApplyError("verify JSON must not include verified/passes")
+    return payload
+
+
+def _verify_status_for(exc: BaseException) -> str | None:
+    if isinstance(exc, (HashEditStaleError, HashEditBindError)):
+        return "stale"
+    if isinstance(exc, (HashEditAmbiguousError, HashEditConcurrencyError)):
+        return "conflict"
+    return None
+
+
+def _load_verify_descriptor(args: argparse.Namespace) -> Any:
+    input_path = getattr(args, "input_path", None)
+    edit_id = getattr(args, "edit_id", None)
+    if input_path:
+        desc = _load_descriptor(input_path)
+        if edit_id and edit_id != desc.edit_id and str(edit_id) != str(input_path):
+            raise HashEditCliUsageError(
+                "EDIT_ID does not match descriptor edit_id",
+                next_action="Pass a matching EDIT_ID or omit it when using --input",
+            )
+        return desc
+    if edit_id:
+        return _load_descriptor(edit_id)
+    raise HashEditCliUsageError(
+        "require --input PATH or EDIT_ID",
+        next_action="Pass --input PATH or EDIT_ID to a V1 descriptor JSON file",
+    )
+
+
 def _ids(args: argparse.Namespace) -> tuple[str | None, str | None]:
     return resolve_run_task_ids(
         run_id=getattr(args, "run_id", None),
@@ -263,18 +356,20 @@ def _ids(args: argparse.Namespace) -> tuple[str | None, str | None]:
 
 
 def cmd_edit(args: argparse.Namespace) -> int:
-    """Dispatch ``edit {plan,apply,comments,simplify}``."""
+    """Dispatch ``edit {plan,apply,verify,comments,simplify}``."""
 
     action = getattr(args, "edit_action", None)
     if action == "plan":
         return _cmd_plan(args)
     if action == "apply":
         return _cmd_apply(args)
+    if action == "verify":
+        return _cmd_verify(args)
     if action == "comments":
         return _cmd_comments(args)
     if action == "simplify":
         return _cmd_simplify(args)
-    print("usage: omg edit {plan,apply,comments,simplify}", file=sys.stderr)
+    print("usage: omg edit {plan,apply,verify,comments,simplify}", file=sys.stderr)
     return 2
 
 
@@ -326,6 +421,27 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         return _emit_failure(COMMAND_APPLY, exc, usage=True)
     except (HashEditError, EditHygieneError, WorkspacePathError) as exc:
         return _emit_failure(COMMAND_APPLY, exc)
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    desc = None
+    try:
+        desc = _load_verify_descriptor(args)
+        result = verify_hash_edit(_root(args), desc)
+        body = _verify_json(result)
+        emit_json(success(COMMAND_VERIFY, status="ok", result=body))
+        return 0
+    except HashEditCliUsageError as exc:
+        return _emit_failure(COMMAND_VERIFY, exc, usage=True)
+    except HashEditError as exc:
+        extra: dict[str, Any] = {}
+        status = _verify_status_for(exc)
+        if status:
+            extra["status"] = status
+        if desc is not None:
+            extra["path"] = desc.path
+            extra["edit_id"] = desc.edit_id
+        return _emit_failure(COMMAND_VERIFY, exc, extra=extra)
 
 
 def _read_input_text(input_path: str) -> str:
@@ -426,6 +542,15 @@ def _cmd_simplify(args: argparse.Namespace) -> int:
         if art:
             extra["artifact"] = art
         return _emit_failure(COMMAND_SIMPLIFY, exc, extra=extra)
+    except SimplifyRollback as exc:
+        extra = {
+            "failed": True,
+            "status": "dirty",
+            "dirty_paths": list(exc.dirty_paths),
+        }
+        if exc.artifact:
+            extra["artifact"] = exc.artifact
+        return _emit_failure(COMMAND_SIMPLIFY, exc, extra=extra)
     except (SimplifyError, EditHygieneError, HashEditError, WorkspacePathError) as exc:
         return _emit_failure(COMMAND_SIMPLIFY, exc)
 
@@ -444,7 +569,7 @@ def register_edit_parsers(
     p_edit = sub.add_parser(
         "edit",
         parents=[common],
-        help="hash-anchored edit plan/apply plus comment/simplifier hygiene (#76)",
+        help="hash-anchored edit plan/apply/verify plus comment/simplifier hygiene (#76)",
     )
     edit_sub = p_edit.add_subparsers(dest="edit_action")
 
@@ -476,6 +601,27 @@ def register_edit_parsers(
     )
     _add_identity_flags(p_apply)
     p_apply.set_defaults(func=cmd_edit, edit_action="apply")
+
+    p_verify = edit_sub.add_parser(
+        "verify",
+        parents=[common],
+        help="re-read and re-plan a hash-anchored edit (read-only; no file write)",
+    )
+    p_verify.add_argument(
+        "edit_id",
+        nargs="?",
+        default=None,
+        metavar="EDIT_ID",
+        help="descriptor edit_id, or a path to V1 descriptor JSON",
+    )
+    p_verify.add_argument(
+        "--input",
+        dest="input_path",
+        default=None,
+        metavar="PATH",
+        help="V1 hash-edit descriptor JSON",
+    )
+    p_verify.set_defaults(func=cmd_edit, edit_action="verify")
 
     p_comments = edit_sub.add_parser(
         "comments",
@@ -531,7 +677,9 @@ __all__ = [
     "COMMAND_COMMENTS",
     "COMMAND_PLAN",
     "COMMAND_SIMPLIFY",
+    "COMMAND_VERIFY",
     "PLAN_RESULT_KIND",
+    "VERIFY_RESULT_JSON_KEYS",
     "cmd_edit",
     "register_edit_parsers",
 ]

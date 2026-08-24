@@ -1,4 +1,4 @@
-"""Public hash-edit CLI (#76): omg edit plan|apply."""
+"""Public hash-edit CLI (#76): omg edit plan|apply|verify."""
 
 from __future__ import annotations
 
@@ -102,6 +102,9 @@ def test_parser_wires_edit_handlers() -> None:
     ns = parser.parse_args(["edit", "apply", "--input", "x.json"])
     assert ns.func is edit_cmds.cmd_edit
     assert ns.edit_action == "apply"
+    ns = parser.parse_args(["edit", "verify", "--input", "x.json"])
+    assert ns.func is edit_cmds.cmd_edit
+    assert ns.edit_action == "verify"
     ns = parser.parse_args(["edit", "comments", "--paths", "a.py"])
     assert ns.edit_action == "comments"
     ns = parser.parse_args(["edit", "simplify", "--paths", "a.py", "--enable"])
@@ -321,6 +324,11 @@ def test_cli_missing_input_emits_json_usage(
     code = (payload.get("error") or {}).get("code") or payload.get("error_code")
     assert code == "E_HASH_EDIT_USAGE"
     rc = main(["--json", "edit", "apply"])
+    assert rc == 2
+    payload = _out(capsys)
+    code = (payload.get("error") or {}).get("code") or payload.get("error_code")
+    assert code == "E_HASH_EDIT_USAGE"
+    rc = main(["--json", "edit", "verify"])
     assert rc == 2
     payload = _out(capsys)
     code = (payload.get("error") or {}).get("code") or payload.get("error_code")

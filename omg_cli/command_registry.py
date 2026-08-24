@@ -68,7 +68,7 @@ COMMAND_SPECS: Final[tuple[CommandSpec, ...]] = (
     ),
     CommandSpec(
         "edit",
-        "hash-anchored edit plan/apply/comments/simplify (#76; no verified stamp)",
+        "hash-anchored edit plan/apply/verify/comments/simplify (#76; no verified stamp)",
         "inspect",
     ),
     CommandSpec(
