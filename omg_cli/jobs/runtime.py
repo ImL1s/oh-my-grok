@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from omg_cli.jobs.models import (
     TERMINAL_STATES,
@@ -1079,57 +1079,90 @@ def wait_job(
         time.sleep(max(0.01, float(poll_s)))
 
 
+def identities_from_start_record(record: object | None) -> tuple[Any, ...]:
+    """Capture runner/provider identities from ``start_job`` before wait.
+
+    Post-wait ``job.json`` can be forged to drop PIDs. Callers must prove
+    these start-time identities are gone independently of the terminal stamp.
+    """
+    if record is None:
+        return ()
+    found: list[ProcessIdentity] = []
+    if isinstance(record, JobRecord):
+        runner = _runner_identity(record)
+        if runner is not None:
+            found.append(runner)
+        provider = _provider_identity(record)
+        if provider is not None:
+            found.append(provider)
+        return tuple(found)
+    runner = parse_process_identity(
+        pid=getattr(record, "pid", None),
+        pgid=getattr(record, "pgid", None) or getattr(record, "pid", None),
+        pid_starttime=getattr(record, "pid_starttime", None),
+    )
+    if runner is not None:
+        found.append(runner)
+    return tuple(found)
+
+
 def prove_job_processes_gone(
     project_root: Path,
     job_id: str,
     *,
     timeout_s: float = 2.0,
+    extra_identities: Sequence[Any] | None = None,
 ) -> None:
     """Raise ``E_JOB_CANCEL_UNPROVEN`` if runner/provider PIDs are still live.
 
     A terminal ``job.json`` stamp is not OS-level disappearance. ``wait_job``
     returns as soon as the persisted state is terminal; callers that then skip
-    cancel must still prove the captured identities are gone.
+    cancel must still prove the captured identities are gone. *extra_identities*
+    are start-time captures that survive a forged record that cleared PIDs.
     """
     job_id = safe_job_id(job_id)
+    found: dict[int, ProcessIdentity] = {}
+    for extra in extra_identities or ():
+        if isinstance(extra, ProcessIdentity):
+            found[extra.pid] = extra
+    record: JobRecord | None
     try:
         record = read_job_record(project_root, job_id)
     except JobStoreError as exc:
         if getattr(exc, "code", "") == "E_JOB_UNKNOWN":
-            raise JobStoreError(
-                f"job {job_id} record missing; cannot prove process exit",
-                code="E_JOB_CANCEL_UNPROVEN",
-            ) from exc
-        raise
-    captured_runner = _runner_identity(record)
-    if captured_runner is None:
-        captured_runner = _read_spawn_identity_recovery(project_root, job_id)
-    captured_provider = _provider_identity(record)
-    if captured_runner is None and captured_provider is None:
+            if not found:
+                raise JobStoreError(
+                    f"job {job_id} record missing; cannot prove process exit",
+                    code="E_JOB_CANCEL_UNPROVEN",
+                ) from exc
+            record = None
+        else:
+            raise
+    else:
+        captured_runner = _runner_identity(record)
+        if captured_runner is None:
+            captured_runner = _read_spawn_identity_recovery(project_root, job_id)
+        captured_provider = _provider_identity(record)
+        if captured_runner is not None:
+            found[captured_runner.pid] = captured_runner
+        if captured_provider is not None:
+            found[captured_provider.pid] = captured_provider
+    if not found:
         return
     deadline = time.monotonic() + max(0.0, float(timeout_s))
     while True:
-        runner_live = captured_runner is not None and _pid_alive(captured_runner.pid)
-        provider_live = (
-            captured_provider is not None and _pid_alive(captured_provider.pid)
-        )
-        if not runner_live and not provider_live:
-            if captured_runner is not None:
-                _reap_child(captured_runner.pid)
-            if captured_provider is not None:
-                _reap_child(captured_provider.pid)
+        live = [ident for ident in found.values() if _pid_alive(ident.pid)]
+        if not live:
+            for ident in found.values():
+                _reap_child(ident.pid)
             return
         if time.monotonic() >= deadline:
             break
         time.sleep(0.05)
-    still: list[str] = []
-    if captured_runner is not None and _pid_alive(captured_runner.pid):
-        still.append("runner")
-    if captured_provider is not None and _pid_alive(captured_provider.pid):
-        still.append("provider")
+    still = [ident.pid for ident in found.values() if _pid_alive(ident.pid)]
     if still:
         raise JobStoreError(
-            f"job {job_id} {','.join(still)} still live after terminal record",
+            f"job {job_id} pid(s) {still} still live after terminal record",
             code="E_JOB_CANCEL_UNPROVEN",
         )
 
@@ -3166,6 +3199,7 @@ __all__ = [
     "ensure_acp_session_for_team",
     "ensure_acp_session_sidecar",
     "gc_jobs",
+    "identities_from_start_record",
     "job_status",
     "launch_job_runner",
     "list_jobs",

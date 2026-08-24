@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -326,6 +327,48 @@ def test_cancel_idempotent(root: Path) -> None:
     b = cancel_job(root, started.record.job_id)
     assert a.state == JobState.SUCCEEDED
     assert b.state == JobState.SUCCEEDED
+
+
+def test_prove_job_processes_gone_uses_start_identity_when_record_clears_pids(
+    root: Path,
+) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.runtime import identities_from_start_record
+    from omg_cli.jobs.store import job_dir, write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-cafecafe",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=None,
+        pgid=None,
+        pid_starttime=None,
+        result="artifacts/result.md",
+    )
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    start_ns = SimpleNamespace(
+        pid=ident.pid, pgid=ident.pgid, pid_starttime=ident.pid_starttime
+    )
+    extras = identities_from_start_record(start_ns)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.1, extra_identities=extras
+            )
+        assert pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
 
 
 def test_prove_job_processes_gone_missing_record_is_unproven(root: Path) -> None:

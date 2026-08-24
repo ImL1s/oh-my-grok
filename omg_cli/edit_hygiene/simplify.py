@@ -49,6 +49,7 @@ from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.runtime import (
     cancel_job,
     collect_job,
+    identities_from_start_record,
     prove_job_processes_gone,
     start_job,
     wait_job,
@@ -620,22 +621,46 @@ def _workspace_content_fingerprint(
     return out
 
 
+def _reap_start_identities(identities: Sequence[Any]) -> None:
+    """Reap start-time PIDs that a forged terminal job.json no longer names."""
+    import signal
+
+    from omg_cli.jobs.ownership import kill_pgid, pid_alive, wait_until_gone
+
+    for ident in identities:
+        pid = getattr(ident, "pid", None)
+        pgid = getattr(ident, "pgid", None)
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not pid_alive(pid):
+            continue
+        if isinstance(pgid, int) and pgid > 1:
+            kill_pgid(pgid, signal.SIGTERM)
+        wait_until_gone(pid, timeout_s=1.0)
+        if pid_alive(pid) and isinstance(pgid, int) and pgid > 1:
+            kill_pgid(pgid, signal.SIGKILL)
+            wait_until_gone(pid, timeout_s=2.0)
+
+
 def _cancel_simplify_job(
     root: Path,
     job_id: str,
     *,
     assignment: dict[str, Any],
     reason: str,
+    start_identities: Sequence[Any] = (),
 ) -> None:
     """Cancel a live simplify job. Unproven cancel is fail-closed."""
     try:
         cancel_job(root, job_id, reason=reason)
     except Exception as exc:
+        _reap_start_identities(start_identities)
         raise SimplifyProviderError(
             f"grok simplify job {reason} and cancel failed: {exc}",
             assignment,
             job_id=job_id,
         ) from exc
+    _reap_start_identities(start_identities)
 
 
 _AUTHORITY_NEEDLES: Final[tuple[str, ...]] = (
@@ -806,6 +831,7 @@ def _propose_with_grok(
     job_succeeded = False
     cancelled = False
     wait_observed_terminal = False
+    start_identities: tuple[Any, ...] = ()
     try:
         try:
             started = start_job(
@@ -827,6 +853,7 @@ def _propose_with_grok(
                     "grok job start did not return a job_id",
                     assignment,
                 )
+            start_identities = identities_from_start_record(record)
             waited, timed_out = wait_job(
                 root,
                 job_id,
@@ -839,6 +866,7 @@ def _propose_with_grok(
                     job_id,
                     assignment=assignment,
                     reason="simplify-provider-timeout",
+                    start_identities=start_identities,
                 )
                 cancelled = True
                 raise SimplifyProviderError(
@@ -850,17 +878,22 @@ def _propose_with_grok(
             # stamp used to skip cancel and let a still-live grok mutate the
             # tree after the one-shot fingerprint.
             try:
-                prove_job_processes_gone(root, job_id)
+                prove_job_processes_gone(
+                    root, job_id, extra_identities=start_identities
+                )
             except JobStoreError as exc:
                 _cancel_simplify_job(
                     root,
                     job_id,
                     assignment=assignment,
                     reason="simplify-provider-terminal-live",
+                    start_identities=start_identities,
                 )
                 cancelled = True
                 try:
-                    prove_job_processes_gone(root, job_id)
+                    prove_job_processes_gone(
+                        root, job_id, extra_identities=start_identities
+                    )
                 except JobStoreError as prove_exc:
                     raise SimplifyProviderError(
                         f"grok simplify job terminal but process still live: {prove_exc}",
@@ -908,6 +941,7 @@ def _propose_with_grok(
                         job_id,
                         assignment=assignment,
                         reason=reason,
+                        start_identities=start_identities,
                     )
                     cancelled = True
                 except SimplifyProviderError as cancel_exc:
@@ -946,6 +980,7 @@ def _propose_with_grok(
                     job_id,
                     assignment=assignment,
                     reason="simplify-provider-abort",
+                    start_identities=start_identities,
                 )
                 cancelled = True
             except SimplifyProviderError as cancel_exc:
