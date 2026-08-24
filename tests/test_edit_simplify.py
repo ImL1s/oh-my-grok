@@ -761,3 +761,42 @@ def test_simplify_provider_empty_descriptors_are_no_changes(
     assert payload["descriptor_count"] == 0
     assert "apply-edits" not in str(payload.get("next_action") or "")
     assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
+def test_simplify_provider_detects_symlink_state_mutation(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+    link = project / ".omg" / "state" / "sneaky-link"
+
+    def _wait_and_link(project_root: Path, job_id: str, **kwargs: object):
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to("/tmp")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_link  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current

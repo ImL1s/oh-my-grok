@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
@@ -566,6 +567,20 @@ def _workspace_content_fingerprint(
             child = f"{rel_dir}/{name}" if rel_dir else name
             if name == ".git" or _skip_fingerprint_rel(child, extra):
                 continue
+            child_path = Path(dirpath) / name
+            try:
+                child_info = child_path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(child_info.st_mode):
+                try:
+                    target = os.readlink(child_path)
+                except OSError:
+                    target = ""
+                out[child] = "lnk:" + hashlib.sha256(
+                    str(target).encode("utf-8", "replace")
+                ).hexdigest()
+                continue
             keep.append(name)
         dirnames[:] = keep
         for name in filenames:
@@ -573,7 +588,24 @@ def _workspace_content_fingerprint(
             if _skip_fingerprint_rel(rel, extra):
                 continue
             path = Path(dirpath) / name
-            if path.is_symlink() or not path.is_file():
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                try:
+                    target = os.readlink(path)
+                except OSError:
+                    target = ""
+                out[rel] = "lnk:" + hashlib.sha256(
+                    str(target).encode("utf-8", "replace")
+                ).hexdigest()
+                continue
+            if stat.S_ISFIFO(info.st_mode) or stat.S_ISSOCK(info.st_mode):
+                out[rel] = f"mode:{info.st_mode}"
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                out[rel] = f"mode:{info.st_mode}"
                 continue
             digest = _file_sha256(path)
             if digest is None:
