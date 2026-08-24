@@ -6,7 +6,10 @@ Commands: ``omg edit {plan,apply,verify,comments,simplify}``.
 :func:`omg_cli.hash_edit.apply_hash_edit` (re-read, re-plan, atomic same-dir
 replace) after Team / read-only gates. ``verify`` re-reads and re-plans
 without writing. ``comments`` is report-only unless ``--fix``. ``simplify``
-is disabled unless ``--enable`` or project config; the CLI never calls an LLM.
+is disabled unless ``--enable`` or project config. Default simplify is
+assignment-only (no LLM). Optional ``--provider grok`` records the same
+assignment then starts a Jobs grok proposal; it never applies and never
+sets ``verified``.
 
 None of these commands write ``passes`` / ``verified``. This does not claim
 ``omo.edit.hash_anchored`` host parity.
@@ -41,6 +44,7 @@ from omg_cli.edit_hygiene.comments import (
 )
 from omg_cli.edit_hygiene.simplify import (
     SimplifyError,
+    SimplifyProviderError,
     SimplifyRollback,
     run_simplify,
 )
@@ -156,6 +160,11 @@ def _error_for(exc: BaseException) -> tuple[str, str]:
         return (
             "E_SIMPLIFY_ASSIGNMENT",
             "spawn omg-code-simplifier read-write then omg-code-reviewer read-only",
+        )
+    if isinstance(exc, SimplifyProviderError):
+        return (
+            "E_SIMPLIFY_PROVIDER",
+            "Check grok on PATH, the Jobs result, and descriptor JSON; assignment is recorded",
         )
     if isinstance(exc, SimplifyRollback):
         return (
@@ -533,6 +542,7 @@ def _cmd_simplify(args: argparse.Namespace) -> int:
             config_path=Path(args.config_path) if getattr(args, "config_path", None) else None,
             run_id=run_id,
             task_id=task_id,
+            provider=getattr(args, "simplify_provider", None),
         )
         emit_json(success(COMMAND_SIMPLIFY, **payload))
         return 0
@@ -541,6 +551,16 @@ def _cmd_simplify(args: argparse.Namespace) -> int:
         art = exc.assignment.get("artifact")
         if art:
             extra["artifact"] = art
+        return _emit_failure(COMMAND_SIMPLIFY, exc, extra=extra)
+    except SimplifyProviderError as exc:
+        extra: dict[str, Any] = {"provider": "grok"}
+        if exc.assignment:
+            extra["assignment"] = exc.assignment
+            art = exc.assignment.get("artifact")
+            if art:
+                extra["artifact"] = art
+        if exc.job_id:
+            extra["job_id"] = exc.job_id
         return _emit_failure(COMMAND_SIMPLIFY, exc, extra=extra)
     except SimplifyRollback as exc:
         extra = {
@@ -648,13 +668,20 @@ def register_edit_parsers(
     p_simplify = edit_sub.add_parser(
         "simplify",
         parents=[common],
-        help="bounded simplifier assignment (disabled unless --enable/config)",
+        help="bounded simplifier assignment; optional grok proposal (never applies)",
     )
     p_simplify.add_argument("--paths", nargs="+", default=None, metavar="PATH")
     p_simplify.add_argument(
         "--enable",
         action="store_true",
         help="enable this invocation even if .omg/simplify.json is disabled",
+    )
+    p_simplify.add_argument(
+        "--provider",
+        dest="simplify_provider",
+        default=None,
+        choices=("grok",),
+        help="optional Jobs grok provider: proposal-only hash-edit descriptors (never applies)",
     )
     p_simplify.add_argument(
         "--apply-edits",

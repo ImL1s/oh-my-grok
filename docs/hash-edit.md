@@ -24,7 +24,7 @@ Refs #76. This slice does not close the issue: there is still no
 | `omg edit verify EDIT_ID\|--input <descriptor.json>` | Re-read + re-plan; report ok/stale/conflict; no file write |
 | `verify_hash_edit` | Same `O_NOFOLLOW` confinement as apply; never writes `verified` |
 | `omg edit comments --input PATH\|--git-diff\|--paths` | Language-aware AI-slop / comment report (optional conservative `--fix`) |
-| `omg edit simplify --paths …` | Bounded simplifier assignment; no LLM in the CLI |
+| `omg edit simplify --paths …` | Bounded simplifier assignment; optional `--provider grok` Jobs proposal (never applies) |
 
 `kind` is `omg.hash_edit.v1`. `schema_version` is the integer `1` (not `true`).
 
@@ -171,11 +171,19 @@ files, max bytes. Generated / vendor / lock / minified paths are skipped.
 A once-per-stage marker is written to `.omg/state/simplify-guard.json`
 (not `verified`).
 
-The CLI does **not** call an LLM and does not invent edits. With no
-`--apply-edits` descriptors it records an assignment artifact for
-`omg-code-simplifier` (`read-write`) and returns blocked with
+Default (no `--provider`) does **not** call an LLM and does not invent
+edits. With no `--apply-edits` descriptors it records an assignment
+artifact for `omg-code-simplifier` (`read-write`) and returns blocked with
 `next_action` to spawn that role then `omg-code-reviewer` (`read-only`).
-The simplifier cannot approve itself.
+Optional `--provider grok` records the same assignment/guard, then starts
+a Jobs grok job (`prompt_text`, bounded timeout) that must emit hash-edit
+descriptor JSON. The CLI writes
+`.omg/artifacts/` `omg.edit.simplify.proposal.v1` (job_id, provider=grok,
+descriptors) and returns `ok:true` `verified:false` `status=proposed`.
+It does **not** apply, does **not** write `passes`/`verified`, and still
+requires independent review before `--apply-edits`. Grok missing, job
+failure, or non-descriptor output is `E_SIMPLIFY_PROVIDER` (assignment
+still recorded). The simplifier cannot approve itself.
 
 `--apply-edits` applies descriptors in order. If a later descriptor fails,
 prior successful applies **in that invocation** are rolled back to the

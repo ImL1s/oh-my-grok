@@ -26,6 +26,7 @@ from omg_cli.edit_hygiene.comments import (
 from omg_cli.edit_hygiene.simplify import (
     SimplifyBlocked,
     SimplifyError,
+    SimplifyProviderError,
     SimplifyRollback,
     run_simplify,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "ReadOnlyEditError",
     "SimplifyBlocked",
     "SimplifyError",
+    "SimplifyProviderError",
     "SimplifyRollback",
     "apply_comment_fixes",
     "assert_mutative_edit_allowed",
