@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
-from omg_cli.jobs.models import JobState
+from omg_cli.jobs.models import JobRecord, JobState
+from omg_cli.jobs.store import write_job_record
 from omg_cli.main import build_parser, main
 
 JOB_ID = "20260824T000000Z-abcd1234"
@@ -80,6 +81,17 @@ class _FakeGrokJob:
         art = Path(project_root) / ".omg" / "jobs" / self.job_id / "artifacts"
         art.mkdir(parents=True, exist_ok=True)
         (art / "result.md").write_text(self.output, encoding="utf-8")
+        write_job_record(
+            project_root,
+            JobRecord(
+                job_id=self.job_id,
+                created_at="2026-08-24T00:00:00Z",
+                provider="grok",
+                role="omg-code-simplifier",
+                state=JobState.FAILED if self.fail else JobState.SUCCEEDED,
+                result="artifacts/result.md",
+            ),
+        )
         return SimpleNamespace(record=SimpleNamespace(job_id=self.job_id), launched=True)
 
     def wait(self, project_root: Path, job_id: str, **kwargs: object) -> tuple[SimpleNamespace, bool]:

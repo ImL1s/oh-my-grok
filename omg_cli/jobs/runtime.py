@@ -1096,7 +1096,10 @@ def prove_job_processes_gone(
         record = read_job_record(project_root, job_id)
     except JobStoreError as exc:
         if getattr(exc, "code", "") == "E_JOB_UNKNOWN":
-            return
+            raise JobStoreError(
+                f"job {job_id} record missing; cannot prove process exit",
+                code="E_JOB_CANCEL_UNPROVEN",
+            ) from exc
         raise
     captured_runner = _runner_identity(record)
     if captured_runner is None:

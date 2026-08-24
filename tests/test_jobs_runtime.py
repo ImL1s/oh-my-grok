@@ -328,6 +328,11 @@ def test_cancel_idempotent(root: Path) -> None:
     assert b.state == JobState.SUCCEEDED
 
 
+def test_prove_job_processes_gone_missing_record_is_unproven(root: Path) -> None:
+    with pytest.raises(JobStoreError, match="cannot prove process exit"):
+        prove_job_processes_gone(root, "20260824T000000Z-aaaaaaaa")
+
+
 def test_cancel_reaps_live_pid_on_forged_succeeded_stamp(root: Path) -> None:
     import os
     import subprocess

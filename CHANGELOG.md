@@ -45,9 +45,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   stamp to skip `cancel_job`, so a still-live grok (forged SUCCEEDED)
   could mutate the tree after the one-shot fingerprint. The proposal
   path now calls `prove_job_processes_gone` and, if identities are live,
-  cancels then fails closed. `cancel_job` no longer no-ops on
-  SUCCEEDED/FAILED/LOST while captured runner/provider PIDs are alive.
-  Refs #76 (does not close).
+  cancels then fails closed. A missing `job.json` is unproven, not
+  disappearance. `cancel_job` no longer no-ops on SUCCEEDED/FAILED/LOST
+  while captured runner/provider PIDs are alive. Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait
