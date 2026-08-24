@@ -298,6 +298,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#73 tools sidecar leftovers:** `StdioLspTransport` answers server
+  `workspace/configuration` requests with empty settings (not dropped by
+  id mismatch) so hover/definition can complete. `omg tools doctor` emits
+  `failure("tools.doctor", …)` with exit 1 when inner `ok` is false (outer
+  envelope matches inner; never `verified`/`observed`/`healthy` as live AG
+  evidence). `didOpen` stamps `truncated: true` and refuses document
+  semantic ops (`E_LSP_TRUNCATED`) instead of analyzing a prefix.
+  Refs #73 (does not close).
 - **Team stop after headless grok exit:** `team stop` no longer treats a
   rebound tmux pane PID (shell after the receipted grok process exited) as
   either a signal target *or* a reason to skip `kill-session`. If the

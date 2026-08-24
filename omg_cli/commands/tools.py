@@ -103,9 +103,21 @@ def cmd_tools(args: argparse.Namespace) -> int:
             payload = doctor_payload(
                 root=root, strict=bool(getattr(args, "strict", False))
             )
+            payload["verified"] = False
+            payload["observed"] = False
+            payload["healthy"] = False
+            if not payload.get("ok"):
+                errors = payload.get("errors")
+                if isinstance(errors, list) and errors:
+                    message = "; ".join(str(item) for item in errors)
+                else:
+                    message = "tools sidecar doctor checks failed"
+                raise ToolsError(
+                    "E_TOOLS_DOCTOR",
+                    message,
+                    details=payload,
+                )
             emit_json(success("tools.doctor", result=payload))
-            if getattr(args, "strict", False) and not payload.get("ok"):
-                return 1
             return 0
         if action == "serve":
             if not getattr(args, "stdio", False):
