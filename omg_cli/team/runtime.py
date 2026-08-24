@@ -988,6 +988,8 @@ def _promote_interactive_input_ready(
                     locked["generation"] = gen
             if not evidence_matches_locked_row(locked, ev):
                 continue
+            if "generation" not in raw and "generation" in locked:
+                raw["generation"] = locked["generation"]
             stamp_io_capability(
                 raw,
                 interactive_pane_io_ready(
