@@ -6989,9 +6989,6 @@ def _relaunch_dead_incomplete_workers_locked(
         launch_nonce = str(authority["launch_nonce"])
         for rec in to_relaunch:
             tid = str(rec["task_id"])
-            from omg_cli.team.interactive import clear_tui_ready_sidecar
-
-            clear_tui_ready_sidecar(rec.get("tui_ready_path"))
             plan = plan_by_id[tid]
             relaunch_nonce = str(plan["relaunch_nonce"])
             start_command = _relaunch_bootstrap_command(
@@ -7012,6 +7009,11 @@ def _relaunch_dead_incomplete_workers_locked(
                 start_command=start_command,
             )
             if adopted is None:
+                from omg_cli.team.interactive import clear_tui_ready_sidecar
+
+                # Only when we will spawn a new wrapper. Adopting an
+                # already-running relaunch pane must keep its sidecar.
+                clear_tui_ready_sidecar(rec.get("tui_ready_path"))
                 old_pane = rec.get("pane_id")
                 if isinstance(old_pane, str) and old_pane:
                     absent, absent_err = _pane_proven_absent(old_pane)
