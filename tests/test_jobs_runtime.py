@@ -2899,6 +2899,8 @@ def test_fake_job_terminal_emits_wrapper_event(root: Path) -> None:
     assert terminals
     row = terminals[-1]
     assert row["source"] == WRAPPER_SOURCE
+    assert row["event_type"] == "turn_completed"
+    assert row["payload"]["canonical_event"] == "job.terminal"
     assert row["payload"]["to"] == "succeeded"
     assert row["payload"]["job_id"] == rec.job_id
     assert row["payload"]["timeout_kind"] == "post_hoc"
@@ -2945,6 +2947,11 @@ def test_cli_fake_job_terminal_journals_wrapper_event(
     path = source_journal_path(root, WRAPPER_SOURCE)
     rows = read_runtime_events(path)
     assert any(row["payload"].get("canonical_event") == "job.terminal" for row in rows)
+    assert all(
+        row["event_type"] == "turn_completed"
+        for row in rows
+        if row["payload"].get("canonical_event") == "job.terminal"
+    )
     assert all(row["source"] == WRAPPER_SOURCE for row in rows)
     assert all(row["payload"].get("verified") is False for row in rows)
     text = path.read_text(encoding="utf-8")

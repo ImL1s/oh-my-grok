@@ -197,7 +197,8 @@ BUS_EVENT_TYPES: dict[str, str] = {
     "stop.request": "turn_started",
     "workflow.transition": "turn_completed",
     "artifact.created": "turn_completed",
-    "job.terminal": "agent_closed",
+    # Job reached a terminal status; the launching Grok session stays active.
+    "job.terminal": "turn_completed",
     "team.member.transition": "turn_completed",
 }
 

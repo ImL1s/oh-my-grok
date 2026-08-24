@@ -39,6 +39,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Default/`auto` stay headless. No `LIVE_TEAM_INTERACTIVE_TTY_OK`
   claim from fixtures. Refs #147 (does not close).
 
+### Fixed
+- **#72 job.terminal does not close the launching session:**
+  `BUS_EVENT_TYPES["job.terminal"]` maps to lifecycle `turn_completed`
+  (session state `active`) instead of `agent_closed`. Wrapper journal
+  kind stays `job.terminal`. `session.end` / `subagent.stop` still map
+  to `agent_closed`. Refs #72 (does not close).
+
 ### Added
 - **#75 PNG pixel overlay evidence:** `omg visual overlay --reference a.png
   --candidate b.png --json` decodes PNG with stdlib (`struct`/`zlib`; no
