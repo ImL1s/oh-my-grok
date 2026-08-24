@@ -1994,13 +1994,14 @@ def resume_for_identity(
         if relaunched_ids:
             from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
 
+            # Generation bump invalidates every sibling's prior evidence.
             interactive_ids = [
                 str(task.get("task_id") or "").strip()
                 for task in (meta_for_claims.get("tasks") or [])
                 if isinstance(task, Mapping)
-                and str(task.get("task_id") or "").strip() in set(relaunched_ids)
                 and str(task.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY
             ]
+            interactive_ids = [tid for tid in interactive_ids if tid]
             if interactive_ids:
                 apply_interactive_worker_readiness(
                     root_path,
