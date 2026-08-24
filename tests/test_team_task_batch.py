@@ -181,7 +181,7 @@ def test_catalog_v1_v2_v3_v4_byte_frozen_and_v5_default() -> None:
         catalog_document_json(operations=TEAM_OPERATION_CATALOG_V4, schema_version=4)
         == GOLDEN_V4.read_text(encoding="utf-8")
     )
-    assert CATALOG_SCHEMA_VERSION == 5
+    assert CATALOG_SCHEMA_VERSION == 6
     assert any(
         op["name"] == "bulk-create-tasks"
         for op in serialize_operation_catalog()["operations"]

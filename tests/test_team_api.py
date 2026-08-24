@@ -109,18 +109,20 @@ def test_team_api_unknown_op_fails_closed(
 def test_team_api_non_p0_op_unimplemented(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """v6 implements every named catalog op; unknown names stay fail-closed."""
     run_id = _seed_control_plane(tmp_path, monkeypatch)
-    non_p0 = sorted(set(TEAM_API_OPERATIONS) - set(P0_OPERATIONS))[0]
+    leftover = set(TEAM_API_OPERATIONS) - set(P0_OPERATIONS)
+    assert leftover == set()
     code, envelope = _exec(
         tmp_path,
-        non_p0,
+        "not-in-catalog",
         {"team_name": TEAM},
         run_id=run_id,
         monkeypatch=monkeypatch,
     )
     assert code == 2
     assert envelope["ok"] is False
-    assert envelope["error"]["code"] == "E_TEAM_API_UNIMPLEMENTED"
+    assert envelope["error"]["code"] == "E_TEAM_API_UNKNOWN"
 
 
 def test_team_api_requires_experimental_gate(
@@ -1940,6 +1942,7 @@ def test_path_traversal_team_id_rejected(
 
 def test_p0_operations_subset_of_omx_names() -> None:
     assert set(P0_OPERATIONS) <= set(TEAM_API_OPERATIONS)
+    assert set(P0_OPERATIONS) == set(TEAM_API_OPERATIONS)
     for name in (
         "send-message",
         "mailbox-list",
@@ -1953,5 +1956,543 @@ def test_p0_operations_subset_of_omx_names() -> None:
         "get-summary",
         "read-config",
         "write-worker-inbox",
+        "mailbox-mark-notified",
+        "await-event",
+        "cleanup",
     ):
         assert name in P0_OPERATIONS
+
+
+def _register_worker(tmp_path: Path, run_id: str, worker: str = "worker-1") -> None:
+    code, created = execute_team_api(
+        "create-task",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "subject": f"seed-{worker}",
+            "description": f"seed-{worker}",
+            "workers": [worker],
+        },
+        root=tmp_path,
+    )
+    assert code == 0, created
+
+
+def test_mailbox_mark_notified_happy_and_worker_self_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _register_worker(tmp_path, run_id)
+    code, sent = _exec(
+        tmp_path,
+        "send-message",
+        {
+            "from_worker": "leader",
+            "to_worker": "worker-1",
+            "body": "hello-notify",
+            "dedupe_key": "n1",
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    message_id = sent["data"]["message"]["message_id"]
+    mailbox_path = None
+    mailbox_keys = None
+    for path in tmp_path.rglob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("store_kind") == "team_mailbox":
+            mailbox_path = path
+            mailbox_keys = set(data)
+            break
+    assert mailbox_path is not None
+    code, marked = _exec(
+        tmp_path,
+        "mailbox-mark-notified",
+        {"worker": "worker-1", "message_id": message_id},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, marked
+    assert marked["data"]["updated"] is True
+    after = json.loads(mailbox_path.read_text(encoding="utf-8"))
+    assert set(after) == mailbox_keys
+    assert "notify_cursor" not in after
+    code, missing = _exec(
+        tmp_path,
+        "mailbox-mark-notified",
+        {"worker": "worker-1", "message_id": "msg-does-not-exist"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert missing["ok"] is False
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, denied = execute_team_api(
+        "mailbox-mark-notified",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "worker": "other-worker",
+            "message_id": message_id,
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert denied["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_write_worker_identity_leader_only_and_redacts_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _register_worker(tmp_path, run_id)
+    code, env = _exec(
+        tmp_path,
+        "write-worker-identity",
+        {
+            "worker": "worker-1",
+            "role": "executor",
+            "generation": 1,
+            "attributes": {"token": "super-secret", "pane": "p1"},
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, env
+    identity = env["data"]["identity"]
+    assert identity["worker_id"] == "worker-1"
+    assert identity["attributes"]["token"] == "[REDACTED]"
+    assert identity["attributes"]["pane"] == "p1"
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, denied = execute_team_api(
+        "write-worker-identity",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "worker": "worker-1",
+            "role": "executor",
+        },
+        root=tmp_path,
+    )
+    assert code == 2
+    assert denied["error"]["code"] == "E_TEAM_API_GATE"
+    code, other = execute_team_api(
+        "write-worker-identity",
+        {
+            "run_id": run_id,
+            "team_id": TEAM,
+            "worker": "other-worker",
+            "role": "executor",
+        },
+        root=tmp_path,
+    )
+    assert other["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_await_event_snapshot_kind_filter_and_unknown_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.api import AWAIT_EVENT_TIMEOUT_CAP_MS, _bounded_timeout_ms
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    code, appended = _exec(
+        tmp_path,
+        "append-event",
+        {"kind": "tick", "body": {"n": 1}, "worker": "leader"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, appended
+    event_id = appended["data"]["event"]["event_id"]
+    code, awaited = _exec(
+        tmp_path,
+        "await-event",
+        {"timeout_ms": 0, "kind": "tick"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert awaited["data"]["matched"] is True
+    assert awaited["data"]["count"] == 1
+    code, missed = _exec(
+        tmp_path,
+        "await-event",
+        {"timeout_ms": 0, "kind": "other"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert missed["data"]["matched"] is False
+    code, after = _exec(
+        tmp_path,
+        "await-event",
+        {"timeout_ms": 0, "after": event_id},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert after["data"]["count"] == 0
+    code, bad = _exec(
+        tmp_path,
+        "await-event",
+        {"timeout_ms": -1},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 2
+    assert bad["error"]["code"] == "E_TEAM_API_INVALID_INPUT"
+    assert _bounded_timeout_ms({"timeout_ms": 5000}) == AWAIT_EVENT_TIMEOUT_CAP_MS
+    assert AWAIT_EVENT_TIMEOUT_CAP_MS == 1000
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, worker_ok = execute_team_api(
+        "await-event",
+        {"run_id": run_id, "team_id": TEAM, "timeout_ms": 0, "kind": "tick"},
+        root=tmp_path,
+    )
+    assert code == 0
+    assert worker_ok["data"]["matched"] is True
+
+
+def test_idle_and_stall_from_heartbeat_and_task_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from omg_cli.team import api as team_api_mod
+    from omg_cli.team.liveness import initialize_liveness, record_heartbeat
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _register_worker(tmp_path, run_id)
+    code, idle = _exec(
+        tmp_path, "read-idle-state", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0, idle
+    assert idle["data"]["tmux_probed"] is False
+    assert idle["data"]["idle"] is True
+    assert "worker-1" in idle["data"]["idle_workers"]
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, claimed
+    code, busy = _exec(
+        tmp_path, "read-idle-state", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0
+    assert busy["data"]["idle"] is False
+    assert "worker-1" in busy["data"]["busy_workers"]
+    future = datetime.now(timezone.utc) + timedelta(minutes=16)
+    monkeypatch.setattr(team_api_mod, "_now_utc", lambda: future)
+    code, stalled = _exec(
+        tmp_path, "read-stall-state", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0, stalled
+    assert stalled["data"]["stalled"] is True
+    assert stalled["data"]["tmux_probed"] is False
+    assert "worker-1" in stalled["data"]["stalled_workers"]
+    past = datetime.now(timezone.utc) - timedelta(minutes=10)
+    initialize_liveness(
+        tmp_path,
+        run_id=run_id,
+        team_id=TEAM,
+        task_id="worker-1",
+        worker_id="worker-1",
+        generation=0,
+        now=past,
+        claim_lease_seconds=1,
+    )
+    record_heartbeat(
+        tmp_path,
+        run_id=run_id,
+        team_id=TEAM,
+        task_id="worker-1",
+        worker_id="worker-1",
+        generation=0,
+        expected_sequence=0,
+        now=datetime.now(timezone.utc),
+    )
+    code, live_stall = _exec(
+        tmp_path, "read-stall-state", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0
+    assert live_stall["data"]["stalled"] is True
+
+
+def test_cleanup_requires_shutdown_ack_and_refuses_running_or_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    code, too_soon = _exec(
+        tmp_path, "cleanup", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 1
+    assert too_soon["error"]["details"]["error"] == "E_TEAM_CLEANUP_NO_SHUTDOWN"
+    code, req = _exec(
+        tmp_path,
+        "write-shutdown-request",
+        {"force": True},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, req
+    code, missing_ack = _exec(
+        tmp_path, "cleanup", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 1
+    assert missing_ack["error"]["details"]["error"] == "E_TEAM_CLEANUP_ACK_MISSING"
+    code, ack = _exec(
+        tmp_path,
+        "write-shutdown-ack",
+        {"worker": "t-a"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, ack
+    meta_path = tmp_path / ".omg" / "state" / "runs" / run_id / "team" / "team.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["tasks"][0]["pid"] = os.getpid()
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    meta_path.chmod(0o600)
+    code, running = _exec(
+        tmp_path, "cleanup", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 1
+    assert running["error"]["details"]["error"] == "E_TEAM_CLEANUP_RUNNING"
+    meta["tasks"][0]["pid"] = None
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    meta_path.chmod(0o600)
+    _register_worker(tmp_path, run_id)
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, claimed
+    code, ack_w = _exec(
+        tmp_path,
+        "write-shutdown-ack",
+        {"worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, ack_w
+    code, claims = _exec(
+        tmp_path, "cleanup", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 1
+    assert claims["error"]["details"]["error"] == "E_TEAM_CLEANUP_CLAIMS"
+    code, released = _exec(
+        tmp_path,
+        "release-task-claim",
+        {
+            "task_id": "1",
+            "worker": "worker-1",
+            "claim_token": claimed["data"]["claimToken"],
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, released
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, denied = execute_team_api(
+        "cleanup",
+        {"run_id": run_id, "team_id": TEAM},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert denied["error"]["code"] == "E_TEAM_API_GATE"
+    for key in (
+        "OMG_TEAM_WORKER",
+        "OMG_TEAM_WORKER_ID",
+        "OMG_TEAM_RUN_ID",
+        "OMG_TEAM_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OMG_EXPERIMENTAL_TMUX_TEAM", "1")
+    code, cleaned = _exec(
+        tmp_path, "cleanup", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0, cleaned
+    assert cleaned["data"]["never_sets_verified"] is True
+    assert cleaned["data"]["distinct_from"] == "orphan-cleanup"
+    code, listed = _exec(
+        tmp_path, "list-tasks", {}, run_id=run_id, monkeypatch=monkeypatch
+    )
+    assert code == 0
+    assert listed["data"]["count"] == 0
+    assert meta_path.is_file()
+    assert not list(tmp_path.rglob("verified.json"))
+
+
+def test_monitor_snapshot_redacted_and_acl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _register_worker(tmp_path, run_id)
+    code, missing = _exec(
+        tmp_path,
+        "read-monitor-snapshot",
+        {},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert missing["data"]["present"] is False
+    code, written = _exec(
+        tmp_path,
+        "write-monitor-snapshot",
+        {"snapshot": {"token": "hidden", "ok": True}},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, written
+    snap = written["data"]["snapshot"]
+    assert snap["redacted"] is True
+    assert snap["tmux_probed"] is False
+    assert snap["snapshot"]["token"] == "[REDACTED]"
+    assert snap["snapshot"]["ok"] is True
+    code, derived = _exec(
+        tmp_path,
+        "write-monitor-snapshot",
+        {},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, derived
+    body = derived["data"]["snapshot"]["snapshot"]
+    assert "token" not in json.dumps(body)
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, worker_read = execute_team_api(
+        "read-monitor-snapshot",
+        {"run_id": run_id, "team_id": TEAM},
+        root=tmp_path,
+    )
+    assert code == 0
+    assert worker_read["data"]["present"] is True
+    code, worker_write = execute_team_api(
+        "write-monitor-snapshot",
+        {"run_id": run_id, "team_id": TEAM},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert worker_write["error"]["code"] == "E_TEAM_API_GATE"
+
+
+def test_task_approval_terminal_override_and_never_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    _register_worker(tmp_path, run_id)
+    code, missing = _exec(
+        tmp_path,
+        "read-task-approval",
+        {"task_id": "1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    assert missing["data"]["present"] is False
+    code, written = _exec(
+        tmp_path,
+        "write-task-approval",
+        {
+            "task_id": "1",
+            "decision": "approved",
+            "note": "ok token=secret",
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, written
+    assert written["data"]["never_sets_verified"] is True
+    assert written["data"]["approval"]["never_sets_verified"] is True
+    code, claimed = _exec(
+        tmp_path,
+        "claim-task",
+        {"task_id": "1", "worker": "worker-1"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, claimed
+    code, done = _exec(
+        tmp_path,
+        "transition-task-status",
+        {
+            "task_id": "1",
+            "worker": "worker-1",
+            "claim_token": claimed["data"]["claimToken"],
+            "from": "in_progress",
+            "to": "completed",
+            "result": "done",
+        },
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, done
+    code, refused = _exec(
+        tmp_path,
+        "write-task-approval",
+        {"task_id": "1", "decision": "approved"},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1
+    assert refused["error"]["details"]["error"] == "approval_error"
+    code, forced = _exec(
+        tmp_path,
+        "write-task-approval",
+        {"task_id": "1", "decision": "approved", "allow_terminal": True},
+        run_id=run_id,
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0, forced
+    monkeypatch.setenv("OMG_TEAM_WORKER", "1")
+    monkeypatch.setenv("OMG_TEAM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("OMG_TEAM_RUN_ID", run_id)
+    monkeypatch.setenv("OMG_TEAM_ID", TEAM)
+    code, worker_read = execute_team_api(
+        "read-task-approval",
+        {"run_id": run_id, "team_id": TEAM, "task_id": "1"},
+        root=tmp_path,
+    )
+    assert code == 0
+    assert worker_read["data"]["present"] is True
+    code, worker_write = execute_team_api(
+        "write-task-approval",
+        {"run_id": run_id, "team_id": TEAM, "task_id": "1", "decision": "rejected"},
+        root=tmp_path,
+    )
+    assert code == 2
+    assert worker_write["error"]["code"] == "E_TEAM_API_GATE"
+    assert not list(tmp_path.rglob("verified.json"))
+    status_path = tmp_path / ".omg" / "state" / "runs" / run_id / "status.json"
+    if status_path.is_file():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        assert status.get("verified") is not True
+        assert not status.get("passes")

@@ -5,7 +5,7 @@ Machine-readable contract for `omg team api` operation names and metadata.
 Authoritative implementation: `omg_cli/team/operation_catalog.py`.
 Introspection CLI: `omg team api catalog` (no `--input`, no team state, no
 tmux, no `.omg`, no subprocess) — historically emitted **schema v3**; the
-**default catalog is now v5** (see `docs/team-operation-catalog-v5.md`).
+**default catalog is now v6** (see `docs/team-operation-catalog-v6.md`).
 v3 remains frozen as a golden / documentation snapshot.
 
 Golden freeze: `tests/golden/team_operation_catalog_v3.json`.

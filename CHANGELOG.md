@@ -10,6 +10,20 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#69 catalog v6 remaining OMX-named file-store ops:** default Team catalog
+  is schema v6 (42 named / 42 dispatched). The leftover reserved names
+  (`mailbox-mark-notified`, `write-worker-identity`, `await-event`,
+  `read-idle-state`, `read-stall-state`, `cleanup`, `read-monitor-snapshot`,
+  `write-monitor-snapshot`, `read-task-approval`, `write-task-approval`) are
+  implemented on confined hermetic stores. Mailbox v1 keys stay exact
+  (`notify_cursor.json` is a separate per-recipient file). `await-event` is a
+  bounded `events.jsonl` snapshot (`timeout_ms=0`; cap 1000ms). Idle/stall
+  derive from heartbeat + task timestamps (no live tmux). `cleanup` is
+  distinct from `orphan-cleanup` and fail-closes while running or claims
+  unexpired. Task approval never writes OMG `verified`. Monitor snapshots are
+  schema-versioned and redacted. Worker ACL stays fail-closed. v1–v5 goldens
+  unchanged. Does **not** claim live AG, live grok job smoke, host-TUI
+  prompt-queue, composition live executors, or Team v3 complete. Refs #69.
 - **#72 CLI wrapper events:** `omg_cli.hooks_registry.emit_wrapper_event`
   journals `artifact.created` (classified CLI artifact writes),
   `job.terminal` (jobs runtime terminal status), and

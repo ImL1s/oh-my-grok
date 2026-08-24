@@ -12,6 +12,7 @@ from omg_cli.team.mailbox import (
     read_message,
     send_message,
 )
+from omg_cli.team.notify import NotifyError, mark_notified, notify_cursor_path
 
 
 RUN = "run-mailbox"
@@ -243,3 +244,80 @@ def test_mailbox_rollover_never_skips_same_generation_message(tmp_path: Path) ->
             generation=1,
         )
     assert first["sequence"] == 0
+
+
+_MAILBOX_V1_KEYS = {
+    "store_kind",
+    "schema_version",
+    "writer",
+    "run_id",
+    "team_id",
+    "recipient_id",
+    "next_sequence",
+    "ack_cursor",
+    "messages",
+    "dedupe",
+}
+
+
+def _mailbox_doc(root: Path) -> tuple[Path, dict]:
+    for path in root.rglob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("store_kind") == "team_mailbox":
+            return path, data
+    raise AssertionError("mailbox v1 document missing")
+
+
+def test_mark_notified_uses_separate_store_and_keeps_mailbox_v1_keys(
+    tmp_path: Path,
+) -> None:
+    first = _send(tmp_path, "n1")
+    second = _send(tmp_path, "n2")
+    path, before = _mailbox_doc(tmp_path)
+    assert set(before) == _MAILBOX_V1_KEYS
+    with pytest.raises(NotifyError, match="skip"):
+        mark_notified(
+            tmp_path,
+            run_id=RUN,
+            team_id=TEAM,
+            recipient_id=RECIPIENT,
+            message_id=second["message_id"],
+        )
+    marked = mark_notified(
+        tmp_path,
+        run_id=RUN,
+        team_id=TEAM,
+        recipient_id=RECIPIENT,
+        message_id=first["message_id"],
+    )
+    assert marked["duplicate"] is False
+    assert marked["sequence"] == 0
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert set(after) == _MAILBOX_V1_KEYS
+    assert after["ack_cursor"] == before["ack_cursor"]
+    cursor_path = notify_cursor_path(tmp_path, RUN, TEAM, RECIPIENT)
+    assert cursor_path.is_file()
+    notify_doc = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert notify_doc["store_kind"] == "team_mailbox_notify"
+    assert notify_doc["notify_cursor"] == 0
+    retry = mark_notified(
+        tmp_path,
+        run_id=RUN,
+        team_id=TEAM,
+        recipient_id=RECIPIENT,
+        message_id=first["message_id"],
+    )
+    assert retry["duplicate"] is True
+    sequential = mark_notified(
+        tmp_path,
+        run_id=RUN,
+        team_id=TEAM,
+        recipient_id=RECIPIENT,
+        message_id=second["message_id"],
+    )
+    assert sequential["sequence"] == 1
+    assert sequential["duplicate"] is False
+
