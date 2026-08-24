@@ -388,6 +388,19 @@ def test_prove_missing_record_unproven_even_with_dead_extra(root: Path) -> None:
         )
 
 
+def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, merge_identity
+
+    original = ProcessIdentity(pid=5, pgid=5, pid_starttime="lstart:same")
+    detached = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:same")
+    reused = ProcessIdentity(pid=5, pgid=9, pid_starttime="lstart:other")
+    found = {5: original}
+    assert merge_identity(found, detached) is True
+    assert found[5].pgid == 9
+    assert merge_identity(found, reused) is False
+    assert found[5].pid_starttime == "lstart:same"
+
+
 def test_pgid_member_identities_includes_same_session_child() -> None:
     import subprocess
     import sys

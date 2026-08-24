@@ -1128,7 +1128,11 @@ def prove_job_processes_gone(
     are start-time captures that survive a forged record that cleared PIDs.
     """
     job_id = safe_job_id(job_id)
-    from omg_cli.jobs.ownership import pgid_member_identities
+    from omg_cli.jobs.ownership import (
+        merge_identity,
+        pgid_member_identities,
+        refresh_identity,
+    )
 
     found: dict[int, ProcessIdentity] = {}
     extra_only: dict[int, ProcessIdentity] = {}
@@ -1136,10 +1140,14 @@ def prove_job_processes_gone(
         if isinstance(extra, ProcessIdentity):
             extra_only[extra.pid] = extra
     for ident in list(extra_only.values()):
+        refreshed = refresh_identity(ident)
+        if refreshed is not None:
+            merge_identity(extra_only, refreshed)
+            ident = extra_only[ident.pid]
         if ident.pgid <= 1:
             continue
         for member in pgid_member_identities(ident.pgid):
-            extra_only.setdefault(member.pid, member)
+            merge_identity(extra_only, member)
     found.update(extra_only)
     try:
         record = read_job_record(project_root, job_id)

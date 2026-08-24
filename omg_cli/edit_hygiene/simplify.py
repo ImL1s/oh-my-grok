@@ -50,8 +50,10 @@ from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     ProcessIdentity,
     child_identities,
+    merge_identity,
     pgid_member_identities,
     probe_identity_liveness,
+    refresh_identity,
 )
 from omg_cli.jobs.runtime import (
     cancel_job,
@@ -685,12 +687,15 @@ def _absorb_runner_children(
             if ident.pid in scanned:
                 continue
             scanned.add(ident.pid)
+            refreshed = refresh_identity(ident)
+            if refreshed is not None:
+                merge_identity(identities, refreshed)
+                ident = identities[ident.pid]
             extras = list(pgid_member_identities(ident.pgid))
             if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
                 extras.extend(child_identities(ident.pid))
             for extra in extras:
-                if extra.pid not in identities:
-                    identities[extra.pid] = extra
+                if merge_identity(identities, extra):
                     pending = True
 
 

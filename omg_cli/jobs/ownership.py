@@ -453,6 +453,66 @@ def _pids_in_pgid(pgid: int) -> list[int]:
     return out
 
 
+def refresh_identity(ident: ProcessIdentity) -> ProcessIdentity | None:
+    """Re-read pgid when *ident*'s start-time fingerprint still matches.
+
+    Used after ``setsid()``: the process is the same occupant, so disappearance
+    proof must track the new session rather than classify PGID mismatch as
+    reuse.
+    """
+    if ident.pid <= 1:
+        return None
+    if not pid_alive(ident.pid):
+        return None
+    live_start = probe_pid_starttime(ident.pid)
+    expected = ident.pid_starttime
+    if isinstance(expected, str) and expected != "":
+        if live_start is None or live_start != expected:
+            return None
+    try:
+        live_pgid = int(os.getpgid(ident.pid))
+    except (ProcessLookupError, OSError):
+        return None
+    if live_pgid <= 1:
+        return None
+    return ProcessIdentity(
+        pid=ident.pid,
+        pgid=live_pgid,
+        pid_starttime=live_start if isinstance(live_start, str) else expected,
+    )
+
+
+def merge_identity(
+    found: dict[int, ProcessIdentity], ident: ProcessIdentity
+) -> bool:
+    """Insert *ident*, or refresh PGID when the start-time fingerprint matches.
+
+    A descendant that later calls ``setsid()`` keeps pid+starttime and gets a
+    new pgid. Treating that as ``REUSED`` would drop a still-live process.
+    A start-time mismatch is a different occupant and is not overwritten.
+    """
+    existing = found.get(ident.pid)
+    if existing is None:
+        found[ident.pid] = ident
+        return True
+    if (
+        existing.pgid == ident.pgid
+        and existing.pid_starttime == ident.pid_starttime
+    ):
+        return False
+    expected = existing.pid_starttime
+    incoming = ident.pid_starttime
+    if (
+        isinstance(expected, str)
+        and expected != ""
+        and incoming == expected
+        and existing.pgid != ident.pgid
+    ):
+        found[ident.pid] = ident
+        return True
+    return False
+
+
 def become_child_subreaper() -> bool:
     """Linux: inherit orphaned grandchildren after an inner provider ``setsid``.
 
@@ -510,11 +570,13 @@ __all__ = [
     "is_json_int",
     "pgid_member_identities",
     "kill_pgid",
+    "merge_identity",
     "parse_process_identity",
     "pid_alive",
     "probe_identity_for_recovery",
     "probe_identity_liveness",
     "probe_pid_starttime",
+    "refresh_identity",
     "process_fingerprint_ok",
     "process_identity_id_in_range",
     "process_identity_id_ok",

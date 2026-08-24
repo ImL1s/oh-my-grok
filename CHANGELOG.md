@@ -56,7 +56,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   under that pgid) keep the command fail-closed. Reap requires GONE/REUSED
   after SIGKILL (unproven/still-live raises). Linux job runners set
   PR_SET_CHILD_SUBREAPER so a setsid grandchild is reparented to the
-  runner instead of init. Refs #76 (does not close).
+  runner instead of init. A later ``setsid()`` on a captured pid with
+  the same start-time fingerprint refreshes PGID instead of treating
+  the mismatch as reuse. Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait
