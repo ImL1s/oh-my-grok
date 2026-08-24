@@ -1985,6 +1985,29 @@ def resume_for_identity(
             run_id=run_id,
             team_id=team_id,
         )
+        relaunched_ids = [
+            str(item.get("task_id") or "").strip()
+            for item in (relaunch.get("relaunched") or [])
+            if isinstance(item, Mapping)
+        ]
+        relaunched_ids = [tid for tid in relaunched_ids if tid]
+        if relaunched_ids:
+            from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
+
+            interactive_ids = [
+                str(task.get("task_id") or "").strip()
+                for task in (meta_for_claims.get("tasks") or [])
+                if isinstance(task, Mapping)
+                and str(task.get("task_id") or "").strip() in set(relaunched_ids)
+                and str(task.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY
+            ]
+            if interactive_ids:
+                apply_interactive_worker_readiness(
+                    root_path,
+                    run_id,
+                    interactive_ids,
+                    env=env,
+                )
         # Job-backed workers: bind existing Jobs without relaunch (#69 PR4).
         job_bind: dict[str, Any] | None = None
         if str(meta_for_claims.get("worker_topology") or "") == "job":

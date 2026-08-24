@@ -1517,6 +1517,18 @@ def test_wrapper_emits_tui_ready_only_after_child_reads_stdin(
             proc.wait(timeout=3)
 
 
+def test_resume_for_identity_runs_interactive_readiness_after_relaunch() -> None:
+    import inspect
+
+    from omg_cli.team.runtime import resume_for_identity
+
+    src = inspect.getsource(resume_for_identity)
+    relaunch_at = src.index("relaunched")
+    ready_at = src.index("apply_interactive_worker_readiness")
+    assert relaunch_at < ready_at
+    assert "IO_MODE_INTERACTIVE_TTY" in src
+
+
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
 def test_wrapper_no_tui_ready_when_child_never_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
