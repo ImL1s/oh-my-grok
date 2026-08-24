@@ -342,10 +342,20 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         for ident in kids:
             reap_child(ident.pid)
         time.sleep(0.05)
+    leftover: list = []
     for ident in child_identities(me):
-        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
-            kill_pgid(ident.pgid, signal.SIGKILL)
-            wait_until_gone(ident.pid, timeout_s=1.0)
+        if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
+            continue
+        kill_pgid(ident.pgid, signal.SIGKILL)
+        gone = wait_until_gone(ident.pid, timeout_s=2.0)
+        if not gone and probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+            leftover.append(ident)
+    if leftover:
+        raise RuntimeError(
+            "adopted child pid(s) "
+            + ",".join(str(ident.pid) for ident in leftover)
+            + " still live after SIGKILL"
+        )
 
 
 def run_job(project_root: Path, job_id: str) -> int:
