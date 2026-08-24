@@ -43,6 +43,9 @@ EXPLAIN_WIDE = ("Host capability registry",)
 POLICY_NATIVE_NOTE = (
     "policy native route is not Team presentation native_host_receipt"
 )
+INSPECT_ABSENT_DOCTOR_LINE = (
+    "inspect: absent (baseline fallback; Medley #18 not attempted)"
+)
 
 
 def color_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -384,6 +387,7 @@ def render_explain_human(
             f"  baseline_mode: {getattr(view, 'baseline_mode')}",
             f"  baseline_model: {getattr(view, 'baseline_model')}",
             f"  host policy: {host_policy_label(view)}",
+            f"  inspect_source: {getattr(view, 'inspect_source', 'absent')}",
         ],
         "Capability-gated Medley policy and candidate order": [
             f"  requested_extension: {getattr(view, 'requested_extension')}",
@@ -402,6 +406,7 @@ def render_explain_human(
         ],
         "Rejected/blocked reasons": _reason_lines(reasons),
         "Resume/attempt lineage": [
+            f"  inspect_source: {getattr(view, 'inspect_source', 'absent')}",
             f"  attempt: {getattr(view, 'attempt')}",
         ],
         "Next action": _next_action_lines(reasons),
@@ -466,22 +471,31 @@ def _capability_lines(view: object) -> list[str]:
     return lines or ["  (none)"]
 
 
-def format_doctor_routing_human(snapshot: object) -> str:
+def format_doctor_routing_human(
+    snapshot: object,
+    *,
+    inspect_source: str = "absent",
+) -> str:
     """Plain-text doctor addendum. Missing Medley is unsupported, not fail."""
     state_of = getattr(snapshot, "state_of")
     host_tier = getattr(snapshot, "host_tier", "unknown")
-    return "\n".join(
-        [
-            "agent/model routing (read-only inspect; no paid probe)",
-            f"  host tier: {host_tier}  (original Grok Build is first-class)",
-            f"  inherit: {state_of('host.native-inherit-model.v1')}",
-            f"  exact: {state_of('host.native-exact-model.v1')}",
-            f"  Medley optional extension: {state_of('medley.native-ordered-candidates.v1')}"
-            "  (not installation failed)",
-            "  inspect: omg agents list / omg agents explain <agent>",
-            f"  {POLICY_NATIVE_NOTE}",
-        ]
-    )
+    if inspect_source == "document":
+        inspect_line = "  inspect: document"
+    else:
+        inspect_line = f"  {INSPECT_ABSENT_DOCTOR_LINE}"
+    lines = [
+        "agent/model routing (read-only inspect; no paid probe)",
+        f"  host tier: {host_tier}  (original Grok Build is first-class)",
+        f"  inherit: {state_of('host.native-inherit-model.v1')}",
+        f"  exact: {state_of('host.native-exact-model.v1')}",
+        f"  Medley optional extension: {state_of('medley.native-ordered-candidates.v1')}"
+        "  (not installation failed)",
+        inspect_line,
+    ]
+    if inspect_source != "document":
+        lines.append("  supply inspect: omg agents list --host-inspect PATH")
+    lines.append(f"  {POLICY_NATIVE_NOTE}")
+    return "\n".join(lines)
 
 
 def format_presentation_human(state: Mapping[str, Any], *, columns: int = 120) -> str:
@@ -575,6 +589,7 @@ def _presentation_stacked_lines(members: Sequence[Mapping[str, Any]]) -> list[st
 
 
 __all__ = [
+    "INSPECT_ABSENT_DOCTOR_LINE",
     "POLICY_NATIVE_NOTE",
     "WIDTH_NARROW",
     "WIDTH_WIDE",

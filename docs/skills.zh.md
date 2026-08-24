@@ -523,7 +523,7 @@ find_references/symbols/diagnostics）、
 | `omg workflow install\|list\|show\|plan\|run` | 不可变 registry、确定 waves、receipt-bound ship gate。 |
 | `omg parity run\|release-readback\|release-bundle\|release-evidence\|check\|gaps\|refresh` | 委派 frozen W0 manifest engine，并产生／验 exact bundle 与 completion evidence。 |
 | `omg capabilities` / `omg native-status` | 分开的 capability tiers，外加只读 `agents_catalog`、`skills_catalog`、`hooks_registry` 与 `tools_sidecar`；不探测私有 sidecar。 |
-| `omg agents list\|explain` | Dual-host agent/model 政策检视（#131）与 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用显式 inherit；Medley caps 为 unsupported（不是安装失败），除非 `--host-inspect` / `OMG_MEDLEY_INSPECT` 提供 Medley inspect。不做付费探测。Medley TUI 仍为 #290。 |
+| `omg agents list\|explain` | Dual-host agent/model 政策检视（#131）与 host-neutral UX（#134：`--width`／`NO_COLOR`）。Stock Grok Build 使用显式 inherit；Medley caps 为 unsupported（不是安装失败），除非 `--host-inspect` / `OMG_MEDLEY_INSPECT` 提供 Medley inspect。未设 inspect 时 `inspect_source=absent`、`attempt` 为 null，不尝试 Medley #18 fallback。不做付费探测。Medley TUI 仍为 #290。 |
 | `omg skill list\|show\|resolve\|resources` | 只读 skill 目录检视（#70）。永不写 `verified`。宿主名 `plan`/`goal` 只作为别名解析。 |
 | `omg provider antigravity capabilities\|doctor\|run` | Antigravity（`agy`）探测 + 无头执行（#67-A/B）：能力信封、doctor、与 `ProviderAdapter.run`（text/json/stream-json）。`omg ask agy` 已切换（#67-C）；Team 窗格经 `build_launch_envelope`（#67-D；supervisor 持有 PTY/PID/readiness）。不宣称 `live_call_ready`。 |
 | `omg visual compare\|capture\|verdict\|ralph` | Visual Contract V1（#75）。`compare` 包装 `compare()`（`--input` JSON；scored/blocked）。`capture` 使用 `capture.command`，否则 `OMG_VISUAL_CAPTURE`，否则 **blocked**（不是假通过；不要求 Playwright）。`verdict` 包装 `compare()`，在 `.omg/artifacts/visual/<run_id>/` 写入描述符／findings／分数历史；overlay 仅为描述符（不解像素）；`reviewer_status` 要求独立只读 reviewer（否则 `E_VISUAL_REVIEWER`）。`ralph` 为有界 capture/verdict/repair-prompt 循环（不 spawn agent）。永不写入 `passes`/`verified`。本切片无 live 截图 smoke、无 AG vision 模型。见 [visual-contract-v1.md](./visual-contract-v1.md)。 |
@@ -568,7 +568,7 @@ agent frontmatter 若省略、使用 snake_case 别名（`capability_mode` / `pe
 下的 Antigravity `agent.md` **只是投影** — 不是已安装的 AG 插件，也不是 live AG 证据。
 团队路由地板仍在 `omg_cli/team/roles.py`。Dual-host model policy（#131）透过
 `agents/model_policies.json` 与 `omg agents list|explain` 消费此目录
-（Grok baseline 已出货；可选 Medley inspect 经 `--host-inspect` / `OMG_MEDLEY_INSPECT`；live spawn/TUI 仍为 Refs）。
+（Grok baseline 已出货；可选 Medley inspect 经 `--host-inspect` / `OMG_MEDLEY_INSPECT`；inspect 缺席时 `attempt` 为 null 且不尝试 Medley #18 fallback；live spawn/TUI 仍为 Refs）。
 Grok 内建（`explore`、`plan`、`general-purpose`）是政策 profiles，不是第二份 registry。
 
 ---

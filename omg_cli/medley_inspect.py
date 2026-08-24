@@ -31,6 +31,9 @@ from omg_cli.host_capabilities import (
 INSPECT_SCHEMA = "medley.native-subagent-route.inspect/v1"
 RECEIPT_SCHEMA = "medley.native-route-receipt.v1"
 INSPECT_ENV = "OMG_MEDLEY_INSPECT"
+INSPECT_SOURCE_ABSENT = "absent"
+INSPECT_SOURCE_DOCUMENT = "document"
+INSPECT_SOURCES = frozenset({INSPECT_SOURCE_ABSENT, INSPECT_SOURCE_DOCUMENT})
 EXACT_HOST_CAP = "host.native-exact-model.v1"
 EXACT_MEDLEY_CAP = "medley.native-exact-model.v1"
 _ADVERTISED_INCOMPATIBLE = "incompatible"
@@ -266,12 +269,23 @@ def resolve_host_snapshot(
     env: Mapping[str, str] | None = None,
     cli_path: str | None = None,
 ) -> tuple[HostCapabilitySnapshot, MedleyInspectDocument | None]:
-    """Stock Grok Build unless an explicit inspect document is supplied."""
+    """Stock Grok Build unless an explicit inspect document is supplied.
+
+    Unset inspect is original Grok Build baseline, not an install failure.
+    A path that is set but missing still fail-closes ``E_MEDLEY_INSPECT_PATH``.
+    """
     path = inspect_path or inspect_path_from_env(env, cli_path=cli_path)
     if path is None:
         return stock_grok_snapshot(), None
     doc = load_inspect_document(path)
     return snapshot_from_inspect(doc), doc
+
+
+def inspect_source_for(doc: MedleyInspectDocument | None) -> str:
+    """``absent`` when no inspect document; ``document`` when one was loaded."""
+    if doc is None:
+        return INSPECT_SOURCE_ABSENT
+    return INSPECT_SOURCE_DOCUMENT
 
 
 def receipt_for_policy(
@@ -473,11 +487,15 @@ def _reject_secrets_tree(value: Any, *, key: str | None = None) -> None:
 __all__ = [
     "INSPECT_ENV",
     "INSPECT_SCHEMA",
+    "INSPECT_SOURCE_ABSENT",
+    "INSPECT_SOURCE_DOCUMENT",
+    "INSPECT_SOURCES",
     "MedleyInspectDocument",
     "MedleyInspectError",
     "advertised_from_inspect",
     "apply_receipt_to_view_fields",
     "inspect_path_from_env",
+    "inspect_source_for",
     "load_inspect_document",
     "receipt_for_policy",
     "resolve_host_snapshot",

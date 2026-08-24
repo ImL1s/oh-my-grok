@@ -27,6 +27,7 @@
     "route_kind",
     "route_receipt_digest",
     "attempt",
+    "inspect_source",
     "status",
     "reasons",
     "host_facts",
@@ -55,6 +56,7 @@
     "route_kind": { "type": "string", "enum": ["native", "external_executor"] },
     "route_receipt_digest": { "type": ["string", "null"] },
     "attempt": { "type": ["integer", "null"] },
+    "inspect_source": { "type": "string", "enum": ["absent", "document"] },
     "status": {
       "type": "string",
       "enum": ["ready", "unsupported", "unavailable", "incompatible", "unknown", "blocked"]

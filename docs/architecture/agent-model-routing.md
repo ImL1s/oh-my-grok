@@ -65,7 +65,9 @@ Rules:
   adapter; it is never inferred from PATH or binary name. Live spawn wiring
   remains **planned** under [ImL1s/medley#287](https://github.com/ImL1s/medley/issues/287).
   Stock Grok Build keeps Medley caps **unsupported** (not an installation
-  failure).
+  failure). Unset inspect is `inspect_source=absent` with `attempt` null;
+  Medley #18 replay-safe fallback is **not attempted**. A missing inspect
+  file (path set) fail-closes rather than falling back.
 - This document does **not** claim affiliation between OMG, Medley, or xAI.
 
 ## Mandatory terminology

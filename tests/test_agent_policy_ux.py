@@ -12,6 +12,7 @@ import pytest
 from omg_cli.agent_policy import PolicyReason, resolve_agent_policy
 from omg_cli.agent_policy_ux import (
     ELLIPSIS,
+    INSPECT_ABSENT_DOCTOR_LINE,
     POLICY_NATIVE_NOTE,
     color_enabled,
     display_width,
@@ -56,7 +57,8 @@ def _view(**overrides: object) -> SimpleNamespace:
         selected_model_ref=None,
         route_kind="native",
         route_receipt_digest=None,
-        attempt=1,
+        attempt=None,
+        inspect_source="absent",
         status="ready",
         reasons=(
             PolicyReason(
@@ -247,6 +249,8 @@ def test_cli_width_snapshots(capsys, monkeypatch, tmp_path: Path) -> None:
     assert rc == 0
     explain_narrow = capsys.readouterr().out
     assert "Identity" in explain_narrow
+    assert "inspect_source: absent" in explain_narrow
+    assert "not attempted" in explain_narrow
     for line in explain_narrow.splitlines():
         assert display_width(line) <= 40, line
     rc = main(
@@ -273,9 +277,36 @@ def test_doctor_routing_human_is_honest() -> None:
     text = format_doctor_routing_human(stock_grok_snapshot())
     assert "unsupported" in text
     assert "not installation failed" in text
+    assert INSPECT_ABSENT_DOCTOR_LINE in text
+    assert "omg agents list --host-inspect PATH" in text
     assert "requires medley" not in text.lower()
     assert "routing-availability" not in text
+    assert "installation failed" not in text.replace("not installation failed", "")
     assert "\x1b[" not in text
+    documented = format_doctor_routing_human(
+        stock_grok_snapshot(), inspect_source="document"
+    )
+    assert INSPECT_ABSENT_DOCTOR_LINE not in documented
+    assert "inspect: document" in documented
+
+
+def test_explain_human_names_inspect_absent() -> None:
+    view = _view(
+        reasons=(
+            PolicyReason(
+                code="E_MEDLEY_INSPECT_ABSENT",
+                message=(
+                    "inspect document absent; baseline fallback only; "
+                    "Medley #18 replay-safe fallback is not attempted"
+                ),
+                next_action="omg agents list --host-inspect PATH",
+            ),
+        )
+    )
+    text = render_explain_human(view, columns=100)
+    assert "inspect_source: absent" in text
+    assert "Medley #18 not attempted" in text or "not attempted" in text
+    assert "omg agents list --host-inspect PATH" in text
 
 
 def test_presentation_human_labels_route_kind() -> None:

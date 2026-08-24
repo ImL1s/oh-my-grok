@@ -10,6 +10,16 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#134 inspect-absent Medley #18 fallback UX:** Stock Grok Build with unset
+  inspect reports `inspect_source=absent` and `attempt=null` on
+  `omg agents list|explain --json`. Doctor addendum prints
+  `inspect: absent (baseline fallback; Medley #18 not attempted)`. Policy
+  next action is `omg agents list --host-inspect PATH`. Candidate ids are
+  not consumed and receipts are not invented. A missing inspect *file*
+  (path set) still fail-closes `E_MEDLEY_INSPECT_PATH`. Medley caps stay
+  **unsupported**; route facts stay **unavailable**; this is not an install
+  failure. Does **not** close #134: no live Medley session, no `/agents`
+  TUI. Refs #134.
 - **#131/#134 Medley inspect glue:** `omg agents list|explain --host-inspect`
   and `OMG_MEDLEY_INSPECT` consume `medley.native-subagent-route.inspect/v1`.
   Support is never inferred from PATH, binary name, or state dirs. Stock Grok
