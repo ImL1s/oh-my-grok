@@ -47,8 +47,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   pane scrollback. Live ExactPaneProof is applied *inside* the wait loop
   so a pid-bind that lands after the marker is not a one-shot drop
   (scale-up was `input_ready=false` / degraded 1/2 with the sidecar
-  already written). Fixture panes still emit TUI_READY on stdout. Does
-  **not** mint `LIVE_*` from fixtures. Refs #147 (does not close).
+  already written). Overlay/relaunch unlinks the sidecar before spawn so
+  a previous attempt's marker cannot promote a replacement pane.
+  Fixture panes still emit TUI_READY on stdout. Does **not** mint
+  `LIVE_*` from fixtures. Refs #147 (does not close).
 - **#147 leftover interactive echo-probe inbox collision:**
   `OMG_TEAM_INTERACTIVE_ECHO_PROBE=1` still attaches grok `--rules` for
   `PROVIDER_ECHO:` but no longer auto-submits

@@ -746,6 +746,15 @@ def test_wait_for_tui_ready_accepts_sidecar_when_capture_empty(
     assert out["evidence"]["t1"]["ready_marker"] == f"TUI_READY:{nonce}"
 
 
+def test_clear_tui_ready_sidecar_removes_stale_marker(tmp_path: Path) -> None:
+    from omg_cli.team.interactive import clear_tui_ready_sidecar
+
+    dest = tmp_path / "t1.a1.tui-ready"
+    dest.write_text("TUI_READY:stale\n", encoding="utf-8")
+    clear_tui_ready_sidecar(dest)
+    assert not dest.exists()
+
+
 def test_wrapper_emit_writes_tui_ready_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

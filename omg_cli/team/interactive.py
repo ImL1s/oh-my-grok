@@ -552,6 +552,7 @@ def overlay_interactive_launch(
     if token is None:
         token = make_interactive_nonce()
     ready_path = tdir / f"{tid}.a{att}.tui-ready"
+    clear_tui_ready_sidecar(ready_path)
     extra_env = {INTERACTIVE_NONCE_ENV: token}
     if wrap_module:
         extra_env[TUI_READY_FILE_ENV] = str(ready_path.resolve())
@@ -683,6 +684,24 @@ def capture_contains_tui_ready(text: str, nonce: str) -> bool:
         if raw.strip() == marker:
             return True
     return False
+
+
+def clear_tui_ready_sidecar(path: str | Path | None) -> None:
+    """Remove a stale TUI_READY sidecar before spawn/relaunch."""
+    if path is None:
+        return
+    try:
+        dest = Path(path)
+    except (TypeError, ValueError):
+        return
+    if dest.suffix != ".tui-ready" or any(part == ".." for part in dest.parts):
+        return
+    try:
+        dest.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
 
 
 def file_contains_tui_ready(path: str | Path, nonce: str) -> bool:

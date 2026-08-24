@@ -1343,6 +1343,9 @@ def _commit_team_task_replacement(
             if topo not in (WORKER_TOPOLOGY_PANE, WORKER_TOPOLOGY_JOB):
                 topo = WORKER_TOPOLOGY_PANE
             stamp_io_capability(row, io_defaults_for_worker_topology(str(topo)))
+            from omg_cli.team.interactive import clear_tui_ready_sidecar
+
+            clear_tui_ready_sidecar(row.get("tui_ready_path"))
             from omg_cli.team.presentation import stamp_route_on_task
 
             stamp_route_on_task(
