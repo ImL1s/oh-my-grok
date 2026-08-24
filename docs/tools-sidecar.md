@@ -18,7 +18,7 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 - `omg tools doctor --strict` emits a **failure** envelope (`ok: false`) when inner checks fail. Inner and outer `ok` stay consistent. Doctor never sets `verified` / `observed` / `healthy` true.
 - Server `workspace/configuration` requests during initialize/hover/definition are answered with empty settings (one `{}` per item, or `[]`) so the language server can proceed. They are not dropped.
 - `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
-- CodeGraph is a **toy local import/symbol scan**, not SCIP and not a branch-accurate shared graph.
+- CodeGraph is a **toy local import/symbol scan** with bounded SCIP-inspired JSON `occurrences` (`definition`/`reference`). It is **not** SCIP protobuf, not a real SCIP indexer, and not a branch-accurate shared graph.
 - Network research stays opt-in and **blocked** until a provider and credentials exist (none are bundled).
 - Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
 - Never writes `passes` / `verified`.
@@ -60,7 +60,8 @@ Language servers are **never auto-installed**.
 - CodeGraph `shared` results are **not** worktree-accurate. `local` is
   branch-accurate only when an index was built from this tree and is not stale.
   `omg tools codegraph index` writes
-  `.omg/artifacts/codegraph/{local,shared}-index.json`.
+  `.omg/artifacts/codegraph/{local,shared}-index.json` including bounded
+  SCIP-inspired `occurrences` (query matches name/`symbol_id`; not protobuf SCIP).
 
 ## AST-grep
 

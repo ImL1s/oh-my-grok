@@ -47,6 +47,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   to `agent_closed`. Refs #72 (does not close).
 
 ### Added
+- **#73 leftover Fake-LSP semantic ops + SCIP-lite occurrences:**
+  `FakeLspTransport` now returns inspectable `textDocument/references`
+  (Location) and `workspace/symbol` (SymbolInformation named `Fake`) so
+  `omg tools lsp definition|references|document_symbols|workspace_symbols
+  --fake-lsp` has hermetic JSON evidence (`ok` true, `verified` false).
+  `omg lsp` stays host-owned; `omg mcp-server` still forbids `lsp.*`.
+  CodeGraph indexes a bounded `occurrences` list (`path`, `name`,
+  `role: definition|reference`, `line`, `symbol_id`) derived from the
+  existing import/symbol scan; `codegraph_query` matches name/symbol_id.
+  This is SCIP-inspired JSON, **not** SCIP protobuf / a real SCIP indexer,
+  **not** a full LSP client, and **not** live AG MCP. Never writes
+  `passes`/`verified`. Refs #73 (does not close).
 - **#75 PNG pixel overlay evidence:** `omg visual overlay --reference a.png
   --candidate b.png --json` decodes PNG with stdlib (`struct`/`zlib`; no
   Pillow) and writes `changed_pixels` / `changed_ratio_milli` / `bbox` plus

@@ -9,6 +9,7 @@ Honesty:
 - Not a live Antigravity MCP install.
 - AST-grep missing → blocked, not fake success.
 - Shared CodeGraph indexes are not worktree-accurate.
+- CodeGraph ``occurrences`` are SCIP-inspired JSON, not SCIP protobuf.
 - Network research is opt-in (``OMG_TOOLS_NETWORK=1``).
 - Never writes ``passes`` / ``verified``.
 """
@@ -43,7 +44,15 @@ CODEGRAPH_INDEXER = "import_symbol_scan"
 MAX_INDEX_FILES = 400
 MAX_INDEX_FILE_BYTES = 200_000
 MAX_SYMBOLS_PER_FILE = 80
+MAX_OCCURRENCES_PER_FILE = 120
+MAX_OCCURRENCES = 2_000
 MAX_CODEGRAPH_HITS = 80
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_FAKE_LSP_SYMBOL = "Fake"
+_FAKE_LSP_RANGE = {
+    "start": {"line": 0, "character": 0},
+    "end": {"line": 0, "character": 4},
+}
 INDEX_SKIP_DIRS = frozenset(
     {
         ".git",
@@ -351,35 +360,51 @@ class FakeLspTransport:
             }
         if method == "textDocument/hover":
             return {"contents": {"kind": "markdown", "value": "fake hover"}}
+        doc_uri = (body.get("textDocument") or {}).get("uri") or "file:///tmp/Fake.py"
         if method == "textDocument/definition":
             return [
                 {
-                    "uri": body.get("textDocument", {}).get("uri", "file:///tmp/fake.py"),
-                    "range": {
-                        "start": {"line": 0, "character": 0},
-                        "end": {"line": 0, "character": 4},
-                    },
+                    "uri": doc_uri,
+                    "range": dict(_FAKE_LSP_RANGE),
                 }
             ]
         if method == "textDocument/references":
-            return []
+            return [
+                {
+                    "uri": doc_uri,
+                    "range": dict(_FAKE_LSP_RANGE),
+                },
+                {
+                    "uri": "file:///tmp/Fake.py",
+                    "range": {
+                        "start": {"line": 2, "character": 0},
+                        "end": {"line": 2, "character": 4},
+                    },
+                },
+            ]
         if method == "textDocument/documentSymbol":
             return [
                 {
-                    "name": "Fake",
+                    "name": _FAKE_LSP_SYMBOL,
                     "kind": 5,
                     "range": {
                         "start": {"line": 0, "character": 0},
                         "end": {"line": 1, "character": 0},
                     },
-                    "selectionRange": {
-                        "start": {"line": 0, "character": 0},
-                        "end": {"line": 0, "character": 4},
-                    },
+                    "selectionRange": dict(_FAKE_LSP_RANGE),
                 }
             ]
         if method == "workspace/symbol":
-            return []
+            return [
+                {
+                    "name": _FAKE_LSP_SYMBOL,
+                    "kind": 5,
+                    "location": {
+                        "uri": "file:///tmp/Fake.py",
+                        "range": dict(_FAKE_LSP_RANGE),
+                    },
+                }
+            ]
         if method == "textDocument/diagnostic":
             return {"kind": "full", "items": [], "version": self.document_version}
         if method == "textDocument/prepareRename":
@@ -1209,14 +1234,28 @@ _JAVA_SYM = re.compile(
 )
 
 
-def _extract_import_symbols(path: Path, text: str) -> tuple[list[str], list[dict[str, Any]]]:
+def _imported_ident(name: str) -> str:
+    parts = [part for part in re.split(r"[./:\\]+", name.strip()) if part]
+    return parts[-1] if parts else ""
+
+
+def _extract_import_symbols(
+    path: Path, text: str
+) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     suffix = path.suffix.lower()
     imports: list[str] = []
     symbols: list[dict[str, Any]] = []
+    import_sites: list[dict[str, Any]] = []
 
-    def _add_imp(name: str | None) -> None:
-        if name and name not in imports:
+    def _add_imp(name: str | None, match: re.Match[str] | None = None) -> None:
+        if not name:
+            return
+        if name not in imports:
             imports.append(name)
+        if match is not None:
+            import_sites.append(
+                {"name": name, "line": text[: match.start()].count("\n")}
+            )
 
     def _add_sym(name: str | None, kind: str, match: re.Match[str]) -> None:
         if not name or len(symbols) >= MAX_SYMBOLS_PER_FILE:
@@ -1226,38 +1265,115 @@ def _extract_import_symbols(path: Path, text: str) -> tuple[list[str], list[dict
 
     if suffix in {".py", ".pyi"}:
         for match in _PY_IMPORT.finditer(text):
-            _add_imp(match.group(1) or match.group(2))
+            _add_imp(match.group(1) or match.group(2), match)
         for match in _PY_DEF.finditer(text):
             _add_sym(match.group(1), "function", match)
         for match in _PY_CLASS.finditer(text):
             _add_sym(match.group(1), "class", match)
-        return imports, symbols
+        return imports, symbols, import_sites
     if suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
         for match in _JS_IMPORT.finditer(text):
-            _add_imp(next((g for g in match.groups() if g), None))
+            _add_imp(next((g for g in match.groups() if g), None), match)
         for match in _JS_SYM.finditer(text):
             _add_sym(match.group(1), "function", match)
             _add_sym(match.group(2), "class", match)
-        return imports, symbols
+        return imports, symbols, import_sites
     if suffix == ".go":
-        for match in re.finditer(r'"([^"]+)"', text.split(")", 1)[0] if "import" in text else ""):
-            _add_imp(match.group(1))
+        for match in re.finditer(
+            r'"([^"]+)"', text.split(")", 1)[0] if "import" in text else ""
+        ):
+            _add_imp(match.group(1), match)
         for match in _GO_FN.finditer(text):
             _add_sym(match.group(1), "function", match)
-        return imports, symbols
+        return imports, symbols, import_sites
     if suffix == ".rs":
         for match in re.finditer(r"^use\s+([\w:]+)", text, re.MULTILINE):
-            _add_imp(match.group(1))
+            _add_imp(match.group(1), match)
         for match in _RS_FN.finditer(text):
             _add_sym(match.group(1), "function", match)
-        return imports, symbols
+        return imports, symbols, import_sites
     if suffix == ".java":
         for match in re.finditer(r"^import\s+([\w.]+)", text, re.MULTILINE):
-            _add_imp(match.group(1))
+            _add_imp(match.group(1), match)
         for match in _JAVA_SYM.finditer(text):
             _add_sym(match.group(1), "type", match)
-        return imports, symbols
-    return imports, symbols
+        return imports, symbols, import_sites
+    return imports, symbols, import_sites
+
+
+def _scip_lite_occurrences(
+    rel: str,
+    text: str,
+    symbols: list[dict[str, Any]],
+    import_sites: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bounded SCIP-inspired JSON occurrences (not SCIP protobuf)."""
+    occs: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+    def_line: dict[str, int] = {}
+
+    def _add(name: str, role: str, line: int) -> None:
+        if not name or role not in {"definition", "reference"}:
+            return
+        if len(occs) >= MAX_OCCURRENCES_PER_FILE:
+            return
+        key = (name, int(line), role)
+        if key in seen:
+            return
+        seen.add(key)
+        occs.append(
+            {
+                "path": rel,
+                "name": name,
+                "role": role,
+                "line": int(line),
+                "symbol_id": f"{rel}#{name}",
+            }
+        )
+
+    for sym in symbols:
+        if not isinstance(sym, dict):
+            continue
+        name = str(sym.get("name") or "")
+        if not name:
+            continue
+        line = int(sym.get("line") or 0)
+        def_line[name] = line
+        _add(name, "definition", line)
+
+    for site in import_sites:
+        if not isinstance(site, dict):
+            continue
+        ident = _imported_ident(str(site.get("name") or ""))
+        if not ident:
+            continue
+        _add(ident, "reference", int(site.get("line") or 0))
+
+    known: list[str] = []
+    seen_names: set[str] = set()
+    for name in list(def_line):
+        if name not in seen_names and _IDENT.match(name):
+            seen_names.add(name)
+            known.append(name)
+    for site in import_sites:
+        if not isinstance(site, dict):
+            continue
+        ident = _imported_ident(str(site.get("name") or ""))
+        if ident not in seen_names and _IDENT.match(ident):
+            seen_names.add(ident)
+            known.append(ident)
+    if not known:
+        return occs
+    pattern = re.compile(r"\b(?:" + "|".join(re.escape(name) for name in known) + r")\b")
+    for match in pattern.finditer(text):
+        if len(occs) >= MAX_OCCURRENCES_PER_FILE:
+            break
+        name = match.group(0)
+        line = text[: match.start()].count("\n")
+        if def_line.get(name) == line:
+            continue
+        _add(name, "reference", line)
+    return occs
 
 
 def _iter_index_files(root: Path) -> tuple[list[Path], bool]:
@@ -1297,9 +1413,12 @@ def _iter_index_files(root: Path) -> tuple[list[Path], bool]:
     return files, truncated
 
 
-def _scan_workspace(root: Path) -> tuple[list[dict[str, Any]], bool]:
+def _scan_workspace(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     files, truncated = _iter_index_files(root)
     rows: list[dict[str, Any]] = []
+    occurrences: list[dict[str, Any]] = []
     base = Path(root).resolve()
     for path in files:
         try:
@@ -1314,24 +1433,28 @@ def _scan_workspace(root: Path) -> tuple[list[dict[str, Any]], bool]:
             continue
         if len(text.encode("utf-8")) > MAX_INDEX_FILE_BYTES:
             text = text[:MAX_INDEX_FILE_BYTES]
-        imports, symbols = _extract_import_symbols(path, text)
+        imports, symbols, import_sites = _extract_import_symbols(path, text)
         try:
             rel = path.relative_to(base).as_posix()
         except ValueError:
             continue
         rows.append({"path": rel, "imports": imports, "symbols": symbols})
-    return rows, truncated
+        if len(occurrences) < MAX_OCCURRENCES:
+            room = MAX_OCCURRENCES - len(occurrences)
+            occs = _scip_lite_occurrences(rel, text, symbols, import_sites)
+            occurrences.extend(occs[:room])
+    return rows, occurrences, truncated
 
 
 def _codegraph_notes(effective: str, dirty: bool | None) -> str:
     note = {
         "off": "CodeGraph disabled",
         "shared": (
-            "shared/baseline import/symbol index; not SCIP; "
-            "does not include uncommitted worktree changes"
+            "shared/baseline import/symbol index; SCIP-inspired JSON occurrences, "
+            "not SCIP protobuf; does not include uncommitted worktree changes"
         ),
         "local": (
-            "worktree-local import/symbol index (not SCIP); "
+            "worktree-local import/symbol index (SCIP-inspired JSON, not SCIP protobuf); "
             "branch-accurate only when built from this tree and not stale"
         ),
     }[effective]
@@ -1398,7 +1521,7 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
             "E_CODEGRAPH_DIRTY",
             "shared index refuses dirty worktrees; commit or use --mode local",
         )
-    rows, truncated = _scan_workspace(root)
+    rows, occurrences, truncated = _scan_workspace(root)
     head = _git_head(root)
     fingerprint = _worktree_fingerprint(root)
     payload = {
@@ -1413,10 +1536,15 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
         "file_count": len(rows),
         "truncated": truncated,
         "files": rows,
+        "occurrences": occurrences,
         "note": (
-            "toy import/symbol scan; not SCIP; not a shared branch-accurate graph"
-            if effective == "shared"
-            else "toy import/symbol scan; not SCIP; local to this worktree"
+            "toy import/symbol scan with SCIP-inspired JSON occurrences; "
+            "not SCIP protobuf / a real SCIP indexer; "
+            + (
+                "not a shared branch-accurate graph"
+                if effective == "shared"
+                else "local to this worktree"
+            )
         ),
     }
     dest = _codegraph_index_path(root, effective)
@@ -1488,6 +1616,40 @@ def codegraph_query(*, root: Path, mode: str = "auto", query: str = "") -> dict[
             if not needle:
                 continue
             hits.append({"path": rel, "kind": "import", "name": name})
+    for occ in index.get("occurrences") or []:
+        if len(hits) >= MAX_CODEGRAPH_HITS:
+            break
+        if not isinstance(occ, dict):
+            continue
+        rel = str(occ.get("path") or "")
+        try:
+            confine_path(root, rel)
+        except ToolsError:
+            continue
+        name = str(occ.get("name") or "")
+        symbol_id = str(occ.get("symbol_id") or "")
+        if needle:
+            if (
+                needle not in name.lower()
+                and needle not in symbol_id.lower()
+                and needle not in rel.lower()
+            ):
+                continue
+        elif not name:
+            continue
+        role = occ.get("role")
+        if role not in {"definition", "reference"}:
+            continue
+        hits.append(
+            {
+                "path": rel,
+                "kind": "occurrence",
+                "name": name,
+                "role": role,
+                "line": occ.get("line"),
+                "symbol_id": symbol_id,
+            }
+        )
     return _bounded(
         {
             "ok": True,
@@ -1579,7 +1741,8 @@ def doctor_payload(
         "tool_names": list(SIDECAR_TOOL_NAMES),
         "note": (
             "OMG tools sidecar. Not Grok-native LSP. Not live Antigravity evidence. "
-            "omg lsp remains host-owned. CodeGraph is a toy import/symbol index, not SCIP. "
+            "omg lsp remains host-owned. CodeGraph is a toy import/symbol index with "
+            "SCIP-inspired JSON occurrences, not SCIP protobuf. "
             "Detected language servers are not ready until explicitly started."
         ),
     }
