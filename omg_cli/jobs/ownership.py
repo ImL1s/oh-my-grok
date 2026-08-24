@@ -8,6 +8,7 @@ from __future__ import annotations
 import enum
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -452,6 +453,26 @@ def _pids_in_pgid(pgid: int) -> list[int]:
     return out
 
 
+def become_child_subreaper() -> bool:
+    """Linux: inherit orphaned grandchildren after an inner provider ``setsid``.
+
+    Returns True when the kernel accepted ``PR_SET_CHILD_SUBREAPER``. macOS has
+    no equivalent; callers still snapshot live children/pgid members and fail
+    closed when an inner identity is never captured.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        # linux/prctl.h PR_SET_CHILD_SUBREAPER = 36
+        rc = int(libc.prctl(36, 1, 0, 0, 0))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    return rc == 0
+
+
 def pgid_member_identities(pgid: int) -> tuple[ProcessIdentity, ...]:
     """Capture identities of every live process in *pgid*.
 
@@ -483,6 +504,7 @@ __all__ = [
     "OwnershipOutcome",
     "ProcessIdentity",
     "assert_ownership",
+    "become_child_subreaper",
     "capture_identity",
     "child_identities",
     "is_json_int",

@@ -594,6 +594,35 @@ def test_simplify_provider_fails_closed_when_inner_identity_never_captured(
         _kill_proc(proc)
 
 
+def test_reap_start_identities_raises_when_still_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.edit_hygiene.simplify import _reap_start_identities
+    from omg_cli.jobs.models import JobStoreError
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime="lstart:x")
+    monkeypatch.setattr(
+        "omg_cli.edit_hygiene.simplify.probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.LIVE,
+    )
+    monkeypatch.setattr("omg_cli.jobs.ownership.kill_pgid", lambda *_a, **_k: True)
+    monkeypatch.setattr("omg_cli.jobs.ownership.wait_until_gone", lambda *_a, **_k: False)
+    with pytest.raises(JobStoreError, match="still live after SIGKILL"):
+        _reap_start_identities((ident,))
+
+
+def test_become_child_subreaper_is_linux_only() -> None:
+    import sys
+
+    from omg_cli.jobs.ownership import become_child_subreaper
+
+    if sys.platform == "linux":
+        become_child_subreaper()
+        return
+    assert become_child_subreaper() is False
+
+
 def test_simplify_provider_cancels_job_on_recovery_required(
     project: Path,
     capsys: pytest.CaptureFixture[str],

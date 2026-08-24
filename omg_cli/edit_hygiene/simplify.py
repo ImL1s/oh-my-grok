@@ -654,9 +654,21 @@ def _reap_start_identities(identities: Sequence[Any]) -> None:
         kill_pgid(pgid, signal.SIGTERM)
         wait_until_gone(pid, timeout_s=1.0)
         outcome = probe_identity_liveness(ident)
-        if outcome is IdentityProbeOutcome.LIVE:
-            kill_pgid(pgid, signal.SIGKILL)
-            wait_until_gone(pid, timeout_s=2.0)
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        kill_pgid(pgid, signal.SIGKILL)
+        wait_until_gone(pid, timeout_s=2.0)
+        outcome = probe_identity_liveness(ident)
+        if outcome not in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            raise JobStoreError(
+                f"start identity pid={pid} still live after SIGKILL",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
 
 
 def _absorb_runner_children(
@@ -672,12 +684,10 @@ def _absorb_runner_children(
         for ident in list(identities.values()):
             if ident.pid in scanned:
                 continue
-            if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
-                scanned.add(ident.pid)
-                continue
             scanned.add(ident.pid)
-            extras = list(child_identities(ident.pid))
-            extras.extend(pgid_member_identities(ident.pgid))
+            extras = list(pgid_member_identities(ident.pgid))
+            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                extras.extend(child_identities(ident.pid))
             for extra in extras:
                 if extra.pid not in identities:
                     identities[extra.pid] = extra
@@ -911,6 +921,7 @@ def _propose_with_grok(
                 root,
                 job_id,
                 timeout_s=float(timeout_s),
+                poll_s=0.02,
                 stop_on_recovery_required=True,
                 on_poll=_on_poll,
             )

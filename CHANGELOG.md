@@ -53,7 +53,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   not signaled. An observed runner without an inner child is unproven.
   A dead provider leader is not proof its process group is empty:
   live pgid members captured while the leader was alive (or still listed
-  under that pgid) keep the command fail-closed. Refs #76 (does not close).
+  under that pgid) keep the command fail-closed. Reap requires GONE/REUSED
+  after SIGKILL (unproven/still-live raises). Linux job runners set
+  PR_SET_CHILD_SUBREAPER so a setsid grandchild is reparented to the
+  runner instead of init. Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait

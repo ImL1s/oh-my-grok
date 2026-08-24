@@ -27,7 +27,7 @@ from pathlib import Path
 from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes, ensure_managed_dir
 from omg_cli.jobs.lease import DEFAULT_JOB_HEARTBEAT_INTERVAL_S
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
-from omg_cli.jobs.ownership import capture_identity
+from omg_cli.jobs.ownership import become_child_subreaper, capture_identity
 from omg_cli.jobs.providers import resolve_job_provider
 from omg_cli.jobs.store import (
     append_jsonl,
@@ -306,6 +306,7 @@ def _stamp_running_terminal(
 
 def run_job(project_root: Path, job_id: str) -> int:
     """Wait for parent running commit, then Adapter.run, then terminal stamp."""
+    become_child_subreaper()
     try:
         record = read_job_record(project_root, job_id)
     except JobStoreError as exc:
