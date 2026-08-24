@@ -376,6 +376,7 @@ def write_relative_regular(
         _close(api, leaf)
         leaf = None
         api.rename_replace(tmp, name, root_handle=parent)
+        _close(api, tmp)
         tmp = None
         published, _published_mode = read_relative_regular(
             root, parts, max_bytes=max_bytes
