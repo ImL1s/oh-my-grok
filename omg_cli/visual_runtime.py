@@ -985,22 +985,42 @@ def run_verdict(
         media_type=act_media,
     )
     masks = config.get("masks") if isinstance(config.get("masks"), list) else []
-    overlay = overlay_sidecar(
-        masks=masks,
-        reference=reference,
-        candidate=candidate,
-        root=root,
-        dest=run_dir / "overlay.png",
-        reference_path=ref_copy,
-        candidate_path=act_copy,
-        descriptor_only=descriptor_only,
+    skip_pixels = descriptor_only or (
+        reference["width"] != candidate["width"]
+        or reference["height"] != candidate["height"]
     )
+    decoded_mismatch = False
+    try:
+        overlay = overlay_sidecar(
+            masks=masks,
+            reference=reference,
+            candidate=candidate,
+            root=root,
+            dest=run_dir / "overlay.png",
+            reference_path=ref_copy,
+            candidate_path=act_copy,
+            descriptor_only=skip_pixels,
+        )
+    except VisualPixelError as exc:
+        if "dimensions differ" not in str(exc):
+            raise
+        decoded_mismatch = True
+        overlay = overlay_sidecar(
+            masks=masks,
+            reference=reference,
+            candidate=candidate,
+            descriptor_only=True,
+        )
+        ref_pw, ref_ph, _ = decode_png_rgba(ref_copy)
+        cand_pw, cand_ph, _ = decode_png_rgba(act_copy)
+        reference = {**reference, "width": int(ref_pw), "height": int(ref_ph)}
+        candidate = {**candidate, "width": int(cand_pw), "height": int(cand_ph)}
     write_json(run_dir / "overlay.json", overlay)
     write_json(run_dir / "reference.json", reference)
     write_json(run_dir / "current.json", candidate)
     compat = compatibility_from_config(config)
     dimensions = config.get("dimensions")
-    dim_mismatch = (
+    dim_mismatch = decoded_mismatch or (
         reference["width"] != candidate["width"]
         or reference["height"] != candidate["height"]
     )

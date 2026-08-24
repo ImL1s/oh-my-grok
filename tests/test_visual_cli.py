@@ -421,6 +421,60 @@ def test_verdict_mismatched_dims_blocked(tmp_path: Path, capsys) -> None:
     _assert_no_forbidden(payload)
 
 
+def test_verdict_decoded_png_dimension_mismatch_is_blocked(
+    tmp_path: Path, capsys
+) -> None:
+    """Pixel overlay must not turn a dim mismatch into E_VISUAL_PIXEL."""
+    from omg_cli.visual_pixels import encode_png_rgba
+
+    _seed(tmp_path)
+    (tmp_path / "ref.png").write_bytes(
+        encode_png_rgba(2, 2, bytes([255, 0, 0, 255] * 4))
+    )
+    (tmp_path / "current.png").write_bytes(
+        encode_png_rgba(3, 3, bytes([0, 255, 0, 255] * 9))
+    )
+    config = _compat_cfg(dimensions=_dims())
+    # Descriptors claim the same size so only the decoded IHDR differs.
+    config["reference"] = {
+        "path": "ref.png",
+        "width": 8,
+        "height": 8,
+        "media_type": "image/png",
+    }
+    config["actual"] = {
+        "path": "current.png",
+        "width": 8,
+        "height": 8,
+        "media_type": "image/png",
+    }
+    cfg = _write_config(tmp_path, config)
+    rc = main(
+        _argv(
+            tmp_path,
+            "visual",
+            "verdict",
+            "--config",
+            str(cfg),
+            "--reference",
+            "ref.png",
+            "--actual",
+            "current.png",
+            "--threshold",
+            "90",
+            "--run-id",
+            "mismatch-decoded",
+        )
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert result["status"] == "blocked"
+    assert result["comparison"]["block_code"] == "image_dimension_mismatch"
+    assert "E_VISUAL_PIXEL" not in json.dumps(payload)
+    _assert_no_forbidden(payload)
+
+
 def test_verdict_masks_and_byte_identity(tmp_path: Path, capsys) -> None:
     _seed(tmp_path)
     shutil.copyfile(tmp_path / "ref.png", tmp_path / "current.png")
