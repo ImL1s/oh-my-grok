@@ -40,6 +40,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#73 leftover: hermetic SCIP protobuf Index:** CodeGraph `index`
+  writes a sibling `{local,shared}-index.scip` (Index/Document/Occurrence
+  subset, no pip protobuf). Status/query load occurrences from that
+  protobuf (`not_scip: false` when it decodes). JSON-lite stays
+  `not_scip: true`. PATH Homebrew MIP `scip` (scipopt) is classified
+  and refused as Sourcegraph SCIP. Not live Antigravity MCP. Never
+  `verified`. Refs #73 (does not close).
 - **#76 leftover: prove grok exit after terminal job.json:** `wait_job`
   returns as soon as the persisted record is terminal. Simplify used that
   stamp to skip `cancel_job`, so a still-live grok (forged SUCCEEDED)
