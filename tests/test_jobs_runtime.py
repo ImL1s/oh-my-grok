@@ -388,6 +388,101 @@ def test_prove_missing_record_unproven_even_with_dead_extra(root: Path) -> None:
         )
 
 
+def test_pgid_member_identities_includes_same_session_child() -> None:
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.ownership import pgid_member_identities, pid_alive
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        found = {ident.pid for ident in pgid_member_identities(os.getpgid(parent.pid))}
+        assert parent.pid in found
+        assert child_pid in found
+    finally:
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            parent.wait(timeout=3)
+
+
+def test_prove_job_processes_gone_sees_surviving_pgid_member(root: Path) -> None:
+    """Leader PID gone is not proof the captured process group is empty."""
+    import subprocess
+    import sys
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, time\n"
+            "child = subprocess.Popen(['sleep', '60'])\n"
+            "print(child.pid, flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    child_pid = 0
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        ident = capture_identity(parent.pid, pgid=os.getpgid(parent.pid))
+        rec = JobRecord(
+            job_id="20260824T000000Z-c0de0001",
+            created_at="2026-08-24T00:00:00Z",
+            provider="grok",
+            role="researcher",
+            state=JobState.SUCCEEDED,
+            pid=None,
+            pgid=None,
+            result="artifacts/result.md",
+        )
+        (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+        write_job_record(root, rec)
+        os.kill(parent.pid, 9)
+        parent.wait(timeout=3)
+        assert not pid_alive(parent.pid)
+        assert pid_alive(child_pid)
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.2, extra_identities=(ident,)
+            )
+    finally:
+        if child_pid and pid_alive(child_pid):
+            os.kill(child_pid, 9)
+        if pid_alive(parent.pid):
+            try:
+                os.killpg(os.getpgid(parent.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                parent.kill()
+            try:
+                parent.wait(timeout=3)
+            except Exception:
+                pass
+
+
 def test_child_identities_lists_direct_child() -> None:
     import subprocess
     import sys

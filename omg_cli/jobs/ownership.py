@@ -421,6 +421,63 @@ def child_identities(parent_pid: int) -> tuple[ProcessIdentity, ...]:
     return tuple(found)
 
 
+def _pids_in_pgid(pgid: int) -> list[int]:
+    """Best-effort live PIDs that currently share *pgid*."""
+    if pgid <= 1:
+        return []
+    out: list[int] = []
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,pgid="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid_i = int(parts[0])
+            pgid_i = int(parts[1])
+        except ValueError:
+            continue
+        if pgid_i == pgid and pid_i > 1:
+            out.append(pid_i)
+    return out
+
+
+def pgid_member_identities(pgid: int) -> tuple[ProcessIdentity, ...]:
+    """Capture identities of every live process in *pgid*.
+
+    Inner grok may fork a background child in the same session, close stdio,
+    and exit. Proving only the leader PID is gone is not process-group exit.
+    Snapshot members while the leader is still live; do not rescan a pgid
+    after the leader dies (the id can be reused).
+    """
+    if pgid <= 1:
+        return ()
+    found: list[ProcessIdentity] = []
+    seen: set[int] = set()
+    for pid in _pids_in_pgid(pgid):
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            ident = capture_identity(pid)
+        except JobStoreError:
+            continue
+        if ident.pgid != pgid:
+            continue
+        found.append(ident)
+    return tuple(found)
+
+
 __all__ = [
     "IdentityProbeOutcome",
     "OwnershipOutcome",
@@ -429,6 +486,7 @@ __all__ = [
     "capture_identity",
     "child_identities",
     "is_json_int",
+    "pgid_member_identities",
     "kill_pgid",
     "parse_process_identity",
     "pid_alive",

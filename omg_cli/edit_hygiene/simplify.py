@@ -50,6 +50,7 @@ from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     ProcessIdentity,
     child_identities,
+    pgid_member_identities,
     probe_identity_liveness,
 )
 from omg_cli.jobs.runtime import (
@@ -662,15 +663,25 @@ def _absorb_runner_children(
     identities: dict[int, ProcessIdentity],
     runner_pids: set[int],
 ) -> None:
-    """Snapshot OS children of still-live start-job runners (not job.json)."""
-    for pid in list(runner_pids):
-        ident = identities.get(pid)
-        if ident is None:
-            continue
-        if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
-            continue
-        for child in child_identities(ident.pid):
-            identities.setdefault(child.pid, child)
+    """Snapshot OS children and live process-group members (not job.json)."""
+    del runner_pids
+    scanned: set[int] = set()
+    pending = True
+    while pending:
+        pending = False
+        for ident in list(identities.values()):
+            if ident.pid in scanned:
+                continue
+            if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
+                scanned.add(ident.pid)
+                continue
+            scanned.add(ident.pid)
+            extras = list(child_identities(ident.pid))
+            extras.extend(pgid_member_identities(ident.pgid))
+            for extra in extras:
+                if extra.pid not in identities:
+                    identities[extra.pid] = extra
+                    pending = True
 
 
 def _cancel_simplify_job(

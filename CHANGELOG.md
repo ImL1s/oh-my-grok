@@ -51,7 +51,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `cancel_job` does not signal PIDs from `job.json` (a forged stamp can
   name a victim). Reap/prove use exact-identity probes so PID reuse is
   not signaled. An observed runner without an inner child is unproven.
-  Refs #76 (does not close).
+  A dead provider leader is not proof its process group is empty:
+  live pgid members captured while the leader was alive (or still listed
+  under that pgid) keep the command fail-closed. Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait
