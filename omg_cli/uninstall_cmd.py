@@ -223,6 +223,15 @@ def _grok_home(home: Path | None) -> Path:
     return grok_home(home)
 
 
+def _owned_plan_has_hook_artifact(owned_plan: dict) -> bool:
+    """True when the surgical plan lists ``user.grok.hook`` (remove or preserve)."""
+    for bucket in ("remove", "preserve"):
+        for row in owned_plan.get(bucket) or []:
+            if isinstance(row, dict) and row.get("id") == "user.grok.hook":
+                return True
+    return False
+
+
 def run_uninstall(
     *,
     yes: bool = False,
@@ -472,9 +481,11 @@ def run_uninstall(
 
     # 2. remove global hook (json FIRST, then standalone .py — never leave an
     #    active json pointing at a missing script). Shared with the installer.
-    #    Manifest-owned drifted hooks are preserved; with a manifest and no
-    #    receipt, only matching owned paths are unlinked (surgical, later).
-    skip_legacy_hooks = receipt is None and bool(owned_plan.get("has_manifest"))
+    #    Skip only when the owned plan actually lists user.grok.hook (remove or
+    #    preserve). A skill-only / unrelated manifest must not leave the hook
+    #    behind. Manifest-owned drifted hooks stay preserved; matching owned
+    #    paths are unlinked surgically later.
+    skip_legacy_hooks = receipt is None and _owned_plan_has_hook_artifact(owned_plan)
     try:
         from omg_cli.hook_install import remove_global_hook
 

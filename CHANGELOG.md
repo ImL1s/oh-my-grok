@@ -360,6 +360,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#77 leftover:** `omg uninstall --yes` no longer skips legacy global
+  hook removal just because *any* install manifest exists. `remove_global_hook`
+  is deferred only when the owned plan lists `user.grok.hook` (remove or
+  preserve). A skill-only import manifest still unlinks
+  `{GROK_HOME}/hooks/omg-pretool-deny.json`; drifted owned hooks stay
+  preserved. Refs #77.
 - **#73 tools sidecar leftovers:** `StdioLspTransport` answers server
   `workspace/configuration` requests with empty settings (not dropped by
   id mismatch) so hover/definition can complete. `omg tools doctor` emits
