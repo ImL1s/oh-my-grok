@@ -1154,6 +1154,9 @@ def _submit_interactive_inbox_instructions(
             submitted[key] = False
             continue
         attempt = row.get("attempt")
+        if row.get("echo_probe") is True:
+            submitted[key] = False
+            continue
         already = bool(row.get("inbox_instruction_submitted"))
         if (
             already

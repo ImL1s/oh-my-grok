@@ -40,6 +40,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#147 leftover interactive echo-probe inbox collision:**
+  `OMG_TEAM_INTERACTIVE_ECHO_PROBE=1` still attaches grok `--rules` for
+  `PROVIDER_ECHO:` but no longer auto-submits
+  `interactive_inbox_instruction` ("execute the assigned task now")
+  after TUI_READY. That assignment put live grok into a tool-using turn
+  so `omg team input --submit` of the unique token never produced
+  provider-side `PROVIDER_ECHO` (local composer echo only). Live smoke
+  uses `yolo=False` and accepts a leader TUI_READY stamp when grok's
+  splash wipes the marker from pane scrollback. Inbox skip is per-task
+  `echo_probe`, not process-wide env. Still does **not**
+  claim `LIVE_TEAM_INTERACTIVE_TTY_OK` from fixtures. Refs #147
+  (does not close).
 - **#74 leftover live Grok ACP vendor chrome:** `grok agent stdio`
   emits `_x.ai/mcp/*`, `_x.ai/session_notification`, and similar
   notifications during initialize/`session/resume`. The handshake
