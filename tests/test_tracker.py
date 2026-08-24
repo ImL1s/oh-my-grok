@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 from omg_cli.contracts.tracker_contract import make_role_receipt
-from omg_cli.runtime_events import normalize_lifecycle_event
+from omg_cli.hooks_registry import (
+    BUS_EVENT_TYPES,
+    WRAPPER_SOURCE,
+    dispatch,
+    emit_wrapper_event,
+)
+from omg_cli.runtime_events import normalize_lifecycle_event, read_all_runtime_events
 from omg_cli.tracker import (
     TrackerLeaseBusy,
     _default_process_identity_matches,
@@ -45,6 +53,87 @@ def test_projector_unions_out_of_order_sources_dedupes_and_never_reopens_closed(
         events=[_event(3, "turn_started")],
     )
     assert load_tracker_projection(tmp_path, "run-1")["sessions"]["session-1"]["state"] == "closed"
+
+
+def test_job_terminal_wrapper_event_does_not_close_tracker_session(
+    tmp_path: Path, capsys
+) -> None:
+    from omg_cli.main import main
+
+    assert BUS_EVENT_TYPES["job.terminal"] == "turn_completed"
+    assert BUS_EVENT_TYPES["session.end"] == "agent_closed"
+    assert BUS_EVENT_TYPES["subagent.stop"] == "agent_closed"
+
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
+    run_id = "run-job-term"
+    session_id = "sess-job-term"
+    registry_root = Path(__file__).resolve().parents[1]
+    started = dispatch(
+        "session.start",
+        {
+            "root": str(tmp_path),
+            "run_id": run_id,
+            "session_id": session_id,
+        },
+        root=registry_root,
+        env={},
+    )
+    assert started["ok"] is True
+    assert started["journal"]["ok"] is True
+
+    emitted = emit_wrapper_event(
+        "job.terminal",
+        {
+            "root": str(tmp_path),
+            "run_id": run_id,
+            "session_id": session_id,
+            "job_id": "20990101T000000Z-abcd1234",
+            "from": "running",
+            "to": "succeeded",
+        },
+        env={},
+    )
+    assert emitted["ok"] is True
+    assert emitted["journal"]["ok"] is True
+    assert emitted["verified"] is False
+
+    rows = [
+        row for row in read_all_runtime_events(tmp_path) if row.get("run_id") == run_id
+    ]
+    job_rows = [
+        row for row in rows if row["payload"].get("canonical_event") == "job.terminal"
+    ]
+    assert len(job_rows) == 1
+    assert job_rows[0]["event_type"] == "turn_completed"
+    assert job_rows[0]["source"] == WRAPPER_SOURCE
+    assert job_rows[0]["session_id"] == session_id
+    assert job_rows[0]["payload"]["canonical_event"] == "job.terminal"
+
+    projected = project_lifecycle_events(
+        tmp_path, run_id=run_id, generation=1, events=rows
+    )
+    session = projected["sessions"][session_id]
+    assert session["state"] != "closed"
+    assert session["state"] == "active"
+
+    rc = main(
+        [
+            "--json",
+            "--project-root",
+            str(tmp_path),
+            "tracker",
+            "project",
+            "--run",
+            run_id,
+            "--generation",
+            "1",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    cli_sessions = (payload.get("data") or payload)["sessions"]
+    assert cli_sessions[session_id]["state"] != "closed"
+    assert cli_sessions[session_id]["state"] == "active"
 
 
 def test_native_and_fallback_sources_form_one_logical_event_union(tmp_path) -> None:

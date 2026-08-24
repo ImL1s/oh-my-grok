@@ -709,8 +709,49 @@ def test_bus_event_types_keep_stop_and_tool_failure_nonterminal() -> None:
     assert BUS_EVENT_TYPES["stop.request"] == "turn_started"
     assert BUS_EVENT_TYPES["idle"] == "turn_started"
     assert BUS_EVENT_TYPES["tool.failure"] == "turn_completed"
+    assert BUS_EVENT_TYPES["job.terminal"] == "turn_completed"
     assert BUS_EVENT_TYPES["session.end"] == "agent_closed"
     assert BUS_EVENT_TYPES["subagent.stop"] == "agent_closed"
+
+
+def test_job_terminal_maps_to_turn_completed_and_keeps_session_active(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.runtime_events import read_all_runtime_events
+    from omg_cli.tracker import project_lifecycle_events
+
+    assert BUS_EVENT_TYPES["job.terminal"] == "turn_completed"
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
+    run_id = "run-wrap-job"
+    session_id = "sess-wrap-job"
+    result = emit_wrapper_event(
+        "job.terminal",
+        {
+            "root": str(tmp_path),
+            "run_id": run_id,
+            "session_id": session_id,
+            "job_id": "20990101T000000Z-abcd1234",
+            "from": "running",
+            "to": "succeeded",
+        },
+        env={},
+    )
+    assert result["ok"] is True
+    assert result["journal"]["ok"] is True
+    assert result["verified"] is False
+    rows = [
+        row for row in read_all_runtime_events(tmp_path) if row.get("run_id") == run_id
+    ]
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "turn_completed"
+    assert rows[0]["payload"]["canonical_event"] == "job.terminal"
+    assert rows[0]["source"] == WRAPPER_SOURCE
+    projected = project_lifecycle_events(
+        tmp_path, run_id=run_id, generation=1, events=rows
+    )
+    session = projected["sessions"][session_id]
+    assert session["state"] != "closed"
+    assert session["state"] == "active"
 
 
 def _wrapper_rows(tmp_path: Path) -> list[dict]:
@@ -776,6 +817,8 @@ def test_emit_wrapper_event_journals_kinds_schema_and_post_hoc(tmp_path: Path) -
     rows = _wrapper_rows(tmp_path)
     kinds = [row["payload"]["canonical_event"] for row in rows]
     assert kinds == ["artifact.created", "job.terminal", "team.member.transition"]
+    job_rows = [row for row in rows if row["payload"]["canonical_event"] == "job.terminal"]
+    assert job_rows[0]["event_type"] == "turn_completed"
     for row in rows:
         assert row["source"] == WRAPPER_SOURCE
         assert row["payload"]["source"] == WRAPPER_SOURCE
@@ -816,6 +859,8 @@ def test_emit_wrapper_event_redacts_secrets_and_omits_verified(
     assert row["payload"].get("verified") is False
     assert "passes" not in row["payload"]
     assert row["payload"]["to"] == "failed"
+    assert row["event_type"] == "turn_completed"
+    assert row["payload"]["canonical_event"] == "job.terminal"
 
 
 def test_compact_handoff_emits_artifact_created(tmp_path: Path) -> None:
