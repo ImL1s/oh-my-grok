@@ -47,6 +47,7 @@ from omg_cli.win32_nofollow import (
     OPEN_EXISTING,
     Win32NofollowError,
     windows_nofollow_ready,
+    write_path_regular,
 )
 
 pytestmark = pytest.mark.platform
@@ -294,6 +295,8 @@ class FakeWin32API:
 
 @pytest.fixture
 def fake_win32(monkeypatch: pytest.MonkeyPatch) -> FakeWin32API:
+    if os.name == "nt":
+        pytest.skip("injected FakeWin32API is POSIX-backed; real Windows uses CtypesWin32API")
     api = FakeWin32API()
     monkeypatch.setattr("omg_cli.win32_nofollow._API", api)
     # Do not set os.name=nt: pathlib.Path would become WindowsPath and
@@ -559,6 +562,20 @@ def test_skills_windows_refuse_and_write(
     with pytest.raises(SkillsCatalogError, match="symlink"):
         _atomic_write_text(dest, "hijack\n")
     assert outside.read_text(encoding="utf-8") == "nope\n"
+
+
+def test_write_path_regular_rejects_ancestor_reparse(
+    tmp_path: Path, fake_win32: FakeWin32API
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    dest = docs / "parity" / "SKILL.md"
+    dest.parent.mkdir()
+    dest.write_text("old\n", encoding="utf-8")
+    fake_win32.forced_reparse[str(docs.resolve())] = (IO_REPARSE_TAG_MOUNT_POINT, True)
+    with pytest.raises(Win32NofollowError, match="symlink|reparse"):
+        write_path_regular(dest, b"new\n")
+    assert dest.read_text(encoding="utf-8") == "old\n"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="real Windows CreateFileW")

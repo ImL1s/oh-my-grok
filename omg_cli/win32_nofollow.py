@@ -55,6 +55,7 @@ _WIN_SHARING = {32}
 
 _DEFAULT_MODE = 0o666
 _MAX_PATH_CHARS = 32767
+WRITE_PATH_MAX_BYTES = 8 * 1024 * 1024
 
 
 class Win32NofollowError(OSError):
@@ -325,8 +326,8 @@ def write_relative_regular(
         leaf = api.nt_create(
             parent,
             name,
-            access=GENERIC_READ | SYNCHRONIZE,
-            share=0,
+            access=GENERIC_READ | DELETE | SYNCHRONIZE,
+            share=FILE_SHARE_DELETE,
             disposition=FILE_OPEN,
             options=(
                 FILE_NON_DIRECTORY_FILE
@@ -352,8 +353,6 @@ def write_relative_regular(
             return applied_mode
         if expected is not None and current != expected:
             raise Win32NofollowError("expected", "current file bytes do not match expected")
-        _close(api, leaf)
-        leaf = None
         tmp = api.nt_create(
             parent,
             tmp_name,
@@ -371,25 +370,13 @@ def write_relative_regular(
         while written < len(payload):
             written += api.write(tmp, payload[written:])
         api.flush(tmp)
-        probe: int | None = None
-        try:
-            probe = api.nt_create(
-                parent,
-                name,
-                access=GENERIC_READ | SYNCHRONIZE,
-                share=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                disposition=FILE_OPEN,
-                options=(
-                    FILE_NON_DIRECTORY_FILE
-                    | FILE_OPEN_REPARSE_POINT
-                    | FILE_SYNCHRONOUS_IO_NONALERT
-                ),
-            )
-            _reject_reparse(api, probe, label=name, directory=False)
-        finally:
-            _close(api, probe)
+        # Dest stays open (FILE_SHARE_DELETE) so another writer cannot
+        # splice the leaf while the temp is published.
+        _reject_reparse(api, leaf, label=name, directory=False)
         api.rename_replace(tmp, name, root_handle=parent)
         tmp = None
+        _close(api, leaf)
+        leaf = None
         published, _published_mode = read_relative_regular(
             root, parts, max_bytes=max_bytes
         )
@@ -412,47 +399,33 @@ def write_relative_regular(
 
 
 def write_path_regular(path: Path | str, body: bytes) -> None:
-    """Replace *path*'s leaf without following a dest reparse point."""
+    """Replace *path*'s leaf, walking every ancestor without following."""
 
-    dest = Path(path).absolute()
-    parent = dest.parent
-    api = _get_api()
-    parent_h = api.create_file(
-        str(parent),
-        access=GENERIC_READ | SYNCHRONIZE,
-        share=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        disposition=OPEN_EXISTING,
-        flags=FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-    )
-    tmp: int | None = None
-    tmp_name = f".{dest.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    dest = Path(os.path.abspath(os.fspath(path)))
+    parts = list(dest.parts)
+    if len(parts) < 2:
+        raise Win32NofollowError("not_regular", "path is empty")
+    payload = bytes(body)
+    cap = max(WRITE_PATH_MAX_BYTES, len(payload))
     try:
-        _reject_reparse(api, parent_h, label=str(parent), directory=True)
-        _validate_component(dest.name)
-        try:
-            existing = api.nt_create(
-                parent_h,
-                dest.name,
-                access=GENERIC_READ | SYNCHRONIZE,
-                share=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                disposition=FILE_OPEN,
-                options=(
-                    FILE_NON_DIRECTORY_FILE
-                    | FILE_OPEN_REPARSE_POINT
-                    | FILE_SYNCHRONOUS_IO_NONALERT
-                ),
-            )
-        except Win32NofollowError as exc:
-            if exc.kind != "missing":
-                raise
-        else:
-            try:
-                _reject_reparse(api, existing, label=dest.name, directory=False)
-            finally:
-                _close(api, existing)
-        payload = bytes(body)
+        write_relative_regular(
+            parts[0],
+            list(parts[1:]),
+            payload,
+            expected=None,
+            mode=None,
+            max_bytes=cap,
+        )
+        return
+    except Win32NofollowError as exc:
+        if exc.kind != "missing":
+            raise
+    api, parent, name = _walk_parent(Path(parts[0]), parts[1:])
+    tmp: int | None = None
+    tmp_name = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
         tmp = api.nt_create(
-            parent_h,
+            parent,
             tmp_name,
             access=GENERIC_WRITE | GENERIC_READ | SYNCHRONIZE | DELETE,
             share=0,
@@ -463,51 +436,55 @@ def write_path_regular(path: Path | str, body: bytes) -> None:
                 | FILE_SYNCHRONOUS_IO_NONALERT
             ),
         )
+        _reject_reparse(api, tmp, label=tmp_name, directory=False)
         written = 0
         while written < len(payload):
             written += api.write(tmp, payload[written:])
         api.flush(tmp)
-        api.rename_replace(tmp, dest.name, root_handle=parent_h)
+        api.rename_replace(tmp, name, root_handle=parent)
         tmp = None
     finally:
         if tmp is not None:
             _close(api, tmp)
             try:
-                api.unlink(parent_h, tmp_name)
+                api.unlink(parent, tmp_name)
             except Exception:
                 pass
-        _close(api, parent_h)
+        _close(api, parent)
 
 
 def reject_existing_reparse(path: Path | str) -> None:
-    """Open *path* without following; raise if it is a reparse point."""
+    """Walk *path* from the volume root without following a reparse."""
 
-    target = Path(path)
-    if not target.exists() and not target.is_symlink():
+    dest = Path(os.path.abspath(os.fspath(path)))
+    if not dest.exists() and not dest.is_symlink():
         return
-    api = _get_api()
-    flags = FILE_FLAG_OPEN_REPARSE_POINT
+    parts = list(dest.parts)
+    if len(parts) < 2:
+        return
+    api, parent, name = _walk_parent(Path(parts[0]), parts[1:])
+    leaf: int | None = None
     try:
-        if target.is_dir() and not target.is_symlink():
-            flags |= FILE_FLAG_BACKUP_SEMANTICS
-    except OSError:
-        flags |= FILE_FLAG_BACKUP_SEMANTICS
-    handle = api.create_file(
-        str(target),
-        access=GENERIC_READ | SYNCHRONIZE,
-        share=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        disposition=OPEN_EXISTING,
-        flags=flags,
-    )
-    try:
-        info = api.get_info(handle)
-        if info.is_reparse or info.reparse_tag:
-            raise Win32NofollowError(
-                "symlink",
-                f"refusing symlink dest: {Path(path).as_posix()}",
-            )
+        leaf = api.nt_create(
+            parent,
+            name,
+            access=GENERIC_READ | SYNCHRONIZE,
+            share=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            disposition=FILE_OPEN,
+            options=(
+                FILE_NON_DIRECTORY_FILE
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+            ),
+        )
+        _reject_reparse(api, leaf, label=name, directory=False)
+    except Win32NofollowError as exc:
+        if exc.kind == "missing":
+            return
+        raise
     finally:
-        _close(api, handle)
+        _close(api, leaf)
+        _close(api, parent)
 
 
 class CtypesWin32API:
@@ -700,8 +677,9 @@ class CtypesWin32API:
         ctypes = self._ctypes
         buf = ctypes.create_unicode_buffer(name)
         uni = self._UNICODE_STRING()
-        uni.Length = len(name) * 2
-        uni.MaximumLength = (len(name) + 1) * 2
+        encoded = name.encode("utf-16-le")
+        uni.Length = len(encoded)
+        uni.MaximumLength = len(encoded) + 2
         uni.Buffer = ctypes.cast(buf, ctypes.POINTER(self._wintypes.WCHAR))
         oa = self._OBJECT_ATTRIBUTES()
         oa.Length = ctypes.sizeof(self._OBJECT_ATTRIBUTES)
