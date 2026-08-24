@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -517,39 +518,58 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+_FINGERPRINT_SKIP_DIRS: Final[frozenset[str]] = frozenset(
+    {".git", ".omg/artifacts", ".omg/jobs"}
+)
+
+
+def _skip_fingerprint_rel(rel: str) -> bool:
+    posix = rel.replace("\\", "/")
+    while posix.startswith("./"):
+        posix = posix[2:]
+    if posix in _FINGERPRINT_SKIP_DIRS:
+        return True
+    return (
+        posix.startswith(".git/")
+        or posix.startswith(".omg/artifacts/")
+        or posix.startswith(".omg/jobs/")
+    )
+
+
 def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
-    """SHA-256 of git-visible files outside ``.omg/`` (dirty-file content, not just status)."""
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "ls-files",
-                "-co",
-                "--exclude-standard",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {}
-    if proc.returncode != 0:
-        return {}
+    """SHA-256 of regular files except git metadata and expected job/artifact output.
+
+    Includes ``.omg/state`` so forged ``passes``/``verified`` cannot hide.
+    Jobs is not an OS sandbox; this is comprehensive mutation detection.
+    """
+    root_path = Path(root).resolve()
     out: dict[str, str] = {}
-    for rel in proc.stdout.splitlines():
-        rel = rel.strip()
-        if not rel or rel.startswith(".omg/") or "/.omg/" in f"/{rel}":
+    for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
+        try:
+            rel_dir = Path(dirpath).resolve().relative_to(root_path).as_posix()
+        except ValueError:
+            dirnames[:] = []
             continue
-        path = Path(root) / rel
-        if not path.is_file():
-            continue
-        digest = _file_sha256(path)
-        if digest is None:
-            continue
-        out[rel] = digest
+        if rel_dir == ".":
+            rel_dir = ""
+        keep: list[str] = []
+        for name in dirnames:
+            child = f"{rel_dir}/{name}" if rel_dir else name
+            if name == ".git" or _skip_fingerprint_rel(child):
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+        for name in filenames:
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            if _skip_fingerprint_rel(rel):
+                continue
+            path = Path(dirpath) / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            digest = _file_sha256(path)
+            if digest is None:
+                continue
+            out[rel] = digest
     return out
 
 

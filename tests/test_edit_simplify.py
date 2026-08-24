@@ -574,6 +574,50 @@ def test_simplify_provider_detects_unselected_tracked_mutation(
     assert other.read_text(encoding="utf-8") == "y = 2\n"
 
 
+def test_simplify_provider_detects_omg_state_and_gitignored_mutation(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    (project / ".gitignore").write_text("secrets.env\n", encoding="utf-8")
+    (project / "secrets.env").write_text("k=1\n", encoding="utf-8")
+    state_dir = project / ".omg" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    forged = state_dir / "forged-verified.json"
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_edit(project_root: Path, job_id: str, **kwargs: object):
+        forged.write_text('{"verified": true, "passes": true}\n', encoding="utf-8")
+        (project / "secrets.env").write_text("k=2\n", encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_edit  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+    assert forged.read_text(encoding="utf-8") == '{"verified": true, "passes": true}\n'
+
+
 def test_simplify_provider_rejects_wrong_producer(
     project: Path,
     capsys: pytest.CaptureFixture[str],

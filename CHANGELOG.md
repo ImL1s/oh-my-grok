@@ -85,7 +85,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Descriptors must bind to the captured snapshot, `producer` must be
   `omg-code-simplifier`, and an empty descriptor list is `no_changes`
   (no `--apply-edits` next action). Git-visible files outside `.omg/`
-  are content-fingerprinted (streamed SHA-256); Jobs is not an OS
+  are content-fingerprinted (streamed SHA-256), including `.omg/state`
+  (forged `passes`/`verified` cannot hide). `.omg/artifacts` and
+  `.omg/jobs` are skipped as expected outputs. Jobs is not an OS
   sandbox. Hermetic: `tests/test_edit_simplify.py`. Refs #76 (does not
   close).
 - **#75 leftover PATH screencapture capture default:** `omg visual capture`
