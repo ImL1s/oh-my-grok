@@ -296,10 +296,20 @@ def _decode_png_bytes(body: bytes) -> tuple[int, int, bytes]:
         raise VisualPixelError("indexed PNG is missing PLTE")
     channels = _channels(color_type)
     bits_pp = bit_depth * channels
+    scanline = 1 + ((width * bits_pp + 7) // 8)
+    expected_raw = height * scanline
+    # Interlace + zlib slack, still bounded by declared pixels.
+    max_raw = min(MAX_IMAGE_BYTES, max(expected_raw * 8, expected_raw + 64, 1024))
     try:
-        raw = zlib.decompress(bytes(idat))
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(bytes(idat), max_raw)
+        if decoder.unconsumed_tail:
+            raise VisualPixelError("PNG decompression exceeds bound")
+        raw += decoder.flush()
     except zlib.error as exc:
         raise VisualPixelError("truncated PNG") from exc
+    if len(raw) > max_raw:
+        raise VisualPixelError("PNG decompression exceeds bound")
     rgba = _reconstruct(
         raw,
         width=width,
