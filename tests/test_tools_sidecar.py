@@ -7,16 +7,21 @@ import json
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 from omg_cli.mcp.tools import FORBIDDEN_TOOL_NAMES, dispatch_tool
 from omg_cli.tools_sidecar import (
+    MAX_RESULT_BYTES,
     SIDECAR_TOOL_NAMES,
     FakeLspTransport,
+    StdioLspTransport,
     ToolsError,
     _astgrep_bin,
+    _workspace_configuration_result,
+    ensure_lsp_session,
     ast_replace,
     ast_search,
     codegraph_index,
@@ -97,6 +102,7 @@ def test_fake_lsp_protocol_operations(tmp_path: Path) -> None:
         )
         assert result["ok"] is True
         assert result["verified"] is False
+        assert result["truncated"] is False
     transport.close()
     assert transport.closed is True
 
@@ -358,6 +364,8 @@ def test_cli_tools_lsp_fake_hover(tmp_path: Path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["result"]["verified"] is False
+    assert payload["result"]["truncated"] is False
+    assert payload["result"]["result"]["contents"]["value"] == "fake hover"
 
 
 def test_capabilities_embeds_tools_sidecar() -> None:
@@ -385,6 +393,8 @@ def test_lsp_initialize_precedes_semantic_request(tmp_path: Path) -> None:
     assert "initialized" in names
     assert "textDocument/didOpen" in names
     assert "textDocument/hover" in names
+    init = next(params for name, params in transport.calls if name == "initialize")
+    assert init["capabilities"]["workspace"]["configuration"] is True
 
 
 def test_lsp_forwards_requested_position(tmp_path: Path) -> None:
@@ -479,6 +489,25 @@ def test_stdio_transport_reads_full_frame_from_raw_pipe(tmp_path: Path) -> None:
         transport.close()
 
 
+def test_workspace_configuration_empty_settings() -> None:
+    assert _workspace_configuration_result(None) == []
+    assert _workspace_configuration_result({}) == []
+    assert _workspace_configuration_result({"items": "python"}) == []
+    assert _workspace_configuration_result({"items": []}) == []
+    assert _workspace_configuration_result(
+        {"items": [{"section": "python"}, {"section": "editor"}]}
+    ) == [{}, {}]
+
+
+def test_fake_lsp_workspace_configuration_empty_settings() -> None:
+    transport = FakeLspTransport()
+    assert transport.request(
+        "workspace/configuration", {"items": [{"section": "python"}]}
+    ) == [{}]
+    assert transport.request("workspace/configuration", {}) == []
+    transport.close()
+
+
 def test_stdio_transport_skips_notifications_until_matching_id(
     tmp_path: Path,
 ) -> None:
@@ -505,6 +534,206 @@ def test_stdio_transport_skips_notifications_until_matching_id(
         assert transport.request("textDocument/hover", {}) == {"contents": "ok"}
     finally:
         transport.close()
+
+
+_CONFIG_LSP_SCRIPT = r"""
+import json
+import os
+import sys
+
+pending = bytearray()
+
+def read_more():
+    chunk = os.read(sys.stdin.fileno(), 4096)
+    if not chunk:
+        return False
+    pending.extend(chunk)
+    return True
+
+def read_msg():
+    global pending
+    while b"\r\n\r\n" not in pending:
+        if not read_more():
+            return None
+    head, rest = bytes(pending).split(b"\r\n\r\n", 1)
+    length = None
+    for line in head.decode("ascii", "replace").split("\r\n"):
+        if line.lower().startswith("content-length:"):
+            length = int(line.split(":", 1)[1].strip())
+    if length is None:
+        return None
+    pending = bytearray(rest)
+    while len(pending) < length:
+        if not read_more():
+            return None
+    body = bytes(pending[:length])
+    del pending[:length]
+    return json.loads(body.decode("utf-8"))
+
+def write_msg(msg):
+    raw = json.dumps(msg).encode("utf-8")
+    sys.stdout.buffer.write(
+        ("Content-Length: %s\r\n\r\n" % len(raw)).encode("ascii") + raw
+    )
+    sys.stdout.buffer.flush()
+
+def answer_configuration(req_id, items):
+    write_msg({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "workspace/configuration",
+        "params": {"items": items},
+    })
+    reply = read_msg()
+    if not isinstance(reply, dict) or reply.get("id") != req_id:
+        raise SystemExit("configuration reply missing")
+    return reply.get("result")
+
+while True:
+    msg = read_msg()
+    if msg is None:
+        break
+    method = msg.get("method")
+    msg_id = msg.get("id")
+    if method == "initialize":
+        answer_configuration("cfg-init", [{"section": "python"}])
+        write_msg({
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "capabilities": {
+                    "hoverProvider": True,
+                    "definitionProvider": True,
+                }
+            },
+        })
+        continue
+    if method in {
+        "initialized",
+        "textDocument/didOpen",
+        "textDocument/didChange",
+        "shutdown",
+    }:
+        continue
+    if method in {"textDocument/hover", "textDocument/definition"}:
+        config = answer_configuration(
+            "cfg-semantic", [{"section": "python"}, {"section": "editor"}]
+        )
+        if method == "textDocument/hover":
+            write_msg({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"contents": "ok", "config_reply": config},
+            })
+        else:
+            write_msg({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"config_reply": config},
+            })
+        continue
+"""
+
+
+def test_stdio_replies_to_workspace_configuration_during_hover_and_definition(
+    tmp_path: Path,
+) -> None:
+    from omg_cli.tools_sidecar import StdioLspTransport
+
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    script = tmp_path / "config_lsp.py"
+    script.write_text(_CONFIG_LSP_SCRIPT, encoding="utf-8")
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=3.0
+    )
+    try:
+        hover = lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+        assert hover["ok"] is True
+        assert hover["verified"] is False
+        assert hover["result"]["contents"] == "ok"
+        assert hover["result"]["config_reply"] == [{}, {}]
+        definition = lsp_operation(
+            "definition", root=tmp_path, path="a.py", transport=transport
+        )
+        assert definition["ok"] is True
+        assert definition["verified"] is False
+        assert definition["result"]["config_reply"] == [{}, {}]
+    finally:
+        transport.close()
+
+
+def test_lsp_refuses_truncated_document_semantic_ops(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_bytes(b"x = 1\n" + b"a" * MAX_RESULT_BYTES)
+    transport = FakeLspTransport()
+    for op in ("hover", "definition", "rename", "code_action"):
+        with pytest.raises(ToolsError, match="E_LSP_TRUNCATED") as excinfo:
+            lsp_operation(op, root=tmp_path, path="a.py", transport=transport)
+        assert excinfo.value.details["truncated"] is True
+        assert excinfo.value.details["max_bytes"] == MAX_RESULT_BYTES
+    names = [name for name, _ in transport.calls]
+    assert "textDocument/hover" not in names
+    assert "textDocument/definition" not in names
+    assert "textDocument/rename" not in names
+    assert "textDocument/codeAction" not in names
+    assert "textDocument/didOpen" not in names
+
+
+def test_lsp_exact_size_bound_is_not_truncated(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_bytes(b"a" * MAX_RESULT_BYTES)
+    transport = FakeLspTransport()
+    result = lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+    assert result["ok"] is True
+    assert result["truncated"] is False
+    assert "textDocument/hover" in {name for name, _ in transport.calls}
+
+
+def test_workspace_symbols_stamps_truncated_without_prefix_did_open(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.py").write_bytes(b"a" * (MAX_RESULT_BYTES + 1))
+    transport = FakeLspTransport()
+    result = lsp_operation(
+        "workspace_symbols",
+        root=tmp_path,
+        path="a.py",
+        transport=transport,
+        query="x",
+    )
+    assert result["ok"] is True
+    assert result["truncated"] is True
+    assert result["verified"] is False
+    names = [name for name, _ in transport.calls]
+    assert "workspace/symbol" in names
+    assert "textDocument/didOpen" not in names
+
+
+def test_cli_lsp_hover_truncated_document(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omg_cli.main import main
+
+    (tmp_path / "a.py").write_bytes(b"a" * (MAX_RESULT_BYTES + 1))
+    assert (
+        main(
+            [
+                "tools",
+                "lsp",
+                "hover",
+                "--fake-lsp",
+                "--path",
+                "a.py",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_LSP_TRUNCATED"
+    assert payload["error"]["details"]["truncated"] is True
+    assert payload.get("verified") is not True
 
 
 def test_ast_ignores_unrelated_sg_binary(
@@ -736,7 +965,7 @@ def test_lsp_command_remainder_keeps_server_stdio() -> None:
     ]
 
 
-def test_cli_doctor_strict_keeps_outer_envelope(
+def test_cli_doctor_strict_failure_envelope(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from omg_cli.main import main
@@ -744,9 +973,31 @@ def test_cli_doctor_strict_keeps_outer_envelope(
     monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
     assert main(["tools", "doctor", "--strict", "--root", str(tmp_path)]) == 1
     payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["command"] == "tools.doctor"
+    assert payload["error"]["code"] == "E_TOOLS_DOCTOR"
+    details = payload["error"]["details"]
+    assert details["ok"] is False
+    assert details["verified"] is False
+    assert details["observed"] is False
+    assert details["healthy"] is False
+    assert payload.get("verified") is not True
+
+
+def test_cli_doctor_non_strict_success_envelope_stays_consistent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.main import main
+
+    monkeypatch.setenv("OMG_TOOLS_NETWORK", "1")
+    assert main(["tools", "doctor", "--root", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
-    assert payload["result"]["ok"] is False
+    assert payload["result"]["ok"] is True
     assert payload["result"]["verified"] is False
+    assert payload["result"]["observed"] is False
+    assert payload["result"]["healthy"] is False
+    assert "warnings" in payload["result"]
 
 
 def test_cli_codegraph_index(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -800,3 +1051,30 @@ def test_shared_index_refuses_dirty_git_worktree(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("def shared_sym():\n    return 1\n", encoding="utf-8")
     with pytest.raises(ToolsError, match="E_CODEGRAPH_DIRTY"):
         codegraph_index(root=tmp_path, mode="shared")
+
+
+def test_fake_lsp_answers_workspace_folders(tmp_path: Path) -> None:
+    transport = FakeLspTransport()
+    src = tmp_path / "a.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    ensure_lsp_session(transport, root=tmp_path, path="a.py")
+    folders = transport.request("workspace/workspaceFolders", {})
+    assert isinstance(folders, list)
+    assert folders
+    assert folders[0]["uri"].startswith("file:")
+    assert "name" in folders[0]
+
+
+def test_stdio_replies_workspace_folders_request() -> None:
+    written: list[dict] = []
+    dummy = types.SimpleNamespace(
+        _omg_workspace_folders=[{"uri": "file:///ws", "name": "ws"}],
+        _write_message=written.append,
+    )
+    StdioLspTransport._reply_server_request(
+        dummy,
+        {"jsonrpc": "2.0", "id": 9, "method": "workspace/workspaceFolders"},
+    )
+    assert len(written) == 1
+    assert written[0]["id"] == 9
+    assert written[0]["result"] == [{"uri": "file:///ws", "name": "ws"}]

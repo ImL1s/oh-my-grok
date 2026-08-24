@@ -15,6 +15,9 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 | `omg tools …` | Sidecar. Semantic LSP talks to an explicit transport (`--fake-lsp` or `--lsp-command`). Missing ast-grep is **blocked**, not faked. |
 
 - Detected language servers (for example `rust-analyzer` on PATH) are **not** `ready` until a sidecar session actually starts/initializes them. Doctor never auto-starts arbitrary LSPs.
+- `omg tools doctor --strict` emits a **failure** envelope (`ok: false`) when inner checks fail. Inner and outer `ok` stay consistent. Doctor never sets `verified` / `observed` / `healthy` true.
+- Server `workspace/configuration` requests during initialize/hover/definition are answered with empty settings (one `{}` per item, or `[]`) so the language server can proceed. They are not dropped.
+- `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
 - CodeGraph is a **toy local import/symbol scan**, not SCIP and not a branch-accurate shared graph.
 - Network research stays opt-in and **blocked** until a provider and credentials exist (none are bundled).
 - Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
@@ -50,6 +53,8 @@ Language servers are **never auto-installed**.
   plus optional `--end-line`/`--end-character`).
 - After `didOpen`, later disk edits send `textDocument/didChange` (full-text)
   on the next sidecar operation for that URI.
+- `workspace/configuration` is answered with empty settings. Truncated
+  documents fail closed (`E_LSP_TRUNCATED`) instead of a prefix analysis.
 - Network research requires `OMG_TOOLS_NETWORK=1` and a configured provider
   (none is bundled; credentials are never shipped).
 - CodeGraph `shared` results are **not** worktree-accurate. `local` is

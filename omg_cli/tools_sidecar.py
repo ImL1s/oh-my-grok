@@ -101,6 +101,19 @@ LSP_OPERATIONS = (
     "code_action_resolve",
     "servers",
 )
+# Document semantic ops must not run against a silently truncated prefix.
+LSP_SEMANTIC_DOC_OPS = frozenset(
+    {
+        "hover",
+        "definition",
+        "references",
+        "document_symbols",
+        "diagnostics",
+        "prepare_rename",
+        "rename",
+        "code_action",
+    }
+)
 COMMON_LSP_SERVERS = (
     "pylsp",
     "pyright-langserver",
@@ -283,6 +296,22 @@ def _bounded(value: Any) -> Any:
     return value
 
 
+def _workspace_configuration_result(
+    params: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Empty settings for each LSP ``workspace/configuration`` item.
+
+    Real language servers often request this during initialize/hover. An empty
+    object per item is enough for them to proceed; ``[]`` when items is absent.
+    """
+    if not isinstance(params, Mapping):
+        return []
+    items = params.get("items")
+    if not isinstance(items, list):
+        return []
+    return [{} for _ in items]
+
+
 @dataclass
 class FakeLspTransport:
     """In-process JSON-RPC stand-in for protocol tests (not a real language server)."""
@@ -302,6 +331,11 @@ class FakeLspTransport:
             raise ToolsError("E_LSP_CRASH", f"fake server crashed on {method}")
         if method == self.hang_on:
             raise ToolsError("E_LSP_TIMEOUT", f"fake server timed out on {method}")
+        if method == "workspace/configuration":
+            return _workspace_configuration_result(body)
+        if method == "workspace/workspaceFolders":
+            folders = getattr(self, "_omg_workspace_folders", None)
+            return list(folders) if isinstance(folders, list) else []
         if method == "initialize":
             return {
                 "capabilities": {
@@ -479,6 +513,24 @@ class StdioLspTransport:
             {"jsonrpc": "2.0", "method": method, "params": dict(params or {})}
         )
 
+    def _reply_server_request(self, msg: Mapping[str, Any]) -> None:
+        """Answer server→client requests that would otherwise be dropped by id."""
+        req_id = msg.get("id")
+        if req_id is None:
+            return
+        method = msg.get("method")
+        if method == "workspace/configuration":
+            params = msg.get("params")
+            result = _workspace_configuration_result(
+                params if isinstance(params, Mapping) else None
+            )
+        elif method == "workspace/workspaceFolders":
+            folders = getattr(self, "_omg_workspace_folders", None)
+            result = list(folders) if isinstance(folders, list) else []
+        else:
+            return
+        self._write_message({"jsonrpc": "2.0", "id": req_id, "result": result})
+
     def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
         if self._proc.poll() is not None:
             raise ToolsError("E_LSP_CRASH", "language server exited")
@@ -496,6 +548,12 @@ class StdioLspTransport:
         while True:
             msg = self._read_message(deadline)
             if not isinstance(msg, dict):
+                continue
+            incoming_method = msg.get("method")
+            if isinstance(incoming_method, str) and incoming_method:
+                # Server request (has method+id) or notification (method, no id).
+                if "id" in msg and msg.get("id") is not None:
+                    self._reply_server_request(msg)
                 continue
             if msg.get("id") != msg_id:
                 continue
@@ -596,21 +654,25 @@ def _lsp_notify_or_request(
             raise
 
 
-def _read_text_bounded(path: Path) -> str:
+def _read_text_bounded(path: Path) -> tuple[str, bool]:
+    """Read up to MAX_RESULT_BYTES. Second value is True when the file is larger."""
     if not path.is_file():
-        return ""
+        return "", False
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_RESULT_BYTES + 1)
     except OSError:
-        return ""
-    return raw[:MAX_RESULT_BYTES].decode("utf-8", "replace")
+        return "", False
+    truncated = len(raw) > MAX_RESULT_BYTES
+    return raw[:MAX_RESULT_BYTES].decode("utf-8", "replace"), truncated
 
 
 def _file_fingerprint(path: Path) -> str:
     if not path.is_file():
         return ""
     try:
-        raw = path.read_bytes()[:MAX_RESULT_BYTES]
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_RESULT_BYTES)
     except OSError:
         return ""
     return hashlib.sha256(raw).hexdigest()
@@ -638,10 +700,23 @@ def ensure_lsp_session(
             {
                 "processId": os.getpid(),
                 "rootUri": root_uri,
-                "capabilities": {},
+                "capabilities": {
+                    "workspace": {
+                        "configuration": True,
+                        "workspaceFolders": True,
+                    }
+                },
                 "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
             },
         )
+        try:
+            setattr(
+                transport,
+                "_omg_workspace_folders",
+                [{"uri": root_uri, "name": Path(root).name}],
+            )
+        except (AttributeError, TypeError):
+            pass
         _lsp_notify_or_request(transport, "initialized", {})
         try:
             setattr(transport, "_omg_lsp_initialized", True)
@@ -661,8 +736,18 @@ def ensure_lsp_session(
             pass
     docs = _lsp_docs(transport)
     fingerprint = _file_fingerprint(confined)
-    text = _read_text_bounded(confined)
-    current = docs.get(uri)
+    text, truncated = _read_text_bounded(confined)
+    current = docs.get(uri) if isinstance(docs.get(uri), dict) else None
+    if truncated:
+        version = 1
+        if current is not None and isinstance(current.get("version"), int):
+            version = current["version"]
+        docs[uri] = {
+            "version": version,
+            "fingerprint": fingerprint,
+            "truncated": True,
+        }
+        return
     if current is None or uri not in opened:
         _lsp_notify_or_request(
             transport,
@@ -676,10 +761,11 @@ def ensure_lsp_session(
                 }
             },
         )
-        docs[uri] = {"version": 1, "fingerprint": fingerprint}
+        docs[uri] = {"version": 1, "fingerprint": fingerprint, "truncated": False}
         opened.add(uri)
         return
     if current.get("fingerprint") == fingerprint:
+        current["truncated"] = False
         return
     version = int(current.get("version") or 1) + 1
     _lsp_notify_or_request(
@@ -692,6 +778,7 @@ def ensure_lsp_session(
     )
     current["version"] = version
     current["fingerprint"] = fingerprint
+    current["truncated"] = False
 
 
 def _lsp_doc_version(transport: LspTransport, uri: str) -> int:
@@ -746,6 +833,21 @@ def lsp_operation(
     elif operation in {"rename", "code_action"} and not apply:
         # Preview is allowed read-only.
         pass
+    if operation in LSP_SEMANTIC_DOC_OPS:
+        if not path:
+            raise ToolsError("E_PATH", "path is required")
+        truncated = _read_text_bounded(confine_path(root, path))[1]
+        if truncated:
+            raise ToolsError(
+                "E_LSP_TRUNCATED",
+                "document exceeds sidecar size bound; refusing semantic analysis "
+                "of a truncated prefix",
+                details={
+                    "truncated": True,
+                    "max_bytes": MAX_RESULT_BYTES,
+                    "path": str(path),
+                },
+            )
     ensure_lsp_session(transport, root=root, path=path)
     params: dict[str, Any]
     if operation == "workspace_symbols":
@@ -778,6 +880,11 @@ def lsp_operation(
             if operation == "references":
                 params["context"] = {"includeDeclaration": True}
     result = transport.request(_LSP_METHODS[operation], params)
+    truncated_flag = False
+    if path:
+        row = _lsp_docs(transport).get(confine_path(root, path).as_uri())
+        if isinstance(row, dict):
+            truncated_flag = bool(row.get("truncated"))
     return _bounded(
         {
             "ok": True,
@@ -786,6 +893,7 @@ def lsp_operation(
             "apply": bool(apply) if operation in {"rename", "code_action"} else False,
             "capability_mode": mode,
             "session_ready": bool(getattr(transport, "_omg_lsp_ready", False)),
+            "truncated": truncated_flag,
             "result": result,
             "note": "sidecar protocol result; not Grok-native; not live AG evidence",
         }
