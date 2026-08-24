@@ -12,7 +12,12 @@ import pytest
 
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.commands import edit as edit_cmds
-from omg_cli.hash_edit import HashEditApplyError, apply_hash_edit
+from omg_cli.hash_edit import (
+    HashEditApplyError,
+    HashEditConcurrencyError,
+    apply_hash_edit,
+    write_confined_regular_file,
+)
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 from omg_cli.main import build_parser, main
 
@@ -440,3 +445,31 @@ def test_simplify_apply_edits_two_files_second_injected_fail_rolls_back(
     guard = json.loads((project / ".omg" / "state" / "simplify-guard.json").read_text(encoding="utf-8"))
     assert guard["status"] == "assigned"
     assert "verified" not in guard
+
+
+@_SKIP_POSIX
+@pytest.mark.platform
+def test_restore_write_expected_mismatch_does_not_clobber(project: Path) -> None:
+    """Locked current != expected: do not replace with original."""
+
+    rel = "a.py"
+    original = b"original-bytes\n"
+    after = b"after-bytes\n"
+    other = b"concurrent-other\n"
+    target = project / rel
+    target.write_bytes(other)
+    with pytest.raises(HashEditConcurrencyError):
+        write_confined_regular_file(project, rel, original, expected=after)
+    assert target.read_bytes() == other
+
+
+@_SKIP_POSIX
+@pytest.mark.platform
+def test_restore_write_expected_match_restores_original(project: Path) -> None:
+    rel = "a.py"
+    original = b"original-bytes\n"
+    after = b"after-bytes\n"
+    target = project / rel
+    target.write_bytes(after)
+    write_confined_regular_file(project, rel, original, expected=after)
+    assert target.read_bytes() == original

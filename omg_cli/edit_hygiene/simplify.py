@@ -25,6 +25,7 @@ from omg_cli.edit_hygiene.workspace import (
 )
 from omg_cli.hash_edit import (
     HashEditApplyError,
+    HashEditConcurrencyError,
     HashEditCurrentFact,
     apply_hash_edit,
     parse_hash_edit_descriptor,
@@ -254,10 +255,12 @@ def _restore_originals(
             if current != after:
                 dirty.append(rel)
                 continue
-            write_confined_regular_file(root, rel, original)
+            write_confined_regular_file(root, rel, original, expected=after)
             restored = read_confined_regular_file(root, rel)
             if restored != original:
                 dirty.append(rel)
+        except HashEditConcurrencyError:
+            dirty.append(rel)
         except Exception:
             dirty.append(rel)
     return dirty

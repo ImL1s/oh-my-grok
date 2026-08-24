@@ -438,11 +438,14 @@ def write_confined_regular_file(
     body: bytes,
     *,
     mode: int | None = None,
+    expected: bytes | None = None,
 ) -> int:
     """Replace a workspace-relative regular file without following a swapped symlink.
 
     Same pinned ``O_NOFOLLOW`` walk + parent-dir flock as apply. Used to restore
     original bytes after a later hash-edit in the same invocation fails.
+    When ``expected`` is set, the locked current bytes must match it or the
+    write is skipped and ``HashEditConcurrencyError`` is raised.
     Returns the permission mask written. Fail-closed on hosts without
     ``O_NOFOLLOW`` / ``dir_fd``.
     """
@@ -454,6 +457,11 @@ def write_confined_regular_file(
         raise HashEditInputError(
             f"restore bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
         )
+    expected_payload: bytes | None = None
+    if expected is not None:
+        if not isinstance(expected, (bytes, bytearray)):
+            raise HashEditApplyError("expected current bytes must be bytes")
+        expected_payload = bytes(expected)
     if mode is not None:
         if isinstance(mode, bool) or not isinstance(mode, int):
             raise HashEditApplyError("mode must be an integer")
@@ -482,6 +490,10 @@ def write_confined_regular_file(
             applied_mode = preserved_mode if mode is None else mode
             if _current == payload and preserved_mode == applied_mode:
                 return applied_mode
+            if expected_payload is not None and _current != expected_payload:
+                raise HashEditConcurrencyError(
+                    "current file bytes do not match expected"
+                )
             try:
                 atomic_write_bytes_at(
                     parent_fd,
