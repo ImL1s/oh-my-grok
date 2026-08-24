@@ -494,6 +494,9 @@ def evidence_matches_worker_identity(
 ) -> bool:
     """True when TUI-ready evidence still names the current pane/PID/start.
 
+    A positive evidence ``provider_pid`` (or non-empty ``pid_start``) requires
+    the same binding on the current row. Missing/cleared row bindings are a
+    mismatch, not a skip — scale-down may drop pid while retaining pane_id.
     Used as the hermetic half of the promote TOCTOU fence. Live callers also
     re-prove via ``resolve_live_worker`` / ExactPaneProof.
     """
@@ -506,27 +509,20 @@ def evidence_matches_worker_identity(
     if ev_pane != row_pane:
         return False
     ev_pid = evidence.get("provider_pid")
-    row_pid = row.get("pid")
-    if (
-        isinstance(ev_pid, int)
-        and not isinstance(ev_pid, bool)
-        and ev_pid > 0
-        and isinstance(row_pid, int)
-        and not isinstance(row_pid, bool)
-        and row_pid > 0
-        and ev_pid != row_pid
-    ):
-        return False
+    if isinstance(ev_pid, int) and not isinstance(ev_pid, bool) and ev_pid > 0:
+        row_pid = row.get("pid")
+        if (
+            not isinstance(row_pid, int)
+            or isinstance(row_pid, bool)
+            or row_pid <= 0
+            or ev_pid != row_pid
+        ):
+            return False
     ev_start = evidence.get("pid_start")
-    row_start = row.get("pid_start")
-    if (
-        isinstance(ev_start, str)
-        and ev_start
-        and isinstance(row_start, str)
-        and row_start
-        and ev_start != row_start
-    ):
-        return False
+    if isinstance(ev_start, str) and ev_start:
+        row_start = row.get("pid_start")
+        if not isinstance(row_start, str) or not row_start or ev_start != row_start:
+            return False
     ev_attempt = evidence.get("attempt")
     if isinstance(ev_attempt, int) and not isinstance(ev_attempt, bool):
         row_attempt = coerce_attempt(row.get("attempt"))

@@ -763,6 +763,18 @@ def test_evidence_matches_worker_identity_refuses_pane_pid_start_flip() -> None:
     assert not evidence_matches_worker_identity(ev, {**row, "pid": 222})
     assert not evidence_matches_worker_identity(ev, {**row, "pid_start": "start-b"})
     assert not evidence_matches_worker_identity(ev, {**row, "attempt": 2})
+    # Scale-down clears pid while retaining pane_id — still a mismatch.
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": None})
+    assert not evidence_matches_worker_identity(
+        ev, {k: v for k, v in row.items() if k != "pid"}
+    )
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": 0})
+    # Evidence pid_start is bound: missing/empty row start is mismatch, not skip.
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": None})
+    assert not evidence_matches_worker_identity(
+        ev, {k: v for k, v in row.items() if k != "pid_start"}
+    )
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": ""})
 
 
 def test_wait_for_tui_ready_prove_fn_refuse_is_not_ready() -> None:
@@ -1315,6 +1327,57 @@ def test_promote_lock_mismatch_omits_worker_from_stamped_and_ready(
     disk = load_team_meta(tmp_path, run_id)
     assert disk["tasks"][0]["input_ready"] is False
     assert disk["tasks"][0]["pane_id"] == "%99"
+
+
+@_POSIX
+def test_filter_ready_evidence_rejects_scaled_down_cleared_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale TUI-ready evidence must not promote a scaled-down pid=None row."""
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _scaled_down(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = None
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _scaled_down)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    proven = runtime_mod._filter_interactive_ready_evidence(tmp_path, run_id, evidence)
+    assert proven == {}
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == []
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%7"
+    assert disk["tasks"][0]["pid"] is None
 
 
 @_POSIX
