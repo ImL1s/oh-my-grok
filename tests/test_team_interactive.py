@@ -16,9 +16,13 @@ from omg_cli.team.interactive import (
     GROK_INTERACTIVE_SEED_PROMPT,
     INTERACTIVE_NONCE_ENV,
     InteractiveTeamError,
+    api_worker_inbox_basename,
     capture_contains_provider_echo,
     capture_contains_tui_ready,
+    evidence_matches_worker_identity,
     grok_interactive_argv,
+    interactive_inbox_basename,
+    interactive_inbox_instruction,
     make_interactive_nonce,
     pane_command_for_exec_script,
     resolve_effective_io_mode,
@@ -273,6 +277,8 @@ def test_dry_run_interactive_fixture_skips_supervisor(
     assert rec["provider"] == "fixture"
     assert any("interactive_tty.py" in str(x) for x in rec["argv"])
     assert rec.get("inbox_path")
+    assert str(rec["inbox_path"]).endswith("t1.a1.inbox.txt")
+    assert "t1.inbox.txt" not in str(rec["inbox_path"]).replace("t1.a1.inbox.txt", "")
     nonce = rec.get("interactive_nonce")
     assert isinstance(nonce, str) and nonce
     exec_path = tmp_path / ".omg" / "state" / "runs" / meta["run_id"] / "team" / "t1.interactive.sh"
@@ -598,6 +604,84 @@ def test_fixture_echoes_payload_after_stray_pty_bytes() -> None:
             proc.wait(timeout=3)
 
 
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
+def test_fixture_sigint_prints_int_and_does_not_exit() -> None:
+    import select
+    import subprocess
+    import time
+
+    pty = pytest.importorskip("pty")
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "providers"
+        / "interactive_tty.py"
+    )
+    master, slave = pty.openpty()
+    slave_open = True
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        env = {
+            **os.environ,
+            "OMG_TEAM_INTERACTIVE_NONCE": "sigintab",
+            "OMG_TEAM_PROVIDER_HOLD_S": "8",
+            "OMG_TEAM_PROVIDER_LINGER_S": "8",
+            "TERM": "xterm",
+        }
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(script)],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave)
+        slave_open = False
+
+        def _read_until(needle: bytes, timeout_s: float) -> bytes:
+            deadline = time.monotonic() + timeout_s
+            buf = b""
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if needle in buf:
+                    return buf
+            return buf
+
+        ready_buf = _read_until(b"TUI_READY:sigintab", 5.0)
+        assert b"TUI_READY:sigintab" in ready_buf, ready_buf
+        proc.send_signal(signal.SIGINT)
+        int_buf = ready_buf + _read_until(b"INT:", 5.0)
+        assert b"INT:" in int_buf, int_buf
+        assert proc.poll() is None
+        os.write(master, b"after-int\r")
+        echo_buf = int_buf + _read_until(b"PROVIDER_ECHO:after-int", 5.0)
+        assert b"PROVIDER_ECHO:after-int" in echo_buf, echo_buf
+    finally:
+        if slave_open:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def test_wait_for_tui_ready_does_not_write_or_self_promote() -> None:
     nonce = "abc123de"
     seen: list[str] = []
@@ -657,6 +741,140 @@ def test_wait_wrong_nonce_is_not_ready() -> None:
         sleep_fn=lambda _s: None,
     )
     assert out["ready_workers"] == []
+
+
+def test_evidence_matches_worker_identity_refuses_pane_pid_start_flip() -> None:
+    ev = {
+        "pane_id": "%7",
+        "provider_pid": 111,
+        "pid_start": "start-a",
+        "attempt": 1,
+        "generation": 0,
+    }
+    row = {
+        "pane_id": "%7",
+        "pid": 111,
+        "pid_start": "start-a",
+        "attempt": 1,
+        "generation": 0,
+    }
+    assert evidence_matches_worker_identity(ev, row)
+    assert not evidence_matches_worker_identity(ev, {**row, "pane_id": "%8"})
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": 222})
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": "start-b"})
+    assert not evidence_matches_worker_identity(ev, {**row, "attempt": 2})
+    # Scale-down clears pid while retaining pane_id — still a mismatch.
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": None})
+    assert not evidence_matches_worker_identity(
+        ev, {k: v for k, v in row.items() if k != "pid"}
+    )
+    assert not evidence_matches_worker_identity(ev, {**row, "pid": 0})
+    # Evidence pid_start is bound: missing/empty row start is mismatch, not skip.
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": None})
+    assert not evidence_matches_worker_identity(
+        ev, {k: v for k, v in row.items() if k != "pid_start"}
+    )
+    assert not evidence_matches_worker_identity(ev, {**row, "pid_start": ""})
+
+
+def test_wait_for_tui_ready_prove_fn_refuse_is_not_ready() -> None:
+    nonce = "abc123de"
+    out = wait_for_interactive_tui_ready(
+        [
+            {
+                "task_id": "t1",
+                "pane_id": "%12",
+                "pid": 100,
+                "pid_start": "A",
+                "interactive_nonce": nonce,
+            }
+        ],
+        timeout_ms=0,
+        poll_s=0.01,
+        capture_fn=lambda _pane: f"TUI_READY:{nonce}\n",
+        sleep_fn=lambda _s: None,
+        prove_fn=lambda _row, _ev: False,
+    )
+    assert out["ready_workers"] == []
+    assert out["missing_workers"] == ["t1"]
+
+
+def test_overlay_reuses_nonce_and_attempt_inbox(tmp_path: Path) -> None:
+    from omg_cli.team.interactive import overlay_interactive_launch
+
+    if os.name != "posix":
+        pytest.skip("managed inbox write requires POSIX")
+    first = overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=1,
+        worktree=tmp_path,
+        goal="do the work",
+        use_fixture=True,
+    )
+    nonce = first["interactive_nonce"]
+    assert (tmp_path / "t1.a1.inbox.txt").is_file()
+    assert "supervisor" not in first["pane_command"]
+    second = overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=2,
+        worktree=tmp_path,
+        goal="do the work again",
+        use_fixture=True,
+    )
+    assert second["interactive_nonce"] == nonce
+    assert (tmp_path / "t1.a2.inbox.txt").is_file()
+    assert (tmp_path / "t1.a1.inbox.txt").is_file()
+    assert "attempt=2" in (tmp_path / "t1.a2.inbox.txt").read_text(encoding="utf-8")
+
+
+def test_overlay_inbox_includes_task_assignment(tmp_path: Path) -> None:
+    from omg_cli.team.interactive import overlay_interactive_launch
+
+    if os.name != "posix":
+        pytest.skip("managed inbox write requires POSIX")
+    overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=1,
+        worktree=tmp_path / "wt-t1",
+        goal="shared team goal",
+        use_fixture=True,
+        owned_files=["src/a.py", "README.md"],
+        role="executor",
+        subject="implement slice A",
+        depends_on=["t0"],
+        run_id="run-1",
+        team_id="team",
+        api_task_id="42",
+    )
+    text = (tmp_path / "t1.a1.inbox.txt").read_text(encoding="utf-8")
+    assert "task_id=t1" in text
+    assert "attempt=1" in text
+    assert "role=executor" in text
+    assert "board_task_id=42" in text
+    assert "## Assignment" in text
+    assert "implement slice A" in text
+    assert "- `src/a.py`" in text
+    assert "- `README.md`" in text
+    assert "## Depends on" in text
+    assert "- `t0`" in text
+    assert "shared team goal" in text
+    assert "omg team api" in text
+    assert "claim-task" in text or "Claim board task" in text
+
+
+def test_inbox_basenames_include_task_id_and_attempt() -> None:
+    assert interactive_inbox_basename("t1", 1) == "t1.a1.inbox.txt"
+    assert interactive_inbox_basename("t1", 2) == "t1.a2.inbox.txt"
+    assert api_worker_inbox_basename("w1", 3) == "w1.a3.inbox.md"
+    path = "/tmp/run/team/t1.a2.inbox.txt"
+    text = interactive_inbox_instruction(path)
+    assert "t1.a2.inbox.txt" in text
+    assert GROK_INTERACTIVE_SEED_PROMPT not in text
+    with pytest.raises(InteractiveTeamError):
+        interactive_inbox_basename("", 1)
 
 
 def test_leader_ready_stamp_requires_tui_marker() -> None:
@@ -811,7 +1029,69 @@ def test_leader_promotes_input_ready_after_tui_ready(
 
 
 @_POSIX
-def test_scale_up_refuses_interactive_team(
+def test_promote_refuses_when_identity_flips_between_capture_and_stamp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.interactive as interactive_mod
+    from omg_cli.team.plane import mutate_team_meta
+    from omg_cli.team.runtime import apply_start_readiness
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+    real_wait = interactive_mod.wait_for_interactive_tui_ready
+
+    def _wait_then_flip(*args: object, **kwargs: object):
+        out = real_wait(*args, **kwargs)
+
+        def _flip(current: dict) -> dict:
+            current["tasks"][0]["pane_id"] = "%99"
+            current["tasks"][0]["pid"] = 999
+            current["tasks"][0]["pid_start"] = "flipped"
+            return current
+
+        mutate_team_meta(tmp_path, run_id, _flip)
+        return out
+
+    monkeypatch.setattr(
+        interactive_mod, "wait_for_interactive_tui_ready", _wait_then_flip
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: f"TUI_READY:{nonce}\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "2000"},
+    )
+    assert out["tasks"][0]["input_ready"] is False
+    assert out["startup_status"] == "failed_start"
+    assert "%99" == out["tasks"][0]["pane_id"]
+
+
+@_POSIX
+def test_scale_up_interactive_team_uses_exec_wrapper_not_supervisor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _enable(monkeypatch)
@@ -827,7 +1107,658 @@ def test_scale_up_refuses_interactive_team(
         env={EXPERIMENTAL_ENV: "1"},
     )
     assert meta["tasks"][0]["io_mode"] == IO_MODE_INTERACTIVE_TTY
-    with pytest.raises(TeamError, match="interactive TTY"):
+    out = scale_team(tmp_path, meta["run_id"], add=1, dry_run=True)
+    added = out.get("tasks_added") or []
+    assert len(added) == 1
+    rec = added[0]
+    assert rec["io_mode"] == IO_MODE_INTERACTIVE_TTY
+    assert rec["input_ready"] is False
+    assert rec["operator_input_supported"] is True
+    assert rec["provider_tty_owner"] == "provider"
+    pane = str(rec.get("pane_command") or "")
+    assert "supervisor" not in pane
+    assert "omg_cli.main" not in pane
+    assert "interactive.sh" in pane or pane.startswith("exec /bin/sh")
+    assert rec.get("inbox_path")
+    assert ".a1.inbox.txt" in str(rec["inbox_path"])
+    assert rec.get("interactive_nonce")
+    assert "--prompt-file" not in json.dumps(rec.get("argv") or [])
+
+
+@_POSIX
+def test_pending_scale_records_interactive_expects_inbox_exec_not_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+    from omg_cli.team.plane import IDENTITY_RECEIPT_SCHEMA_VERSION, team_dir
+    from omg_cli.team.scaling import (
+        STATUS_RUNNING,
+        _build_scale_intent,
+        _pending_scale_records,
+    )
+    from omg_cli.workers import load_ownership_manifest, worktree_dir
+
+    _enable(monkeypatch)
+    root = tmp_path.resolve()
+    _git_init(root)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=root,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    rid = str(meta["run_id"])
+    out = scale_team(root, rid, add=1, dry_run=True)
+    added = out.get("tasks_added") or []
+    assert len(added) == 1
+    rec = dict(added[0])
+    tid = str(rec["task_id"])
+    attempt = int(rec.get("attempt") or 1)
+    tdir = team_dir(root, rid)
+    inbox = tdir / interactive_inbox_basename(tid, attempt)
+    exec_script = tdir / f"{tid}.interactive.sh"
+    argv_path = tdir / f"{tid}.argv.json"
+    assert inbox.is_file()
+    assert exec_script.is_file()
+    assert argv_path.is_file()
+    inbox_before = inbox.read_bytes()
+    exec_before = exec_script.read_bytes()
+    rec["status"] = STATUS_RUNNING
+    rec["_artifact_paths"] = [
+        str(inbox.relative_to(root)),
+        str(exec_script.relative_to(root)),
+        str(argv_path.relative_to(root)),
+    ]
+    request_sha256 = "ab" * 32
+    intent = _build_scale_intent(
+        root,
+        rid,
+        request_sha256=request_sha256,
+        scale_wal_sha256="cd" * 32,
+        records=[rec],
+    )
+    intent.pop("scale_wal_sha256", None)
+    artifact_paths = {row["path"] for row in intent["artifacts"]}
+    assert str(inbox.relative_to(root)) in artifact_paths
+    assert str(exec_script.relative_to(root)) in artifact_paths
+    assert str(argv_path.relative_to(root)) in artifact_paths
+    assert not any(path.endswith(".prompt.md") for path in artifact_paths)
+    assert not any(Path(path).name == "last_prompt.md" for path in artifact_paths)
+    prompt_dir = worktree_dir(root, rid, tid) / ".omg" / "team-prompt"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    (prompt_dir / f"{tid}.prompt.md").write_text("unused-prompt\n", encoding="utf-8")
+    (prompt_dir / "last_prompt.md").write_text("unused-last\n", encoding="utf-8")
+    receipt = {
+        "schema_version": IDENTITY_RECEIPT_SCHEMA_VERSION,
+        "scale_intent": intent,
+        "scale_intent_sha256": sha256_hex(canonical_json_bytes(intent)),
+    }
+    owned = load_ownership_manifest(root, rid)
+    spec = next(row for row in owned["tasks"] if row["task_id"] == tid)
+    recovered = _pending_scale_records(
+        root,
+        rid,
+        receipt=receipt,
+        request_sha256=request_sha256,
+        task_specs=[
+            {
+                "task_id": tid,
+                "owned_files": list(spec["owned_files"]),
+                "role": spec.get("role") or "executor",
+            }
+        ],
+    )
+    assert [row["task_id"] for row in recovered] == [tid]
+    assert recovered[0]["prompt_delivery"] == "interactive-tty"
+    assert inbox.is_file()
+    assert exec_script.is_file()
+    assert inbox.read_bytes() == inbox_before
+    assert exec_script.read_bytes() == exec_before
+
+
+@_POSIX
+def test_promote_lock_mismatch_returns_no_stamped_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    real_filter = runtime_mod._filter_interactive_ready_evidence
+
+    def _filter_then_flip(
+        root: object, run_id_arg: str, evidence_by_id: object
+    ) -> dict:
+        proven = real_filter(root, run_id_arg, evidence_by_id)
+
+        def _flip(current: dict) -> dict:
+            current["tasks"][0]["pane_id"] = "%99"
+            current["tasks"][0]["pid"] = 999
+            current["tasks"][0]["pid_start"] = "flipped"
+            return current
+
+        mutate_team_meta(tmp_path, run_id, _flip)
+        return proven
+
+    monkeypatch.setattr(runtime_mod, "_filter_interactive_ready_evidence", _filter_then_flip)
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == []
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%99"
+
+
+@_POSIX
+def test_promote_restamps_generation_to_current_team_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 0
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        current["tasks"][0]["generation"] = 0
+        current["tasks"][0]["attempt"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == ["t1"]
+
+    def _bump(current: dict) -> dict:
+        current["identity_generation"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _bump)
+    stamped2 = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped2 == ["t1"]
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["generation"] == 1
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 1
+
+
+@_POSIX
+def test_readiness_rebinds_generation_when_tui_ready_left_scrollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        normalize_worker_io_capability,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 0
+        row = current["tasks"][0]
+        row["pane_id"] = "%7"
+        row["pid"] = 111
+        row["pid_start"] = "start-a"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+                pid_start="start-a",
+            ),
+        )
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+
+    def _bump(current: dict) -> dict:
+        current["identity_generation"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _bump)
+    capture_calls: list[str] = []
+
+    def _scrolled_out(pane_id: str, socket_path: str | None = None) -> str:
+        capture_calls.append(pane_id)
+        return ("noise line\n" * 250) + "still no marker\n"
+
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane", _scrolled_out
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert capture_calls == []
+    assert "t1" in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is True
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 1
+    cap = normalize_worker_io_capability(
+        disk["tasks"][0], attempt=1, generation=1
+    )
+    assert cap.input_ready is True
+    assert (disk["tasks"][0].get("interaction_evidence") or {}).get("pid_start") == "start-a"
+
+
+@_POSIX
+def test_readiness_does_not_rebind_without_persisted_pid_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 1
+        row = current["tasks"][0]
+        row["pane_id"] = "%7"
+        row["pid"] = 111
+        row["pid_start"] = "start-a"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+            ),
+        )
+        ev = row.get("interaction_evidence") or {}
+        ev.pop("pid_start", None)
+        row["interaction_evidence"] = ev
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: "noise line\n" * 250,
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 0
+
+
+@_POSIX
+def test_readiness_does_not_rebind_when_pane_identity_changed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 1
+        row = current["tasks"][0]
+        row["pane_id"] = "%99"
+        row["pid"] = 999
+        row["pid_start"] = "flipped"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+            ),
+        )
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: "noise line\n" * 250,
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 0
+    assert ev.get("pane_id") == "%7"
+
+
+@_POSIX
+def test_inbox_instruction_skips_same_inbox_and_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    run_id = str(meta["run_id"])
+    inbox_rel = "team/t1.a1.inbox.txt"
+
+    def _seed(current: dict) -> dict:
+        current["dry_run"] = False
+        current["tasks"][0]["inbox_path"] = inbox_rel
+        current["tasks"][0]["attempt"] = 1
+        current["tasks"][0]["inbox_instruction_submitted"] = True
+        current["tasks"][0]["inbox_instruction_inbox"] = inbox_rel
+        current["tasks"][0]["inbox_instruction_attempt"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
+    assert out == {"t1": True}
+
+
+@_POSIX
+def test_promote_lock_mismatch_omits_worker_from_stamped_and_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+    from omg_cli.team.runtime import apply_start_readiness
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+
+    real_filter = runtime_mod._filter_interactive_ready_evidence
+    filter_calls = {"n": 0}
+
+    def _filter_then_flip_on_promote(
+        root: object, run_id_arg: str, evidence_by_id: object
+    ) -> dict:
+        proven = real_filter(root, run_id_arg, evidence_by_id)
+        filter_calls["n"] += 1
+        if filter_calls["n"] >= 2:
+
+            def _flip(current: dict) -> dict:
+                current["tasks"][0]["pane_id"] = "%99"
+                current["tasks"][0]["pid"] = 999
+                current["tasks"][0]["pid_start"] = "flipped"
+                return current
+
+            mutate_team_meta(tmp_path, run_id, _flip)
+        return proven
+
+    captured: dict[str, list[str]] = {}
+    real_promote = runtime_mod._promote_interactive_input_ready
+
+    def _capture_promote(*args: object, **kwargs: object) -> list[str]:
+        stamped = real_promote(*args, **kwargs)
+        captured["stamped"] = list(stamped)
+        return stamped
+
+    monkeypatch.setattr(
+        runtime_mod, "_filter_interactive_ready_evidence", _filter_then_flip_on_promote
+    )
+    monkeypatch.setattr(runtime_mod, "_promote_interactive_input_ready", _capture_promote)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: f"TUI_READY:{nonce}\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "2000"},
+    )
+    assert captured.get("stamped") == []
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    assert "t1" in (out.get("startup_missing_workers") or [])
+    assert out["startup_status"] == "failed_start"
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%99"
+
+
+@_POSIX
+def test_filter_ready_evidence_rejects_scaled_down_cleared_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale TUI-ready evidence must not promote a scaled-down pid=None row."""
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _scaled_down(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = None
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _scaled_down)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    proven = runtime_mod._filter_interactive_ready_evidence(tmp_path, run_id, evidence)
+    assert proven == {}
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == []
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%7"
+    assert disk["tasks"][0]["pid"] is None
+
+
+@_POSIX
+def test_scale_up_refuses_mixed_interactive_headless(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.team.io_capability import (
+        stamp_io_capability,
+        supervisor_pane_io_defaults,
+    )
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        [
+            {"task_id": "t1", "title": "one", "owned_files": ["README.md"]},
+            {"task_id": "t2", "title": "two", "owned_files": ["LICENSE"]},
+        ],
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+
+    def _mix(current: dict) -> dict:
+        stamp_io_capability(current["tasks"][1], supervisor_pane_io_defaults())
+        return current
+
+    mutate_team_meta(tmp_path, str(meta["run_id"]), _mix)
+    with pytest.raises(TeamError, match="mixed interactive/headless"):
         scale_team(tmp_path, meta["run_id"], add=1, dry_run=True)
 
 
@@ -931,6 +1862,112 @@ def test_wrapper_emits_tui_ready_only_after_child_reads_stdin(
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.wait(timeout=3)
+
+
+def test_resume_for_identity_runs_interactive_readiness_after_relaunch() -> None:
+    import inspect
+
+    from omg_cli.team.runtime import resume_for_identity
+
+    src = inspect.getsource(resume_for_identity)
+    relaunch_at = src.index("relaunched")
+    ready_at = src.index("apply_interactive_worker_readiness")
+    assert relaunch_at < ready_at
+    assert "IO_MODE_INTERACTIVE_TTY" in src
+    assert "persist_startup_annotations" in src
+    assert "startup_status" in src
+
+
+def test_scale_up_refreshes_readiness_for_all_interactive_workers() -> None:
+    import inspect
+
+    from omg_cli.team.scaling import _scale_up
+
+    src = inspect.getsource(_scale_up)
+    assert "apply_interactive_worker_readiness" in src
+    assert "updated.get(\"tasks\")" in src or "updated.get('tasks')" in src
+    assert "IO_MODE_INTERACTIVE_TTY" in src
+    assert "persist_startup_annotations" in src
+    assert "startup_status" in src
+
+
+def test_resolve_routing_from_meta_accepts_persisted_by_role() -> None:
+    from omg_cli.team.routing import resolve_routing
+    from omg_cli.team.scaling import _resolve_routing_from_meta
+
+    snap = resolve_routing(
+        {"executor": {"provider": "codex", "model": "m1"}},
+        roles_needed=["executor"],
+        check_binary=False,
+        available_providers={"codex", "grok"},
+    )
+    persisted = snap.to_dict()
+    assert "by_role" in persisted
+    assert "default_provider" in persisted
+    out = _resolve_routing_from_meta(
+        {"multi_cli": True, "routing": persisted},
+        ["executor"],
+    )
+    assert out is not None
+    route = out.for_role("executor")
+    assert route.provider == "codex"
+    assert route.model == "m1"
+
+
+def test_canonical_scale_specs_keep_assignment_fields() -> None:
+    from omg_cli.team.scaling import (
+        _canonical_scale_task_specs,
+        _ownership_spec_view,
+    )
+
+    specs = _canonical_scale_task_specs(
+        [
+            {
+                "task_id": "t1",
+                "owned_files": ["README.md"],
+                "role": "executor",
+                "subject": "slice A",
+                "depends_on": ["t0"],
+            }
+        ]
+    )
+    assert specs[0]["subject"] == "slice A"
+    assert specs[0]["depends_on"] == ["t0"]
+    view = _ownership_spec_view(specs[0])
+    assert "subject" not in view
+    assert "depends_on" not in view
+    assert view["task_id"] == "t1"
+    assert view["owned_files"] == ["README.md"]
+
+
+def test_interactive_scale_refuses_unqualified_route() -> None:
+    from omg_cli.team.routing import resolve_routing
+    from omg_cli.team.scaling import TeamError, _interactive_scale_route_model
+
+    snap = resolve_routing(
+        {"executor": {"provider": "agy"}},
+        roles_needed=["executor"],
+        check_binary=False,
+        available_providers={"agy", "grok"},
+    )
+    with pytest.raises(TeamError, match="interactive scale refused"):
+        _interactive_scale_route_model(
+            resolved=snap, multi_cli=True, role="executor"
+        )
+
+
+def test_scale_command_uses_startup_exit_gate() -> None:
+    import inspect
+
+    from omg_cli.commands.team import cmd_team
+
+    src = inspect.getsource(cmd_team)
+    scale_at = src.index('if action == "scale"')
+    emit_at = src.index("_emit_startup_human", scale_at)
+    resume_at = src.index('if action == "resume"', scale_at)
+    assert scale_at < emit_at < resume_at
+    resume_emit = src.index('_emit_startup_human(result, command="resume"')
+    assert resume_at < resume_emit
 
 
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")

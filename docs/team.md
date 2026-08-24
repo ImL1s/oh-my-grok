@@ -44,8 +44,14 @@ omg team api read-presentation-state --input '{"run_id":"RUN","team_id":"team"}'
 # the pane execs `python -m omg_cli.team.interactive_wrapper` which prints
 # TUI_READY:<nonce> only after the child TTY is interactive and grok is
 # reading stdin. Leader waits (OMG_TEAM_READY_TIMEOUT_MS, same --no-wait skip)
-# then CLI-promotes input_ready. Timeout/missing marker fails closed — never
-# silent headless. PROVIDER_ECHO is child-produced, never wrapper-faked.
+# then CLI-promotes input_ready only after a pane/PID/start TOCTOU re-proof
+# (resolve_live_worker / ExactPaneProof on live pid-bound workers). Timeout
+# or identity mismatch fails closed — never silent headless. After ready the
+# leader submits a short inbox instruction (attempt-scoped
+# `{task_id}.a{attempt}.inbox.txt`), not the seed prompt. `scale --add`
+# keeps interactive argv/wrapper; new workers are not input_ready until
+# their own TUI_READY+TOCTOU proof. PROVIDER_ECHO is child-produced, never
+# wrapper-faked.
 # Workers/descriptors never self-promote from stdout scrape. Prefer mailbox.
 # Live Grok marker LIVE_TEAM_INTERACTIVE_TTY_OK requires capture of both
 # TUI_READY:<nonce> and PROVIDER_ECHO:<unique> after team input --submit

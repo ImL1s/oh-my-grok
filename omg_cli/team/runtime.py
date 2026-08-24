@@ -815,12 +815,11 @@ def _interactive_worker_rows(
         if cap.io_mode != IO_MODE_INTERACTIVE_TTY:
             continue
         row = dict(raw)
-        if "generation" not in row:
-            gen = meta.get("identity_generation", 0)
-            if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
-                row["generation"] = gen
-            else:
-                row["generation"] = 0
+        gen = meta.get("identity_generation", 0)
+        if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0:
+            row["generation"] = gen
+        else:
+            row["generation"] = 0
         rows.append(row)
     return rows
 
@@ -837,12 +836,213 @@ def _capture_interactive_pane(
         return ""
 
 
+def _task_row_by_id(
+    meta: Mapping[str, Any], task_id: str
+) -> dict[str, Any] | None:
+    tid = str(task_id or "").strip()
+    if not tid:
+        return None
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("task_id") or "").strip() == tid:
+            return dict(raw)
+    return None
+
+
+def _row_has_live_pid(row: Mapping[str, Any] | None) -> bool:
+    if not isinstance(row, Mapping):
+        return False
+    pid = row.get("pid")
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _exact_pane_proof_matches(
+    root: Path | str,
+    run_id: str,
+    task_id: str,
+    evidence: Mapping[str, Any],
+) -> bool:
+    """Re-prove ExactPaneProof against captured TUI-ready identity (TOCTOU)."""
+    from omg_cli.team.operator import (
+        OperatorError,
+        STATUS_LIVE,
+        probe_exact_worker,
+        resolve_live_worker,
+    )
+
+    try:
+        proof = resolve_live_worker(root, run_id, task_id)
+    except (OperatorError, TeamError, OSError, TypeError, ValueError):
+        return False
+    ev_pane = evidence.get("pane_id")
+    if proof.pane_id != ev_pane:
+        return False
+    ev_pid = evidence.get("provider_pid")
+    if (
+        isinstance(ev_pid, int)
+        and not isinstance(ev_pid, bool)
+        and ev_pid > 0
+        and proof.expected_pid != ev_pid
+    ):
+        return False
+    ev_start = evidence.get("pid_start")
+    if (
+        isinstance(ev_start, str)
+        and ev_start
+        and isinstance(proof.expected_pid_start, str)
+        and proof.expected_pid_start
+        and proof.expected_pid_start != ev_start
+    ):
+        return False
+    try:
+        status = probe_exact_worker(proof)
+    except (OperatorError, OSError, TypeError, ValueError):
+        return False
+    return status == STATUS_LIVE
+
+
+def _filter_interactive_ready_evidence(
+    root: Path | str,
+    run_id: str,
+    evidence_by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Drop TUI-ready evidence whose pane/PID/start no longer match.
+
+    Live teams with a bound pid must also pass ``resolve_live_worker`` /
+    ExactPaneProof. Dry-run / pid-less hermetic rows compare team.json
+    identity only so unit tests can exercise the stamp path.
+    """
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return {}
+    live = not bool(meta.get("dry_run"))
+    gen = meta.get("identity_generation", 0)
+    filtered: dict[str, dict[str, Any]] = {}
+    for tid, ev in evidence_by_id.items():
+        if not isinstance(tid, str) or not isinstance(ev, Mapping):
+            continue
+        row = _task_row_by_id(meta, tid)
+        if row is None:
+            continue
+        row["generation"] = (
+            gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
+        )
+        ev_aligned = dict(ev)
+        ev_aligned["generation"] = row["generation"]
+        if not evidence_matches_worker_identity(ev_aligned, row):
+            continue
+        if live and _row_has_live_pid(row):
+            if not _exact_pane_proof_matches(root, run_id, tid, ev):
+                continue
+        filtered[tid] = dict(ev)
+    return filtered
+
+
+def _persisted_ready_evidence_for_unchanged_identity(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Reuse prior TUI-ready evidence when pane identity is unchanged.
+
+    Scale/relaunch bumps ``identity_generation``. Recapturing the one-shot
+    ``TUI_READY:<nonce>`` marker can fail once it leaves bounded scrollback.
+    Unchanged exact identities keep their marker; callers restamp generation.
+    Identity flips (pane/pid/start/attempt) are not rebound.
+    """
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+    from omg_cli.team.io_capability import (
+        IO_MODE_INTERACTIVE_TTY,
+        normalize_worker_io_capability,
+    )
+
+    wanted = {str(t).strip() for t in task_ids if str(t).strip()}
+    if not wanted:
+        return {}
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return {}
+    gen = meta.get("identity_generation", 0)
+    team_gen = (
+        gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "").strip()
+        if tid not in wanted:
+            continue
+        cap = normalize_worker_io_capability(raw)
+        if cap.io_mode != IO_MODE_INTERACTIVE_TTY or not cap.input_ready:
+            continue
+        ev_raw = raw.get("interaction_evidence")
+        if not isinstance(ev_raw, Mapping):
+            continue
+        marker = ev_raw.get("ready_marker")
+        if not isinstance(marker, str) or not marker.startswith("TUI_READY:"):
+            continue
+        pane = ev_raw.get("pane_id")
+        if not isinstance(pane, str) or not pane.startswith("%"):
+            pane = raw.get("pane_id")
+        if not isinstance(pane, str) or not pane.startswith("%"):
+            continue
+        pid = ev_raw.get("provider_pid")
+        if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0):
+            pid = raw.get("pid")
+        pid_start = ev_raw.get("pid_start")
+        if not isinstance(pid_start, str) or not pid_start:
+            # Missing historical pid_start cannot be filled from the live
+            # row — a recycled PID in the same pane would otherwise rebind
+            # the old TUI_READY marker onto the replacement process.
+            continue
+        attempt = ev_raw.get("attempt")
+        if not isinstance(attempt, int) or isinstance(attempt, bool):
+            attempt = raw.get("attempt")
+        provider_pid = (
+            pid
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+            else None
+        )
+        candidate = {
+            "task_id": tid,
+            "ready_marker": marker,
+            "pane_id": pane,
+            "provider_pid": provider_pid,
+            "pid_start": pid_start if isinstance(pid_start, str) and pid_start else None,
+            "attempt": (
+                attempt
+                if isinstance(attempt, int) and not isinstance(attempt, bool)
+                else 1
+            ),
+            "generation": team_gen,
+        }
+        row = dict(raw)
+        row["generation"] = team_gen
+        if not evidence_matches_worker_identity(candidate, row):
+            continue
+        out[tid] = candidate
+    return out
+
+
 def _promote_interactive_input_ready(
     root: Path | str,
     run_id: str,
     evidence_by_id: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
-    """CLI-only ``input_ready`` promotion after proven TUI-ready evidence."""
+) -> list[str]:
+    """CLI-only ``input_ready`` promotion after proven TUI-ready evidence.
+
+    Refuses to stamp when pane/PID/start flipped between capture and this
+    call (TOCTOU). Live workers additionally re-prove ExactPaneProof.
+
+    Returns the task_ids actually stamped under the meta lock. Callers must
+    treat only this list as ready — pre-lock evidence is not a ready set.
+    """
     from omg_cli.team.io_capability import (
         IO_MODE_INTERACTIVE_TTY,
         interactive_pane_io_ready,
@@ -850,13 +1050,11 @@ def _promote_interactive_input_ready(
         stamp_io_capability,
     )
 
-    proven = {
-        str(tid): dict(ev)
-        for tid, ev in evidence_by_id.items()
-        if isinstance(tid, str) and isinstance(ev, Mapping)
-    }
+    proven = _filter_interactive_ready_evidence(root, run_id, evidence_by_id)
+    stamped: list[str] = []
 
     def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        stamped.clear()
         tasks = current.get("tasks")
         if not isinstance(tasks, list):
             return current
@@ -873,6 +1071,21 @@ def _promote_interactive_input_ready(
             marker = ev.get("ready_marker")
             if not isinstance(marker, str):
                 continue
+            # Re-check inside the meta lock — identity may have flipped
+            # after the pre-filter snapshot. Always bind the live team
+            # identity_generation so a scale/relaunch bump does not leave
+            # stale per-row generation 0 as immutable identity.
+            locked = dict(raw)
+            team_gen = current.get("identity_generation", 0)
+            if isinstance(team_gen, int) and not isinstance(team_gen, bool) and team_gen >= 0:
+                locked["generation"] = team_gen
+            else:
+                locked["generation"] = 0
+            ev_locked = dict(ev)
+            ev_locked["generation"] = locked["generation"]
+            if not evidence_matches_locked_row(locked, ev_locked):
+                continue
+            raw["generation"] = locked["generation"]
             stamp_io_capability(
                 raw,
                 interactive_pane_io_ready(
@@ -882,14 +1095,140 @@ def _promote_interactive_input_ready(
                     if isinstance(ev.get("provider_pid"), int)
                     else None,
                     attempt=ev.get("attempt") if isinstance(ev.get("attempt"), int) else None,
-                    generation=ev.get("generation")
-                    if isinstance(ev.get("generation"), int)
-                    else None,
+                    generation=locked["generation"],
+                    pid_start=ev.get("pid_start")
+                    if isinstance(ev.get("pid_start"), str)
+                    else (
+                        locked.get("pid_start")
+                        if isinstance(locked.get("pid_start"), str)
+                        else None
+                    ),
                 ),
             )
+            stamped.append(tid)
         return current
 
-    return mutate_team_meta(root, run_id, _apply)
+    mutate_team_meta(root, run_id, _apply)
+    return list(stamped)
+
+
+def evidence_matches_locked_row(raw: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+
+    return evidence_matches_worker_identity(ev, raw)
+
+
+def _submit_interactive_inbox_instructions(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+) -> dict[str, bool]:
+    """Submit the post-ready inbox instruction via operator input --submit.
+
+    Only after TUI-ready promotion. Failures do not demote ``input_ready``
+    (operator can retry). Dry-run teams are skipped.
+    """
+    from omg_cli.state import _run_dir
+    from omg_cli.team.interactive import interactive_inbox_instruction
+    from omg_cli.team.operator import OperatorError, input_worker
+
+    submitted: dict[str, bool] = {}
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return submitted
+    if bool(meta.get("dry_run")):
+        return submitted
+    run_root = _run_dir(Path(root).resolve(), run_id)
+    delivered: dict[str, dict[str, Any]] = {}
+    for tid in task_ids:
+        key = str(tid or "").strip()
+        if not key:
+            continue
+        row = _task_row_by_id(meta, key)
+        if row is None:
+            submitted[key] = False
+            continue
+        rel = row.get("inbox_path")
+        if not isinstance(rel, str) or not rel.strip():
+            submitted[key] = False
+            continue
+        attempt = row.get("attempt")
+        already = bool(row.get("inbox_instruction_submitted"))
+        if (
+            already
+            and row.get("inbox_instruction_inbox") == rel
+            and row.get("inbox_instruction_attempt") == attempt
+        ):
+            submitted[key] = True
+            continue
+        inbox = run_root / rel
+        instruction = interactive_inbox_instruction(inbox)
+        try:
+            input_worker(
+                root,
+                run_id,
+                key,
+                instruction,
+                submit=True,
+                operator_override=True,
+                is_tty=True,
+            )
+            submitted[key] = True
+            delivered[key] = {"inbox": rel, "attempt": attempt}
+        except (OperatorError, TeamError, OSError, TypeError, ValueError):
+            submitted[key] = False
+    if any(submitted.values()):
+
+        def _mark(current: dict[str, Any]) -> dict[str, Any]:
+            for raw in current.get("tasks") or []:
+                if not isinstance(raw, dict):
+                    continue
+                tid = str(raw.get("task_id") or "").strip()
+                if submitted.get(tid):
+                    raw["inbox_instruction_submitted"] = True
+                    info = delivered.get(tid)
+                    if isinstance(info, dict):
+                        raw["inbox_instruction_inbox"] = info.get("inbox")
+                        raw["inbox_instruction_attempt"] = info.get("attempt")
+            return current
+
+        try:
+            mutate_team_meta(root, run_id, _mark)
+        except TeamError:
+            pass
+    return submitted
+
+
+def apply_interactive_worker_readiness(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+    *,
+    timeout_ms: int | None = None,
+    env: Mapping[str, str] | None = None,
+    poll_s: float = _ACK_POLL_S,
+) -> dict[str, Any]:
+    """TUI-ready wait + TOCTOU promote for a subset of interactive workers.
+
+    Used after start and after interactive ``scale --add``. New workers stay
+    ``input_ready=false`` until this proves their own pane.
+    """
+    rows = _interactive_worker_rows(root, run_id=run_id, expected_workers=list(task_ids))
+    if not rows:
+        return {
+            "ready_workers": [],
+            "missing_workers": [str(t) for t in task_ids if str(t).strip()],
+            "startup_status": "failed_start",
+        }
+    return _interactive_startup_payload(
+        root,
+        run_id=run_id,
+        workers=rows,
+        timeout_ms=timeout_ms,
+        env=env,
+        poll_s=poll_s,
+    )
 
 
 def _interactive_startup_payload(
@@ -904,6 +1243,7 @@ def _interactive_startup_payload(
     """Bounded TUI-ready wait. Never silently downgrades to headless."""
     from omg_cli.team.interactive import (
         INTERACTIVE_GATE_PHASE,
+        evidence_matches_worker_identity,
         wait_for_interactive_tui_ready,
     )
 
@@ -922,19 +1262,55 @@ def _interactive_startup_payload(
     except TeamError:
         socket = None
 
-    waited = wait_for_interactive_tui_ready(
-        workers,
-        timeout_ms=ms,
-        poll_s=poll_s,
-        capture_fn=lambda pane_id: _capture_interactive_pane(
-            pane_id, socket_path=socket
-        ),
+    def _refresh(tid: str) -> Mapping[str, Any] | None:
+        rows = _interactive_worker_rows(root, run_id=run_id, expected_workers=[tid])
+        return rows[0] if rows else None
+
+    def _prove(row: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
+        return evidence_matches_worker_identity(ev, row)
+
+    persisted = _persisted_ready_evidence_for_unchanged_identity(
+        root, run_id, expected
     )
-    ready = list(waited.get("ready_workers") or [])
-    missing = list(waited.get("missing_workers") or [])
-    evidence = waited.get("evidence") if isinstance(waited.get("evidence"), Mapping) else {}
-    if ready and isinstance(evidence, Mapping) and evidence:
-        _promote_interactive_input_ready(root, run_id, evidence)
+    kept = _filter_interactive_ready_evidence(root, run_id, persisted)
+    remaining = [
+        row
+        for row in workers
+        if isinstance(row, Mapping)
+        and str(row.get("task_id") or "").strip()
+        and str(row.get("task_id") or "").strip() not in kept
+    ]
+    raw_evidence: dict[str, Any] = dict(kept)
+    if remaining:
+        waited = wait_for_interactive_tui_ready(
+            remaining,
+            timeout_ms=ms,
+            poll_s=poll_s,
+            capture_fn=lambda pane_id: _capture_interactive_pane(
+                pane_id, socket_path=socket
+            ),
+            refresh_fn=_refresh,
+            prove_fn=_prove,
+        )
+        waited_ev = (
+            waited.get("evidence")
+            if isinstance(waited.get("evidence"), Mapping)
+            else {}
+        )
+        if isinstance(waited_ev, Mapping):
+            for tid, ev in waited_ev.items():
+                if isinstance(tid, str) and tid and tid not in raw_evidence:
+                    raw_evidence[tid] = ev
+    evidence = _filter_interactive_ready_evidence(
+        root, run_id, raw_evidence if isinstance(raw_evidence, Mapping) else {}
+    )
+    stamped: list[str] = []
+    if evidence:
+        stamped = _promote_interactive_input_ready(root, run_id, evidence)
+        _submit_interactive_inbox_instructions(root, run_id, stamped)
+    stamped_set = set(stamped)
+    ready = [tid for tid in expected if tid in stamped_set]
+    missing = [tid for tid in expected if tid not in stamped_set]
     if expected and not missing:
         status = "running"
         note = (
@@ -1189,33 +1565,48 @@ def _create_api_tasks_and_inboxes(
                         },
                     )
             from omg_cli.team.api import _worker_dir  # noqa: PLC0415 — internal seed
+            from omg_cli.team.interactive import (
+                InteractiveTeamError,
+                api_worker_inbox_basename,
+                write_worker_inbox,
+            )
 
-            inbox = _worker_dir(root, run_id, team_id, logical) / "inbox.md"
+            attempt = 1
+            worker_dir = _worker_dir(root, run_id, team_id, logical)
+            inbox_body = "\n".join(
+                [
+                    f"# Worker inbox — {logical}",
+                    "",
+                    f"Team: {team_id}",
+                    f"Run: {run_id}",
+                    f"Role: {task.get('role')}",
+                    f"Board task id: {api_task_id}",
+                    f"Attempt: {attempt}",
+                    "",
+                    "## Assignment",
+                    subject,
+                    "",
+                    *team_worker_protocol_lines(
+                        run_id=run_id,
+                        team_id=team_id,
+                        worker_id=logical,
+                        api_task_id=api_task_id,
+                    ),
+                ]
+            )
+            inbox = worker_dir / api_worker_inbox_basename(logical, attempt)
             created_paths.append(inbox)
             ensure_managed_dir(inbox.parent)
-            inbox.write_text(
-                "\n".join(
-                    [
-                        f"# Worker inbox — {logical}",
-                        "",
-                        f"Team: {team_id}",
-                        f"Run: {run_id}",
-                        f"Role: {task.get('role')}",
-                        f"Board task id: {api_task_id}",
-                        "",
-                        "## Assignment",
-                        subject,
-                        "",
-                        *team_worker_protocol_lines(
-                            run_id=run_id,
-                            team_id=team_id,
-                            worker_id=logical,
-                            api_task_id=api_task_id,
-                        ),
-                    ]
-                ),
-                encoding="utf-8",
-            )
+            try:
+                write_worker_inbox(dest=inbox, body=inbox_body + "\n")
+                # Catalog ``write-worker-inbox`` still uses inbox.md; keep an alias
+                # so headless workers that look for the historical name still see
+                # the seed. Replace/relaunch must write a new attempt-scoped file.
+                alias = worker_dir / "inbox.md"
+                created_paths.append(alias)
+                write_worker_inbox(dest=alias, body=inbox_body + "\n")
+            except InteractiveTeamError as exc:
+                raise TeamError(f"inbox write refused: {exc}") from exc
         return seeded
     except Exception:
         for path in reversed(created_paths):
@@ -1726,6 +2117,51 @@ def resume_for_identity(
             run_id=run_id,
             team_id=team_id,
         )
+        relaunched_ids = [
+            str(item.get("task_id") or "").strip()
+            for item in (relaunch.get("relaunched") or [])
+            if isinstance(item, Mapping)
+        ]
+        relaunched_ids = [tid for tid in relaunched_ids if tid]
+        readiness: dict[str, Any] | None = None
+        if relaunched_ids:
+            from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
+
+            # Generation bump invalidates every sibling's prior evidence.
+            interactive_ids = [
+                str(task.get("task_id") or "").strip()
+                for task in (meta_for_claims.get("tasks") or [])
+                if isinstance(task, Mapping)
+                and str(task.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY
+            ]
+            interactive_ids = [tid for tid in interactive_ids if tid]
+            if interactive_ids:
+                readiness = apply_interactive_worker_readiness(
+                    root_path,
+                    run_id,
+                    interactive_ids,
+                    env=env,
+                )
+                persist_keys = (
+                    "startup_acks",
+                    "startup_ack_workers",
+                    "startup_process_ready",
+                    "startup_process_ready_workers",
+                    "startup_ready_workers",
+                    "startup_missing_workers",
+                    "startup_blocked_workers",
+                    "startup_workers",
+                    "startup_status",
+                    "startup_expected",
+                    "startup_gate_phase",
+                    "ready_timeout_ms",
+                    "startup_note",
+                )
+                payload = {
+                    key: readiness[key] for key in persist_keys if key in readiness
+                }
+                if payload:
+                    persist_startup_annotations(root_path, run_id, payload)
         # Job-backed workers: bind existing Jobs without relaunch (#69 PR4).
         job_bind: dict[str, Any] | None = None
         if str(meta_for_claims.get("worker_topology") or "") == "job":
@@ -1751,6 +2187,28 @@ def resume_for_identity(
             "replacement_recover": replacement_recover,
         }
     )
+    if readiness:
+        for key in (
+            "startup_status",
+            "startup_ready_workers",
+            "startup_missing_workers",
+            "startup_note",
+            "startup_expected",
+            "startup_gate_phase",
+            "ready_timeout_ms",
+        ):
+            if key in readiness:
+                out[key] = readiness[key]
+        if readiness.get("startup_status") in {
+            "failed_start",
+            "degraded",
+            "blocked_start",
+        }:
+            out["note"] = (
+                f"{out.get('note') or ''}; interactive readiness "
+                f"{readiness.get('startup_status')}; "
+                f"missing={readiness.get('startup_missing_workers')}"
+            ).strip("; ")
     if job_bind is not None:
         out["job_bind"] = job_bind
         # Never relaunch job-backed workers on resume — Jobs owns process life.

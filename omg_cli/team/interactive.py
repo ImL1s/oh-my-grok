@@ -219,6 +219,43 @@ def _is_headless_single_option(tok: str) -> bool:
     )
 
 
+def coerce_attempt(raw: Any, *, default: int = 1) -> int:
+    """Return a positive attempt integer; invalid values fall back to *default*."""
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+        return raw
+    if isinstance(default, int) and not isinstance(default, bool) and default >= 1:
+        return default
+    return 1
+
+
+def coerce_generation(raw: Any, *, default: int = 0) -> int:
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    if isinstance(default, int) and not isinstance(default, bool) and default >= 0:
+        return default
+    return 0
+
+
+def interactive_inbox_basename(task_id: str, attempt: int | None = None) -> str:
+    """Attempt-scoped interactive inbox name so relaunch cannot reuse the file."""
+    tid = str(task_id or "").strip()
+    if not tid:
+        raise InteractiveTeamError("inbox task_id is empty")
+    if any(ch in tid for ch in ("/", "\\", "\x00", "\n")):
+        raise InteractiveTeamError("inbox task_id is invalid")
+    return f"{tid}.a{coerce_attempt(attempt)}.inbox.txt"
+
+
+def api_worker_inbox_basename(task_id: str, attempt: int | None = None) -> str:
+    """Attempt-scoped API worker inbox (distinct from catalog ``inbox.md``)."""
+    tid = str(task_id or "").strip()
+    if not tid:
+        raise InteractiveTeamError("inbox task_id is empty")
+    if any(ch in tid for ch in ("/", "\\", "\x00", "\n")):
+        raise InteractiveTeamError("inbox task_id is invalid")
+    return f"{tid}.a{coerce_attempt(attempt)}.inbox.md"
+
+
 def write_worker_inbox(*, dest: Path, body: str) -> Path:
     """Bounded worker inbox (no credentials). Mode 0o600, published atomically."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -338,9 +375,255 @@ def pane_command_for_exec_script(script: Path | str) -> str:
     return f"exec /bin/sh {shlex.quote(str(path))}"
 
 
+def parse_interactive_nonce_from_exec_script(script: Path | str) -> str | None:
+    """Return the leader nonce already written into an exec wrapper, if any."""
+    path = Path(script)
+    try:
+        if not path.is_file() or path.is_symlink():
+            return None
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    prefix = f"export {INTERACTIVE_NONCE_ENV}="
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(prefix):
+            continue
+        token = line[len(prefix) :].strip()
+        if token.startswith("'") and token.endswith("'") and len(token) >= 2:
+            token = token[1:-1]
+        elif token.startswith('"') and token.endswith('"') and len(token) >= 2:
+            token = token[1:-1]
+        token = token.strip()
+        if token and "\x00" not in token and "\n" not in token:
+            return token
+    return None
+
+
+def build_interactive_inbox_body(
+    *,
+    task_id: str,
+    attempt: int,
+    goal: str,
+    owned_files: Sequence[str] | None = None,
+    role: str | None = None,
+    subject: str | None = None,
+    depends_on: Sequence[str] | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    api_task_id: str | None = None,
+    worktree: Path | str | None = None,
+) -> str:
+    """Task-scoped inbox for interactive panes (not the shared team goal only)."""
+    tid = str(task_id or "").strip()
+    att = coerce_attempt(attempt)
+    lines = [f"task_id={tid}", f"attempt={att}"]
+    role_s = str(role or "").strip()
+    if role_s:
+        lines.append(f"role={role_s}")
+    board = str(api_task_id or "").strip()
+    if board:
+        lines.append(f"board_task_id={board}")
+    rid = str(run_id or "").strip()
+    if rid:
+        lines.append(f"run_id={rid}")
+    team = str(team_id or "").strip()
+    if team:
+        lines.append(f"team_id={team}")
+    wt = str(worktree or "").strip()
+    if wt:
+        lines.append(f"worktree={wt}")
+    subj = str(subject or "").strip()
+    if subj:
+        lines.extend(["", "## Assignment", subj])
+    owned = [str(item).strip() for item in (owned_files or []) if str(item).strip()]
+    lines.extend(["", "## Owned files"])
+    if owned:
+        lines.extend(f"- `{item}`" for item in owned)
+    else:
+        lines.append("- (none listed)")
+    deps = [str(item).strip() for item in (depends_on or []) if str(item).strip()]
+    if deps:
+        lines.extend(["", "## Depends on"])
+        lines.extend(f"- `{item}`" for item in deps)
+    lines.extend(
+        [
+            "",
+            "## Goal (shared)",
+            str(goal or "").strip() or "(no goal provided)",
+        ]
+    )
+    if rid and team and tid:
+        from omg_cli.team.worker_protocol import team_worker_protocol_lines
+
+        lines.extend(
+            [
+                "",
+                *team_worker_protocol_lines(
+                    run_id=rid,
+                    team_id=team,
+                    worker_id=tid,
+                    api_task_id=board or None,
+                ),
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def overlay_interactive_launch(
+    *,
+    team_dir: Path | str,
+    task_id: str,
+    attempt: int,
+    worktree: Path | str,
+    goal: str,
+    use_fixture: bool,
+    posture: str = "read-write",
+    model: str | None = None,
+    safe: bool = False,
+    yolo: bool = False,
+    echo_probe: bool = False,
+    nonce: str | None = None,
+    python_executable: str | None = None,
+    pythonpath: str | None = None,
+    owned_files: Sequence[str] | None = None,
+    role: str | None = None,
+    subject: str | None = None,
+    depends_on: Sequence[str] | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    api_task_id: str | None = None,
+) -> dict[str, Any]:
+    """Write attempt-scoped inbox + exec wrapper. Never a supervisor pane_command."""
+    tid = str(task_id or "").strip()
+    if not tid:
+        raise InteractiveTeamError("interactive overlay task_id is empty")
+    att = coerce_attempt(attempt)
+    tdir = Path(team_dir)
+    inbox_path = tdir / interactive_inbox_basename(tid, att)
+    exec_script = tdir / f"{tid}.interactive.sh"
+    rules_path = tdir / f"{tid}.interactive.rules.txt"
+    wrap_module: str | None = None
+    resolved_pythonpath = pythonpath
+    if use_fixture:
+        argv = fixture_interactive_argv()
+        provider = "fixture"
+    else:
+        probe_rules = GROK_INTERACTIVE_RULES if echo_probe else None
+        if probe_rules:
+            write_interactive_rules_file(dest=rules_path, body=probe_rules)
+        argv = grok_interactive_argv(
+            cwd=worktree,
+            posture=posture,
+            model=model,
+            safe=safe,
+            yolo=yolo,
+            rules=probe_rules,
+        )
+        wrap_module = INTERACTIVE_WRAPPER_MODULE
+        if not resolved_pythonpath:
+            resolved_pythonpath = str(Path(__file__).resolve().parents[2])
+        provider = "grok"
+    body = build_interactive_inbox_body(
+        task_id=tid,
+        attempt=att,
+        goal=goal,
+        owned_files=owned_files,
+        role=role,
+        subject=subject,
+        depends_on=depends_on,
+        run_id=run_id,
+        team_id=team_id,
+        api_task_id=api_task_id,
+        worktree=worktree,
+    )
+    write_worker_inbox(dest=inbox_path, body=body)
+    token = nonce if isinstance(nonce, str) and nonce.strip() else None
+    if token is None:
+        token = parse_interactive_nonce_from_exec_script(exec_script)
+    if token is None:
+        token = make_interactive_nonce()
+    write_interactive_exec_script(
+        dest=exec_script,
+        argv=argv,
+        worktree=worktree,
+        extra_env={INTERACTIVE_NONCE_ENV: token},
+        wrap_module=wrap_module,
+        python_executable=python_executable,
+        pythonpath=resolved_pythonpath if wrap_module else None,
+    )
+    pane_cmd = pane_command_for_exec_script(exec_script)
+    assert_not_supervisor_pane_command(pane_cmd)
+    return {
+        "argv": list(argv),
+        "pane_command": pane_cmd,
+        "inbox_path": inbox_path,
+        "exec_script": exec_script,
+        "interactive_nonce": token,
+        "attempt": att,
+        "provider": provider,
+        "needs_pty": True,
+        "prompt_delivery": "interactive-tty",
+    }
+
+
 def interactive_inbox_instruction(inbox_path: Path | str) -> str:
     """Concise post-ready instruction — not the full leader transcript."""
-    return f"Read {inbox_path} and execute the assigned task now."
+    path = Path(inbox_path)
+    try:
+        shown = str(path.resolve())
+    except OSError:
+        shown = str(path)
+    return f"Read {shown} and execute the assigned task now."
+
+
+def evidence_matches_worker_identity(
+    evidence: Mapping[str, Any],
+    row: Mapping[str, Any],
+) -> bool:
+    """True when TUI-ready evidence still names the current pane/PID/start.
+
+    A positive evidence ``provider_pid`` (or non-empty ``pid_start``) requires
+    the same binding on the current row. Missing/cleared row bindings are a
+    mismatch, not a skip — scale-down may drop pid while retaining pane_id.
+    Used as the hermetic half of the promote TOCTOU fence. Live callers also
+    re-prove via ``resolve_live_worker`` / ExactPaneProof.
+    """
+    if not isinstance(evidence, Mapping) or not isinstance(row, Mapping):
+        return False
+    ev_pane = evidence.get("pane_id")
+    row_pane = row.get("pane_id")
+    if not isinstance(ev_pane, str) or not ev_pane.startswith("%"):
+        return False
+    if ev_pane != row_pane:
+        return False
+    ev_pid = evidence.get("provider_pid")
+    if isinstance(ev_pid, int) and not isinstance(ev_pid, bool) and ev_pid > 0:
+        row_pid = row.get("pid")
+        if (
+            not isinstance(row_pid, int)
+            or isinstance(row_pid, bool)
+            or row_pid <= 0
+            or ev_pid != row_pid
+        ):
+            return False
+    ev_start = evidence.get("pid_start")
+    if isinstance(ev_start, str) and ev_start:
+        row_start = row.get("pid_start")
+        if not isinstance(row_start, str) or not row_start or ev_start != row_start:
+            return False
+    ev_attempt = evidence.get("attempt")
+    if isinstance(ev_attempt, int) and not isinstance(ev_attempt, bool):
+        row_attempt = coerce_attempt(row.get("attempt"))
+        if ev_attempt != row_attempt:
+            return False
+    ev_gen = evidence.get("generation")
+    if isinstance(ev_gen, int) and not isinstance(ev_gen, bool) and ev_gen >= 0:
+        row_gen = coerce_generation(row.get("generation"))
+        if ev_gen != row_gen:
+            return False
+    return True
 
 
 def assert_not_supervisor_pane_command(pane_command: str) -> None:
@@ -422,11 +705,18 @@ def wait_for_interactive_tui_ready(
     capture_fn: Callable[[str], str],
     sleep_fn: Callable[[float], None] | None = None,
     clock_fn: Callable[[], float] | None = None,
+    refresh_fn: Callable[[str], Mapping[str, Any] | None] | None = None,
+    prove_fn: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
     """Poll identity-bound pane capture for ``TUI_READY:<nonce>``.
 
     Does **not** wait for supervisor ACK receipts and does **not** write
-    ``input_ready``. Callers (leader CLI) promote after this returns.
+    ``input_ready``. Callers (leader CLI) promote after this returns, and
+    must re-prove pane/PID/start (TOCTOU) before the stamp.
+
+    *refresh_fn(task_id)* re-reads the current worker row so a recycled
+    pane_id is not captured from a stale snapshot. *prove_fn(row, evidence)*
+    may refuse a marker that no longer matches live identity.
     """
     if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
         raise InteractiveTeamError("interactive ready timeout_ms must be >= 0")
@@ -450,8 +740,18 @@ def wait_for_interactive_tui_ready(
             tid = str(raw.get("task_id") or "").strip()
             if tid in evidence:
                 continue
-            pane_id = raw.get("pane_id")
-            nonce = raw.get("interactive_nonce")
+            current: Mapping[str, Any] = raw
+            if refresh_fn is not None:
+                try:
+                    refreshed = refresh_fn(tid)
+                except Exception:
+                    refreshed = None
+                if isinstance(refreshed, Mapping):
+                    current = refreshed
+            pane_id = current.get("pane_id")
+            nonce = current.get("interactive_nonce")
+            if not isinstance(nonce, str) or not nonce.strip():
+                nonce = raw.get("interactive_nonce")
             if not isinstance(pane_id, str) or not pane_id.startswith("%"):
                 continue
             if not isinstance(nonce, str) or not nonce.strip():
@@ -462,32 +762,37 @@ def wait_for_interactive_tui_ready(
                 text = ""
             if not capture_contains_tui_ready(text if isinstance(text, str) else "", nonce):
                 continue
-            pid_raw = raw.get("pid")
+            pid_raw = current.get("pid")
             provider_pid = (
                 pid_raw
                 if isinstance(pid_raw, int) and not isinstance(pid_raw, bool) and pid_raw > 0
                 else None
             )
-            attempt_raw = raw.get("attempt", 1)
-            attempt = (
-                attempt_raw
-                if isinstance(attempt_raw, int) and not isinstance(attempt_raw, bool) and attempt_raw >= 1
-                else 1
+            pid_start = current.get("pid_start")
+            if not isinstance(pid_start, str) or not pid_start:
+                pid_start = None
+            attempt = coerce_attempt(current.get("attempt", raw.get("attempt", 1)))
+            generation = coerce_generation(
+                current.get("generation", raw.get("generation", 0))
             )
-            gen_raw = raw.get("generation", 0)
-            generation = (
-                gen_raw
-                if isinstance(gen_raw, int) and not isinstance(gen_raw, bool) and gen_raw >= 0
-                else 0
-            )
-            evidence[tid] = {
+            candidate = {
                 "task_id": tid,
                 "ready_marker": tui_ready_marker(nonce.strip()),
                 "pane_id": pane_id,
                 "provider_pid": provider_pid,
+                "pid_start": pid_start,
                 "attempt": attempt,
                 "generation": generation,
             }
+            if prove_fn is not None:
+                try:
+                    if not bool(prove_fn(current, candidate)):
+                        continue
+                except Exception:
+                    continue
+            if not evidence_matches_worker_identity(candidate, current):
+                continue
+            evidence[tid] = candidate
         missing = [tid for tid in expected if tid not in evidence]
         if not missing:
             break

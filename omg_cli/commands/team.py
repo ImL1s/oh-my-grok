@@ -618,6 +618,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "retry omg team resume to repair projection",
                     file=sys.stderr,
                 )
+            code = _emit_startup_human(result, command="scale")
+            if code is not None:
+                return code
             return 0
         if action == "resume":
             from omg_cli.cli_envelope import wants_json
@@ -776,9 +779,15 @@ def cmd_team(args: argparse.Namespace) -> int:
                     print(result["print_hint"])
                 if as_json:
                     # --json never attaches; still honor provider fail-closed above.
+                    code = _emit_startup_human(result, command="resume")
+                    if code is not None:
+                        return code
                     return 0 if result.get("ok", True) else 1
                 if not result.get("ok", True):
                     return 2 if view.get("status") == "refused" else 1
+            code = _emit_startup_human(result, command="resume")
+            if code is not None:
+                return code
             return 0 if result.get("ok", True) else 1
 
         if action == "view":

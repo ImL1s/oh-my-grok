@@ -3458,6 +3458,11 @@ def start_team(
                             _worker_dir(root_path, rid, tid_plane, logical)
                             / "inbox.md",
                         )
+                        _note_start_file_backup(
+                            file_backups,
+                            _worker_dir(root_path, rid, tid_plane, logical)
+                            / f"{logical}.a1.inbox.md",
+                        )
             if before_spawn is not None:
                 try:
                     seeded = before_spawn(rid)
@@ -3487,6 +3492,12 @@ def start_team(
                             )
                             if inbox not in file_backups:
                                 file_backups[inbox] = (None, None)
+                            scoped = (
+                                _worker_dir(root_path, rid, tid_plane, kid)
+                                / f"{kid}.a1.inbox.md"
+                            )
+                            if scoped not in file_backups:
+                                file_backups[scoped] = (None, None)
 
             task_records: list[dict[str, Any]] = []
             manifest_tasks = list(manifest.get("tasks") or [])
@@ -3623,66 +3634,66 @@ def start_team(
 
                 if want_interactive:
                     from omg_cli.team.interactive import (
-                        GROK_INTERACTIVE_RULES,
-                        INTERACTIVE_NONCE_ENV,
-                        INTERACTIVE_WRAPPER_MODULE,
+                        InteractiveTeamError,
                         assert_not_supervisor_pane_command,
                         echo_probe_enabled,
-                        fixture_interactive_argv,
-                        grok_interactive_argv,
-                        make_interactive_nonce,
-                        pane_command_for_exec_script,
-                        write_interactive_exec_script,
-                        write_interactive_rules_file,
-                        write_worker_inbox,
+                        interactive_inbox_basename,
+                        overlay_interactive_launch,
                     )
 
-                    inbox_path = tdir / f"{tid}.inbox.txt"
+                    inbox_path = tdir / interactive_inbox_basename(tid, 1)
                     exec_script = tdir / f"{tid}.interactive.sh"
                     rules_path = tdir / f"{tid}.interactive.rules.txt"
                     if not created_team_dir:
                         _note_start_file_backup(file_backups, inbox_path)
                         _note_start_file_backup(file_backups, exec_script)
                         _note_start_file_backup(file_backups, rules_path)
-                    wrap_module = None
-                    pythonpath = None
-                    if use_fixture_executor:
-                        argv = fixture_interactive_argv()
-                        provider = "fixture"
-                    else:
-                        routed_model = None
-                        if multi_cli and resolved is not None:
-                            routed_model = resolved.for_role(role).model
-                        probe_rules = (
-                            GROK_INTERACTIVE_RULES if echo_probe_enabled(env) else None
-                        )
-                        if probe_rules:
-                            write_interactive_rules_file(dest=rules_path, body=probe_rules)
-                        argv = grok_interactive_argv(
-                            cwd=wt,
+                    routed_model = None
+                    if (
+                        not use_fixture_executor
+                        and multi_cli
+                        and resolved is not None
+                    ):
+                        routed_model = resolved.for_role(role).model
+                    try:
+                        overlay = overlay_interactive_launch(
+                            team_dir=tdir,
+                            task_id=tid,
+                            attempt=1,
+                            worktree=wt,
+                            goal=goal,
+                            use_fixture=use_fixture_executor,
                             posture=posture,
                             model=routed_model,
                             safe=safe,
                             yolo=yolo,
-                            rules=probe_rules,
+                            echo_probe=echo_probe_enabled(env),
+                            python_executable=sys.executable,
+                            pythonpath=(
+                                None
+                                if use_fixture_executor
+                                else str(Path(__file__).resolve().parents[2])
+                            ),
+                            owned_files=owned,
+                            role=role,
+                            subject=str(
+                                src_task.get("subject")
+                                or src_task.get("title")
+                                or src_task.get("description")
+                                or ""
+                            ),
+                            depends_on=list(src_task.get("depends_on") or []),
+                            run_id=rid,
+                            team_id=tid_plane,
+                            api_task_id=board_task_id,
                         )
-                        wrap_module = INTERACTIVE_WRAPPER_MODULE
-                        pythonpath = str(Path(__file__).resolve().parents[2])
-                    write_worker_inbox(
-                        dest=inbox_path,
-                        body=f"task_id={tid}\n{goal}\n",
-                    )
-                    interactive_nonce = make_interactive_nonce()
-                    write_interactive_exec_script(
-                        dest=exec_script,
-                        argv=argv,
-                        worktree=wt,
-                        extra_env={INTERACTIVE_NONCE_ENV: interactive_nonce},
-                        wrap_module=wrap_module,
-                        python_executable=sys.executable,
-                        pythonpath=pythonpath,
-                    )
-                    pane_cmd = pane_command_for_exec_script(exec_script)
+                    except InteractiveTeamError as exc:
+                        raise TeamError(str(exc)) from exc
+                    argv = list(overlay["argv"])
+                    pane_cmd = str(overlay["pane_command"])
+                    inbox_path = Path(overlay["inbox_path"])
+                    interactive_nonce = str(overlay["interactive_nonce"])
+                    provider = str(overlay.get("provider") or provider)
                     assert_not_supervisor_pane_command(pane_cmd)
                     needs_pty = True
                     prompt_delivery = "interactive-tty"
@@ -3725,6 +3736,17 @@ def start_team(
                     "needs_pty": needs_pty,
                     "prompt_delivery": prompt_delivery,
                     "inbox_path": rec_inbox,
+                    "owned_files": list(owned),
+                    "subject": str(
+                        src_task.get("subject")
+                        or src_task.get("title")
+                        or src_task.get("description")
+                        or ""
+                    )
+                    or None,
+                    "depends_on": list(src_task.get("depends_on") or []),
+                    "api_task_id": board_task_id,
+                    "attempt": 1,
                     "pid": None,
                     "pgid": None,
                     "pid_start": None,
