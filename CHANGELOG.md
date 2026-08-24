@@ -48,6 +48,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   `session/update` replay still fail-closes. Hermetic
   `vendor_chrome` peer. Not Antigravity history import. Refs #74
   (does not close).
+- **#73 leftover rust-analyzer content-modified retry:** `omg tools lsp
+  hover|definition` treats LSP JSON-RPC `-32801` / `content modified` as
+  retryable (same family as JSON `null`) while the language server
+  indexes, then waits for an inspectable payload within the existing
+  sidecar timeout. Other RPC errors still fail closed. Not live AG MCP
+  and not SCIP protobuf. Refs #73 (does not close).
 - **#72 job.terminal does not close the launching session:**
   `BUS_EVENT_TYPES["job.terminal"]` maps to lifecycle `turn_completed`
   (session state `active`) instead of `agent_closed`. Wrapper journal
