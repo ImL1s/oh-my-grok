@@ -2347,6 +2347,91 @@ def test_cleanup_requires_shutdown_ack_and_refuses_running_or_claims(
     assert not list(tmp_path.rglob("verified.json"))
 
 
+def _plant_team_api_store(root: Path, run_id: str, team_id: str) -> Path:
+    from omg_cli.contracts.path_keys import (
+        DATA_FILE_MODE,
+        atomic_write_bytes,
+        ensure_managed_dir,
+    )
+    from omg_cli.team.cleanup import team_api_store_dir
+
+    store = team_api_store_dir(root, run_id, team_id)
+    ensure_managed_dir(store)
+    marker = store / "api-config.json"
+    atomic_write_bytes(marker, b'{"keep":true}', mode=DATA_FILE_MODE, replace=True)
+    return marker
+
+
+def test_cleanup_team_artifacts_refuses_other_team_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.cleanup import CleanupError, cleanup_team_artifacts
+    from omg_cli.team.plane import _write_shutdown_request
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    team_a = "team-a"
+    team_b = "team-b"
+    _write_shutdown_request(
+        tmp_path, run_id, team_id=team_a, force=True, in_progress=[]
+    )
+    marker_a = _plant_team_api_store(tmp_path, run_id, team_a)
+    marker_b = _plant_team_api_store(tmp_path, run_id, team_b)
+    with pytest.raises(CleanupError) as excinfo:
+        cleanup_team_artifacts(
+            tmp_path,
+            run_id=run_id,
+            team_id=team_b,
+            meta={"dry_run": True, "tasks": []},
+            tasks=[],
+            workers=[],
+        )
+    err = excinfo.value
+    assert err.code == "E_TEAM_CLEANUP_TEAM_MISMATCH"
+    assert err.details["request_team_id"] == team_a
+    assert err.details["team_id"] == team_b
+    assert err.details["request_run_id"] == run_id
+    assert err.details["run_id"] == run_id
+    assert marker_a.is_file()
+    assert marker_b.is_file()
+    assert marker_b.read_bytes() == b'{"keep":true}'
+
+
+def test_cleanup_team_artifacts_matching_team_id_removes_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.cleanup import (
+        cleanup_receipt_path,
+        cleanup_team_artifacts,
+        team_api_store_dir,
+    )
+    from omg_cli.team.plane import _write_shutdown_request
+
+    run_id = _seed_control_plane(tmp_path, monkeypatch)
+    team_id = "team-b"
+    _write_shutdown_request(
+        tmp_path, run_id, team_id=team_id, force=True, in_progress=[]
+    )
+    marker_a = _plant_team_api_store(tmp_path, run_id, "team-a")
+    marker = _plant_team_api_store(tmp_path, run_id, team_id)
+    store = team_api_store_dir(tmp_path, run_id, team_id)
+    receipt = cleanup_team_artifacts(
+        tmp_path,
+        run_id=run_id,
+        team_id=team_id,
+        meta={"dry_run": True, "tasks": []},
+        tasks=[],
+        workers=[],
+    )
+    assert receipt["run_id"] == run_id
+    assert receipt["team_id"] == team_id
+    assert receipt["never_sets_verified"] is True
+    assert not marker.exists()
+    assert marker_a.is_file()
+    assert store.is_dir()
+    assert cleanup_receipt_path(tmp_path, run_id, team_id).is_file()
+    assert not list(tmp_path.rglob("verified.json"))
+
+
 def test_monitor_snapshot_redacted_and_acl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

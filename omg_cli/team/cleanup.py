@@ -7,6 +7,7 @@ Never writes OMG ``verified``.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -18,9 +19,15 @@ from omg_cli.contracts.path_keys import (
     atomic_write_bytes,
     ensure_managed_dir,
     exclusive_lock,
+    read_managed_regular_bytes,
     safe_path_key,
 )
-from omg_cli.contracts.state_schemas import require_safe_id
+from omg_cli.contracts.state_schemas import (
+    ContractValidationError,
+    require_exact_keys,
+    require_safe_id,
+    validate_store_header,
+)
 from omg_cli.contracts.writer_chain import canonical_json_bytes
 from omg_cli.team.plane import team_dir, team_shutdown_request_path
 
@@ -28,7 +35,23 @@ from omg_cli.team.plane import team_dir, team_shutdown_request_path
 CLI_WRITER = "omg-cli"
 CLEANUP_STORE_KIND = "team_cleanup_receipt"
 CLEANUP_SCHEMA_VERSION = 1
+SHUTDOWN_REQUEST_STORE_KIND = "team_shutdown_request"
+SHUTDOWN_REQUEST_SCHEMA_VERSION = 1
 RUNNING_STATUSES = frozenset({"pending", "running", "launched", "in_progress"})
+_SHUTDOWN_REQUEST_KEYS = frozenset(
+    {
+        "store_kind",
+        "schema_version",
+        "writer",
+        "run_id",
+        "team_id",
+        "requested_at",
+        "force",
+        "in_progress_task_ids",
+        "in_progress_owners",
+        "note",
+    }
+)
 
 _TEAM_STORE_FILES = (
     "events.jsonl",
@@ -156,6 +179,64 @@ def _remove_tree(path: Path, *, removed: list[str], root: Path) -> None:
     removed.append(str(path.relative_to(root)))
 
 
+def _load_bound_shutdown_request(
+    path: Path, *, run_id: str, team_id: str
+) -> dict[str, Any]:
+    """Confined regular-file read of shutdown-request.json bound to *run_id*/*team_id*."""
+
+    try:
+        body = read_managed_regular_bytes(path)
+    except FileNotFoundError:
+        raise CleanupError(
+            "cleanup requires a durable shutdown request",
+            code="E_TEAM_CLEANUP_NO_SHUTDOWN",
+        )
+    except (OSError, ValueError) as exc:
+        raise CleanupError(
+            f"shutdown request unreadable: {exc}",
+            code="E_TEAM_CLEANUP_PATH",
+        ) from exc
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CleanupError(
+            "shutdown request is not valid JSON",
+            code="E_TEAM_CLEANUP_SHUTDOWN_INVALID",
+        ) from exc
+    try:
+        if not isinstance(parsed, dict):
+            raise ContractValidationError("team shutdown request must be an object")
+        require_exact_keys(
+            parsed, required=_SHUTDOWN_REQUEST_KEYS, label="team shutdown request"
+        )
+        validate_store_header(
+            parsed,
+            store_kind=SHUTDOWN_REQUEST_STORE_KIND,
+            schema_version=SHUTDOWN_REQUEST_SCHEMA_VERSION,
+        )
+        if parsed.get("writer") != CLI_WRITER:
+            raise ContractValidationError("team shutdown request writer mismatch")
+        request_run = require_safe_id(parsed.get("run_id"), label="run_id")
+        request_team = require_safe_id(parsed.get("team_id"), label="team_id")
+    except ContractValidationError as exc:
+        raise CleanupError(
+            f"shutdown request schema invalid: {exc}",
+            code="E_TEAM_CLEANUP_SHUTDOWN_INVALID",
+        ) from exc
+    if request_run != run_id or request_team != team_id:
+        raise CleanupError(
+            "shutdown request does not bind the requested team",
+            code="E_TEAM_CLEANUP_TEAM_MISMATCH",
+            details={
+                "request_run_id": request_run,
+                "request_team_id": request_team,
+                "run_id": run_id,
+                "team_id": team_id,
+            },
+        )
+    return parsed
+
+
 def cleanup_team_artifacts(
     root: Path | str,
     *,
@@ -178,11 +259,7 @@ def cleanup_team_artifacts(
     root_path = Path(root).resolve()
     current = now or datetime.now(timezone.utc)
     request_path = team_shutdown_request_path(root_path, run_id)
-    if not request_path.is_file():
-        raise CleanupError(
-            "cleanup requires a durable shutdown request",
-            code="E_TEAM_CLEANUP_NO_SHUTDOWN",
-        )
+    _load_bound_shutdown_request(request_path, run_id=run_id, team_id=team_id)
 
     missing_acks: list[str] = []
     for worker in workers:
@@ -293,6 +370,8 @@ def cleanup_team_artifacts(
 __all__ = [
     "CLEANUP_SCHEMA_VERSION",
     "CLEANUP_STORE_KIND",
+    "SHUTDOWN_REQUEST_SCHEMA_VERSION",
+    "SHUTDOWN_REQUEST_STORE_KIND",
     "CleanupError",
     "cleanup_receipt_path",
     "cleanup_team_artifacts",
