@@ -35,6 +35,7 @@ from omg_cli.jobs.ownership import (
     kill_pgid,
     probe_identity_liveness,
     reap_child,
+    refresh_identity,
     wait_until_gone,
 )
 from omg_cli.jobs.providers import resolve_job_provider
@@ -330,10 +331,19 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         for ident in kids:
             reap_child(ident.pid)
         time.sleep(0.05)
+    def _live(ident: object) -> object | None:
+        refreshed = refresh_identity(ident)  # type: ignore[arg-type]
+        if refreshed is not None:
+            ident = refreshed
+        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:  # type: ignore[arg-type]
+            return ident
+        return None
+
     kids = child_identities(me)
     for ident in kids:
-        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
-            kill_pgid(ident.pgid, signal.SIGTERM)
+        live = _live(ident)
+        if live is not None:
+            kill_pgid(live.pgid, signal.SIGTERM)  # type: ignore[attr-defined]
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         kids = child_identities(me)
@@ -344,12 +354,14 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         time.sleep(0.05)
     leftover: list = []
     for ident in child_identities(me):
-        if probe_identity_liveness(ident) is not IdentityProbeOutcome.LIVE:
+        live = _live(ident)
+        if live is None:
             continue
-        kill_pgid(ident.pgid, signal.SIGKILL)
-        gone = wait_until_gone(ident.pid, timeout_s=2.0)
-        if not gone and probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
-            leftover.append(ident)
+        kill_pgid(live.pgid, signal.SIGKILL)  # type: ignore[attr-defined]
+        gone = wait_until_gone(live.pid, timeout_s=2.0)  # type: ignore[attr-defined]
+        still = _live(live)
+        if not gone and still is not None:
+            leftover.append(still)
     if leftover:
         raise RuntimeError(
             "adopted child pid(s) "
