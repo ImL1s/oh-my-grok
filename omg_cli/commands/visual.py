@@ -21,7 +21,6 @@ from omg_cli.cli_envelope import emit_json, failure, success
 from omg_cli.contracts.visual_contract import VisualContractError, compare
 from omg_cli.visual_pixels import VisualPixelError
 from omg_cli.visual_runtime import (
-    VisualConfigError,
     VisualMetadataError,
     VisualPathError,
     VisualReviewerError,
