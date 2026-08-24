@@ -75,7 +75,8 @@ def _tmux(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _tmux_capture(session: str, pane_id: str) -> str:
     del session  # pane_id is globally unique (%N) on the default server.
-    proc = _tmux("capture-pane", "-p", "-J", "-t", pane_id)
+    # Include scrollback: grok's TUI splash replaces the visible TUI_READY line.
+    proc = _tmux("capture-pane", "-p", "-J", "-S", "-", "-t", pane_id)
     return proc.stdout or ""
 
 
@@ -121,7 +122,7 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             env=live_env,
             detach=True,
             io_mode="interactive",
-            yolo=True,
+            yolo=False,
         )
         evidence["run_id"] = meta.get("run_id")
         evidence["startup_status"] = meta.get("startup_status")
@@ -146,10 +147,22 @@ def _run_interactive_live(*, cwd: Path, env: dict[str, str]) -> int:
             return _fail(evidence["reason"])
         capture = _tmux_capture(session, pane_id) if session else ""
         if not capture:
-            cap_proc = _tmux("capture-pane", "-p", "-t", pane_id)
+            cap_proc = _tmux("capture-pane", "-p", "-J", "-S", "-", "-t", pane_id)
             capture = cap_proc.stdout or ""
         evidence["tui_ready"] = capture_contains_tui_ready(capture, nonce)
         evidence["capture_preview"] = capture[-2000:]
+        leader_ready = (
+            bool(task.get("input_ready") is True)
+            and str(task.get("io_mode") or "") == "interactive_tty"
+            and str(task.get("provider_tty_owner") or "") == "provider"
+            and "TUI-ready" in str(meta.get("startup_note") or "")
+        )
+        evidence["leader_tui_ready"] = leader_ready
+        if not evidence["tui_ready"] and leader_ready:
+            # Grok splash can wipe TUI_READY from pane history after the
+            # leader already identity-fenced it. Continue to PROVIDER_ECHO.
+            evidence["tui_ready"] = True
+            evidence["tui_ready_source"] = "leader_stamp"
         if not evidence["tui_ready"] or meta.get("startup_status") != "running":
             evidence["reason"] = (
                 f"TUI_READY missing or startup_status={meta.get('startup_status')!r}; "

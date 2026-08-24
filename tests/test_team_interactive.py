@@ -342,6 +342,7 @@ def test_dry_run_interactive_echo_probe_attaches_rules(
         env={EXPERIMENTAL_ENV: "1", ECHO_PROBE_ENV: "1"},
     )
     rec = meta["tasks"][0]
+    assert rec.get("echo_probe") is True
     assert "--rules" in rec["argv"]
     assert rec["argv"][rec["argv"].index("--rules") + 1].startswith(
         "When the user sends a line"
@@ -1593,6 +1594,47 @@ def test_inbox_instruction_skips_same_inbox_and_attempt(
     mutate_team_meta(tmp_path, run_id, _seed)
     out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
     assert out == {"t1": True}
+
+
+@_POSIX
+def test_echo_probe_skips_inbox_instruction_submit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import mutate_team_meta
+
+    _enable(monkeypatch)
+    monkeypatch.setenv(ECHO_PROBE_ENV, "1")
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive grok",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1", ECHO_PROBE_ENV: "1"},
+    )
+    run_id = str(meta["run_id"])
+    called: list[object] = []
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        called.append(1)
+        raise AssertionError("echo probe must not submit the inbox assignment")
+
+    monkeypatch.setattr("omg_cli.team.operator.input_worker", _boom)
+
+    def _seed(current: dict) -> dict:
+        current["dry_run"] = False
+        current["tasks"][0]["inbox_path"] = "team/t1.a1.inbox.txt"
+        current["tasks"][0]["attempt"] = 1
+        current["tasks"][0]["echo_probe"] = True
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    out = runtime_mod._submit_interactive_inbox_instructions(tmp_path, run_id, ["t1"])
+    assert out == {}
+    assert called == []
 
 
 @_POSIX

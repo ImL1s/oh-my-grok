@@ -3783,6 +3783,10 @@ def start_team(
                     if want_interactive
                     else io_defaults_for_worker_topology(worker_topo),
                 )
+                if want_interactive:
+                    from omg_cli.team.interactive import echo_probe_enabled as _echo_probe
+
+                    rec["echo_probe"] = bool(_echo_probe(env))
                 from omg_cli.team.presentation import stamp_route_on_task
 
                 stamp_route_on_task(
