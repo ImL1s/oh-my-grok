@@ -687,7 +687,12 @@ def capture_contains_tui_ready(text: str, nonce: str) -> bool:
 
 
 def clear_tui_ready_sidecar(path: str | Path | None) -> None:
-    """Remove a stale TUI_READY sidecar before spawn/relaunch."""
+    """Remove a stale TUI_READY sidecar before spawn/relaunch.
+
+    Fail closed if the file remains: a leftover valid marker would promote a
+    replacement pane as soon as ExactPaneProof matches, before the new
+    wrapper emits TUI_READY.
+    """
     if path is None:
         return
     try:
@@ -700,8 +705,27 @@ def clear_tui_ready_sidecar(path: str | Path | None) -> None:
         dest.unlink()
     except FileNotFoundError:
         return
-    except OSError:
+    except OSError as exc:
+        still = False
+        try:
+            still = dest.is_file() and not dest.is_symlink()
+        except OSError:
+            still = True
+        if still:
+            raise InteractiveTeamError(
+                f"failed to unlink TUI_READY sidecar {dest}: {exc}"
+            ) from exc
         return
+    try:
+        leftover = dest.is_file() and not dest.is_symlink()
+    except OSError as exc:
+        raise InteractiveTeamError(
+            f"failed to confirm TUI_READY sidecar unlinked {dest}: {exc}"
+        ) from exc
+    if leftover:
+        raise InteractiveTeamError(
+            f"TUI_READY sidecar still present after unlink {dest}"
+        )
 
 
 def file_contains_tui_ready(path: str | Path, nonce: str) -> bool:

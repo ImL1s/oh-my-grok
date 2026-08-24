@@ -755,6 +755,23 @@ def test_clear_tui_ready_sidecar_removes_stale_marker(tmp_path: Path) -> None:
     assert not dest.exists()
 
 
+def test_clear_tui_ready_sidecar_fails_closed_when_unlink_leaves_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.team.interactive import InteractiveTeamError, clear_tui_ready_sidecar
+
+    dest = tmp_path / "t1.a1.tui-ready"
+    dest.write_text("TUI_READY:stale\n", encoding="utf-8")
+
+    def _blocked_unlink(self, *args, **kwargs):
+        raise OSError("read-only sidecar")
+
+    monkeypatch.setattr("pathlib.Path.unlink", _blocked_unlink)
+    with pytest.raises(InteractiveTeamError, match="failed to unlink TUI_READY sidecar"):
+        clear_tui_ready_sidecar(dest)
+    assert dest.is_file()
+
+
 def test_wrapper_emit_writes_tui_ready_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

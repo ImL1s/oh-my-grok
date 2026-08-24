@@ -1069,6 +1069,18 @@ def _execute_replacement_from_wal(
             progress = "fenced"
 
         if state == "fenced":
+            if topology == WORKER_TOPOLOGY_PANE:
+                from omg_cli.team.interactive import (
+                    InteractiveTeamError,
+                    clear_tui_ready_sidecar,
+                )
+
+                try:
+                    clear_tui_ready_sidecar(task.get("tui_ready_path"))
+                except InteractiveTeamError as exc:
+                    raise ReplacementError(
+                        str(exc), code="E_TEAM_REPLACE_SIDECAR"
+                    ) from exc
             if dry_run:
                 handle = launch_worker(
                     root,
@@ -1343,9 +1355,6 @@ def _commit_team_task_replacement(
             if topo not in (WORKER_TOPOLOGY_PANE, WORKER_TOPOLOGY_JOB):
                 topo = WORKER_TOPOLOGY_PANE
             stamp_io_capability(row, io_defaults_for_worker_topology(str(topo)))
-            from omg_cli.team.interactive import clear_tui_ready_sidecar
-
-            clear_tui_ready_sidecar(row.get("tui_ready_path"))
             from omg_cli.team.presentation import stamp_route_on_task
 
             stamp_route_on_task(
