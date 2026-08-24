@@ -47,6 +47,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   to `agent_closed`. Refs #72 (does not close).
 
 ### Added
+- **#73 leftover PATH language-server semantic result:** `omg tools lsp`
+  against `rust-analyzer` (default stdio; `--stdio` is dropped because
+  rust-analyzer rejects that flag) answers unknown server→client JSON-RPC
+  requests with `result: null`, waits up to 30s, and retries hover /
+  definition / references while the payload is still JSON `null` so the
+  first inspectable result is not empty. `omg lsp` stays host-owned;
+  `omg mcp-server` still forbids `lsp.*`. Not live AG MCP and not SCIP
+  protobuf. Refs #73 (does not close).
 - **#73 leftover Fake-LSP semantic ops + SCIP-lite occurrences:**
   `FakeLspTransport` now returns inspectable `textDocument/references`
   (Location) and `workspace/symbol` (SymbolInformation named `Fake`) so

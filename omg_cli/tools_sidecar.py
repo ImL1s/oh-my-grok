@@ -28,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, NoReturn, Protocol, Sequence
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "omg-tools-sidecar/v1"
@@ -131,6 +131,13 @@ COMMON_LSP_SERVERS = (
     "rust-analyzer",
     "clangd",
 )
+# rust-analyzer on a tiny crate needs well more than 5s for initialize + first
+# hover/definition. Bounded, not infinite.
+DEFAULT_LSP_TIMEOUT_S = 30.0
+LSP_SEMANTIC_RETRY_S = 0.25
+_MAX_LSP_STDERR_BYTES = 4096
+_LSP_CONTINUE = object()
+
 SIDECAR_TOOL_NAMES: tuple[str, ...] = (
     "omg.tools.doctor",
     "omg.tools.lsp.servers",
@@ -321,6 +328,151 @@ def _workspace_configuration_result(
     return [{} for _ in items]
 
 
+def lsp_command_argv(
+    command: Sequence[str] | None,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    """Build language-server argv. Never auto-appends ``--stdio``.
+
+    rust-analyzer speaks stdio by default and rejects ``--stdio``
+    (``unexpected flag: --stdio``). Servers that need the flag must pass it
+    after ``--``. Explicit extras are preserved so a bad flag fails honestly.
+    """
+    argv = [str(part) for part in (command or []) if str(part)]
+    if not argv:
+        raise ToolsError("E_LSP_COMMAND", "lsp command is empty")
+    argv.extend(str(part) for part in (extra or []))
+    name = Path(argv[0]).name.lower()
+    if name in {"rust-analyzer", "rust-analyzer.exe"}:
+        argv = [part for part in argv if part != "--stdio"]
+    return argv
+
+
+def normalize_lsp_argv(argv: list[str]) -> list[str]:
+    """Drop ``--stdio`` for rust-analyzer; leave other servers unchanged."""
+    if not argv:
+        return []
+    try:
+        return lsp_command_argv(argv, None)
+    except ToolsError:
+        return list(argv)
+
+
+def _hover_contents_inspectable(contents: Any) -> bool:
+    if contents is None or contents == "" or contents == [] or contents == {}:
+        return False
+    if isinstance(contents, str):
+        return bool(contents.strip())
+    if isinstance(contents, dict):
+        value = contents.get("value")
+        if isinstance(value, str):
+            return bool(value.strip())
+        return bool(contents)
+    if isinstance(contents, list):
+        return any(_hover_contents_inspectable(item) for item in contents)
+    return True
+
+
+def _location_inspectable(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("uri"):
+        return True
+    return bool(item.get("targetUri"))
+
+
+def semantic_result_inspectable(operation: str, result: Any) -> bool:
+    """True when hover/definition is a non-null inspectable LSP payload."""
+    if result is None:
+        return False
+    if operation == "hover":
+        if isinstance(result, str):
+            return bool(result.strip())
+        if isinstance(result, dict):
+            if "contents" in result:
+                return _hover_contents_inspectable(result.get("contents"))
+            if "value" in result:
+                return bool(str(result.get("value") or "").strip())
+            return bool(result)
+        if isinstance(result, list):
+            return any(semantic_result_inspectable("hover", item) for item in result)
+        return True
+    if operation == "definition":
+        if isinstance(result, list):
+            return bool(result)
+        if isinstance(result, dict):
+            return bool(result)
+        return _location_inspectable(result)
+    return True
+
+
+def _lsp_timeout_s(transport: LspTransport) -> float:
+    timeout = getattr(transport, "timeout_s", None)
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        return float(timeout)
+    return DEFAULT_LSP_TIMEOUT_S
+
+
+def _arm_lsp_deadline(transport: LspTransport) -> None:
+    if getattr(transport, "_omg_lsp_deadline", None) is not None:
+        return
+    try:
+        setattr(
+            transport,
+            "_omg_lsp_deadline",
+            time.monotonic() + _lsp_timeout_s(transport),
+        )
+    except (AttributeError, TypeError):
+        pass
+
+
+def _lsp_deadline(transport: LspTransport) -> float:
+    _arm_lsp_deadline(transport)
+    stored = getattr(transport, "_omg_lsp_deadline", None)
+    if isinstance(stored, (int, float)):
+        return float(stored)
+    return time.monotonic() + _lsp_timeout_s(transport)
+
+
+def _pump_or_sleep(transport: LspTransport, deadline: float) -> None:
+    pump = getattr(transport, "pump", None)
+    if callable(pump):
+        pump(deadline)
+        return
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+
+
+def _await_inspectable_semantic(
+    transport: LspTransport,
+    operation: str,
+    method: str,
+    params: Mapping[str, Any],
+    first: Any,
+) -> Any:
+    """Retry hover/definition until inspectable or the session deadline."""
+    if semantic_result_inspectable(operation, first):
+        return first
+    deadline = _lsp_deadline(transport)
+    last = first
+    while time.monotonic() < deadline:
+        _pump_or_sleep(
+            transport, min(deadline, time.monotonic() + LSP_SEMANTIC_RETRY_S)
+        )
+        if time.monotonic() >= deadline:
+            break
+        last = transport.request(method, params)
+        if semantic_result_inspectable(operation, last):
+            return last
+    raise ToolsError(
+        "E_LSP_TIMEOUT",
+        f"{operation} had no inspectable result before the "
+        f"{_lsp_timeout_s(transport):.0f}s sidecar deadline",
+        details={"operation": operation, "result": last},
+    )
+
+
 @dataclass
 class FakeLspTransport:
     """In-process JSON-RPC stand-in for protocol tests (not a real language server)."""
@@ -442,13 +594,15 @@ class StdioLspTransport:
         argv: list[str],
         *,
         cwd: Path,
-        timeout_s: float = 5.0,
+        timeout_s: float = DEFAULT_LSP_TIMEOUT_S,
     ) -> None:
         if not argv:
             raise ToolsError("E_LSP_COMMAND", "lsp command is empty")
         self.timeout_s = timeout_s
         self._next_id = 1
         self._pending = bytearray()
+        self._stderr_buf = bytearray()
+        self._stderr_lock = threading.Lock()
         try:
             self._proc = subprocess.Popen(
                 argv,
@@ -463,6 +617,50 @@ class StdioLspTransport:
                 "E_LSP_COMMAND",
                 f"cannot launch lsp command {argv[0]!r}: {exc}",
             ) from exc
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, name="omg-lsp-stderr", daemon=True
+        )
+        self._stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        stderr = self._proc.stderr
+        if stderr is None:
+            return
+        fd = stderr.fileno()
+        while True:
+            try:
+                chunk = os.read(fd, 512)
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self._stderr_lock:
+                room = _MAX_LSP_STDERR_BYTES - len(self._stderr_buf)
+                if room > 0:
+                    self._stderr_buf.extend(chunk[:room])
+
+    def _stderr_text(self) -> str:
+        thread = getattr(self, "_stderr_thread", None)
+        if thread is not None and thread.is_alive() and self._proc.poll() is not None:
+            thread.join(timeout=0.4)
+        with self._stderr_lock:
+            return bytes(self._stderr_buf).decode("utf-8", "replace").strip()
+
+    def _raise_crash(self, reason: str) -> NoReturn:
+        stderr = self._stderr_text()
+        details: dict[str, Any] = {"returncode": self._proc.returncode}
+        if stderr:
+            details["stderr"] = stderr
+            snippet = stderr if len(stderr) <= 500 else stderr[:500]
+            raise ToolsError("E_LSP_CRASH", f"{reason}: {snippet}", details=details)
+        raise ToolsError("E_LSP_CRASH", reason, details=details)
+
+    def _ensure_alive(self) -> None:
+        if self._proc.poll() is not None:
+            self._raise_crash("language server exited")
+
+    def _timeout_error(self) -> ToolsError:
+        return ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
 
     def _write_message(self, payload: Mapping[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -472,6 +670,8 @@ class StdioLspTransport:
             self._proc.stdin.write(header + raw)
             self._proc.stdin.flush()
         except OSError as exc:
+            if self._proc.poll() is not None:
+                self._raise_crash("language server exited")
             raise ToolsError("E_LSP_CRASH", "language server stdin closed") from exc
 
     def _read_more(self, deadline: float) -> None:
@@ -479,18 +679,24 @@ class StdioLspTransport:
         assert stdout is not None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+            if self._proc.poll() is not None:
+                self._raise_crash("language server exited")
+            raise self._timeout_error()
         fd = stdout.fileno()
         if os.name != "nt":
             ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
-                raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+                if self._proc.poll() is not None:
+                    self._raise_crash("language server exited")
+                raise self._timeout_error()
             try:
                 chunk = os.read(fd, 4096)
             except OSError as exc:
+                if self._proc.poll() is not None:
+                    self._raise_crash("language server exited")
                 raise ToolsError("E_LSP_CRASH", "language server stdout closed") from exc
             if not chunk:
-                raise ToolsError("E_LSP_CRASH", "language server stdout closed")
+                self._raise_crash("language server stdout closed")
             self._pending.extend(chunk)
             return
         holder: list[bytes] = []
@@ -506,12 +712,16 @@ class StdioLspTransport:
         worker.start()
         worker.join(remaining)
         if worker.is_alive():
-            raise ToolsError("E_LSP_TIMEOUT", f"read exceeded {self.timeout_s}s")
+            if self._proc.poll() is not None:
+                self._raise_crash("language server exited")
+            raise self._timeout_error()
         if error:
+            if self._proc.poll() is not None:
+                self._raise_crash("language server exited")
             raise ToolsError("E_LSP_CRASH", "language server stdout closed") from error[0]
         chunk = holder[0] if holder else b""
         if not chunk:
-            raise ToolsError("E_LSP_CRASH", "language server stdout closed")
+            self._raise_crash("language server stdout closed")
         self._pending.extend(chunk)
 
     def _read_message(self, deadline: float) -> dict[str, Any]:
@@ -532,33 +742,75 @@ class StdioLspTransport:
         return json.loads(body.decode("utf-8"))
 
     def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
-        if self._proc.poll() is not None:
-            raise ToolsError("E_LSP_CRASH", "language server exited")
+        self._ensure_alive()
         self._write_message(
             {"jsonrpc": "2.0", "method": method, "params": dict(params or {})}
         )
 
     def _reply_server_request(self, msg: Mapping[str, Any]) -> None:
-        """Answer server→client requests that would otherwise be dropped by id."""
+        """Answer server→client requests so the language server does not stall.
+
+        ``workspace/configuration`` and ``workspace/workspaceFolders`` keep
+        their special-case payloads. Every other JSON-RPC *request* (id present)
+        gets ``result: null`` — rust-analyzer's ``client/registerCapability``
+        and ``window/workDoneProgress/create`` included. Notifications (no id)
+        are not answered.
+        """
         req_id = msg.get("id")
         if req_id is None:
             return
         method = msg.get("method")
         if method == "workspace/configuration":
             params = msg.get("params")
-            result = _workspace_configuration_result(
+            result: Any = _workspace_configuration_result(
                 params if isinstance(params, Mapping) else None
             )
         elif method == "workspace/workspaceFolders":
             folders = getattr(self, "_omg_workspace_folders", None)
             result = list(folders) if isinstance(folders, list) else []
         else:
-            return
+            result = None
         self._write_message({"jsonrpc": "2.0", "id": req_id, "result": result})
 
+    def _handle_incoming(self, msg: dict[str, Any], expected_id: Any | None) -> Any:
+        incoming_method = msg.get("method")
+        if isinstance(incoming_method, str) and incoming_method:
+            if "id" in msg and msg.get("id") is not None:
+                self._reply_server_request(msg)
+            return _LSP_CONTINUE
+        if expected_id is None or msg.get("id") != expected_id:
+            return _LSP_CONTINUE
+        if msg.get("error") is not None:
+            raise ToolsError("E_LSP_RPC", str(msg["error"]))
+        return msg.get("result")
+
+    def pump(self, deadline: float) -> None:
+        """Read and answer server traffic until *deadline* (no client request)."""
+        while time.monotonic() < deadline:
+            if self._proc.poll() is not None:
+                self._raise_crash("language server exited")
+            try:
+                msg = self._read_message(deadline)
+            except ToolsError as exc:
+                if exc.code == "E_LSP_TIMEOUT":
+                    return
+                raise
+            if isinstance(msg, dict):
+                self._handle_incoming(msg, None)
+
+    def _request_deadline(self) -> float:
+        now = time.monotonic()
+        limit = float(self.timeout_s)
+        session_deadline = getattr(self, "_omg_lsp_deadline", None)
+        if isinstance(session_deadline, (int, float)):
+            remaining = float(session_deadline) - now
+            if remaining <= 0:
+                raise self._timeout_error()
+            limit = min(limit, remaining)
+        return now + limit
+
     def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
-        if self._proc.poll() is not None:
-            raise ToolsError("E_LSP_CRASH", "language server exited")
+        self._ensure_alive()
         msg_id = self._next_id
         self._next_id += 1
         self._write_message(
@@ -569,30 +821,32 @@ class StdioLspTransport:
                 "params": dict(params or {}),
             }
         )
-        deadline = time.monotonic() + self.timeout_s
+        deadline = self._request_deadline()
         while True:
             msg = self._read_message(deadline)
             if not isinstance(msg, dict):
                 continue
-            incoming_method = msg.get("method")
-            if isinstance(incoming_method, str) and incoming_method:
-                # Server request (has method+id) or notification (method, no id).
-                if "id" in msg and msg.get("id") is not None:
-                    self._reply_server_request(msg)
+            handled = self._handle_incoming(msg, msg_id)
+            if handled is _LSP_CONTINUE:
                 continue
-            if msg.get("id") != msg_id:
-                continue
-            if msg.get("error") is not None:
-                raise ToolsError("E_LSP_RPC", str(msg["error"]))
-            return msg.get("result")
+            return handled
 
     def close(self) -> None:
+        try:
+            stdin = self._proc.stdin
+            if stdin is not None and not stdin.closed:
+                stdin.close()
+        except OSError:
+            pass
         if self._proc.poll() is None:
             self._proc.kill()
         try:
             self._proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self._proc.kill()
+        thread = getattr(self, "_stderr_thread", None)
+        if thread is not None:
+            thread.join(timeout=0.5)
 
 
 def inventory_lsp_servers() -> list[dict[str, Any]]:
@@ -719,6 +973,7 @@ def ensure_lsp_session(
 ) -> None:
     """Initialize once; didOpen once per URI; didChange when disk text changes."""
     if not getattr(transport, "_omg_lsp_initialized", False):
+        _arm_lsp_deadline(transport)
         root_uri = Path(root).resolve().as_uri()
         transport.request(
             "initialize",
@@ -729,7 +984,12 @@ def ensure_lsp_session(
                     "workspace": {
                         "configuration": True,
                         "workspaceFolders": True,
-                    }
+                    },
+                    "window": {"workDoneProgress": True},
+                    "textDocument": {
+                        "hover": {"contentFormat": ["markdown", "plaintext"]},
+                        "definition": {"linkSupport": True},
+                    },
                 },
                 "workspaceFolders": [{"uri": root_uri, "name": Path(root).name}],
             },
@@ -904,7 +1164,12 @@ def lsp_operation(
                 params["newName"] = new_name or "Renamed"
             if operation == "references":
                 params["context"] = {"includeDeclaration": True}
-    result = transport.request(_LSP_METHODS[operation], params)
+    method = _LSP_METHODS[operation]
+    result = transport.request(method, params)
+    if operation in {"hover", "definition"}:
+        result = _await_inspectable_semantic(
+            transport, operation, method, params, result
+        )
     truncated_flag = False
     if path:
         row = _lsp_docs(transport).get(confine_path(root, path).as_uri())
@@ -1964,7 +2229,9 @@ __all__ = [
     "inspect_tools_sidecar",
     "inventory_lsp_servers",
     "list_mcp_tools",
+    "lsp_command_argv",
     "lsp_operation",
+    "semantic_result_inspectable",
     "lsp_range",
     "media_descriptor",
     "research_search",

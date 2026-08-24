@@ -38,11 +38,14 @@ omg tools research status|search
 
 `--lsp-command` takes the server program (and non-flag argv). Server flags such
 as `--stdio` must come **after `--`**, otherwise argparse treats `--stdio` as
-the `omg tools serve` flag (or as an unknown option on `omg tools lsp`):
+the `omg tools serve` flag (or as an unknown option on `omg tools lsp`).
+`rust-analyzer` speaks stdio by default and **rejects** `--stdio`
+(`unexpected flag`); the sidecar drops that flag for rust-analyzer:
 
 ```text
-omg tools serve --stdio --lsp-command rust-analyzer -- --stdio
-omg tools lsp hover --path a.py --lsp-command rust-analyzer -- --stdio
+omg tools serve --stdio --lsp-command rust-analyzer
+omg tools lsp hover --path src/main.rs --line 0 --character 3 --lsp-command rust-analyzer
+omg tools lsp hover --path a.py --lsp-command pylsp -- --stdio
 ```
 
 Language servers are **never auto-installed**.

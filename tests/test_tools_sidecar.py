@@ -34,6 +34,7 @@ from omg_cli.tools_sidecar import (
     inspect_tools_sidecar,
     inventory_lsp_servers,
     lsp_operation,
+    normalize_lsp_argv,
     media_descriptor,
     research_search,
     research_status,
@@ -1274,3 +1275,192 @@ def test_stdio_replies_workspace_folders_request() -> None:
     assert len(written) == 1
     assert written[0]["id"] == 9
     assert written[0]["result"] == [{"uri": "file:///ws", "name": "ws"}]
+
+
+def test_normalize_lsp_argv_drops_stdio_for_rust_analyzer() -> None:
+    assert normalize_lsp_argv(["rust-analyzer", "--stdio"]) == ["rust-analyzer"]
+    assert normalize_lsp_argv(["/usr/bin/rust-analyzer", "--stdio", "foo"]) == [
+        "/usr/bin/rust-analyzer",
+        "foo",
+    ]
+    assert normalize_lsp_argv(["pylsp", "--stdio"]) == ["pylsp", "--stdio"]
+
+
+def test_stdio_replies_unknown_server_request_with_null() -> None:
+    written: list[dict] = []
+    dummy = types.SimpleNamespace(_write_message=written.append)
+    StdioLspTransport._reply_server_request(
+        dummy,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "window/workDoneProgress/create",
+            "params": {"token": "t"},
+        },
+    )
+    assert written[0]["id"] == 3
+    assert written[0]["result"] is None
+
+
+def test_stdio_peer_progress_request_then_nonnull_hover(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    script = tmp_path / "progress_then_hover.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "pending = bytearray()\n"
+        "def read_more():\n"
+        "    chunk = os.read(sys.stdin.fileno(), 4096)\n"
+        "    if not chunk:\n"
+        "        return False\n"
+        "    pending.extend(chunk)\n"
+        "    return True\n"
+        "def read_msg():\n"
+        "    global pending\n"
+        "    while b'\\r\\n\\r\\n' not in pending:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    head, rest = bytes(pending).split(b'\\r\\n\\r\\n', 1)\n"
+        "    length = None\n"
+        "    for line in head.decode('ascii', 'replace').split('\\r\\n'):\n"
+        "        if line.lower().startswith('content-length:'):\n"
+        "            length = int(line.split(':', 1)[1].strip())\n"
+        "    pending = bytearray(rest)\n"
+        "    while len(pending) < length:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    body = bytes(pending[:length]); del pending[:length]\n"
+        "    return json.loads(body.decode('utf-8'))\n"
+        "def write_msg(msg):\n"
+        "    raw = json.dumps(msg).encode('utf-8')\n"
+        "    sys.stdout.buffer.write(\n"
+        "        ('Content-Length: %s\\r\\n\\r\\n' % len(raw)).encode('ascii') + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "hover_id = None\n"
+        "while True:\n"
+        "    msg = read_msg()\n"
+        "    if msg is None:\n"
+        "        break\n"
+        "    method = msg.get('method')\n"
+        "    msg_id = msg.get('id')\n"
+        "    if method == 'initialize':\n"
+        "        write_msg({'jsonrpc':'2.0','id':99,'method':"
+        "'window/workDoneProgress/create','params':{'token':'t'}})\n"
+        "        reply = read_msg()\n"
+        "        if not isinstance(reply, dict) or reply.get('id') != 99:\n"
+        "            raise SystemExit('progress reply missing')\n"
+        "        if reply.get('result') is not None:\n"
+        "            raise SystemExit('progress result must be null')\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'capabilities':{'hoverProvider':True}}})\n"
+        "        continue\n"
+        "    if method in {'initialized','textDocument/didOpen',"
+        "'textDocument/didChange','shutdown'}:\n"
+        "        continue\n"
+        "    if method == 'textDocument/hover':\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'contents':{'kind':'markdown','value':'**hello**'}}})\n"
+        "        continue\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=3.0
+    )
+    try:
+        hover = lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+        assert hover["ok"] is True
+        assert hover["verified"] is False
+        assert hover["result"] is not None
+        assert hover["result"]["contents"]["value"] == "**hello**"
+    finally:
+        transport.close()
+
+
+def test_stdio_peer_rejects_stdio_flag(tmp_path: Path) -> None:
+    script = tmp_path / "no_stdio.py"
+    script.write_text(
+        "import sys\n"
+        "if '--stdio' in sys.argv:\n"
+        "    sys.stderr.write('unexpected flag: `--stdio`\\n')\n"
+        "    raise SystemExit(2)\n"
+        "import time; time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script), "--stdio"], cwd=tmp_path, timeout_s=1.0
+    )
+    try:
+        with pytest.raises(ToolsError, match="E_LSP_CRASH"):
+            transport.request("initialize", {})
+    finally:
+        transport.close()
+    stripped = normalize_lsp_argv(["rust-analyzer", "--stdio"])
+    assert "--stdio" not in stripped
+
+
+def test_lsp_operation_retries_null_hover_until_payload(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    script = tmp_path / "null_then_hover.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "pending = bytearray()\n"
+        "hovers = 0\n"
+        "def read_more():\n"
+        "    chunk = os.read(sys.stdin.fileno(), 4096)\n"
+        "    if not chunk:\n"
+        "        return False\n"
+        "    pending.extend(chunk)\n"
+        "    return True\n"
+        "def read_msg():\n"
+        "    global pending\n"
+        "    while b'\\r\\n\\r\\n' not in pending:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    head, rest = bytes(pending).split(b'\\r\\n\\r\\n', 1)\n"
+        "    length = None\n"
+        "    for line in head.decode('ascii', 'replace').split('\\r\\n'):\n"
+        "        if line.lower().startswith('content-length:'):\n"
+        "            length = int(line.split(':', 1)[1].strip())\n"
+        "    pending = bytearray(rest)\n"
+        "    while len(pending) < length:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    body = bytes(pending[:length]); del pending[:length]\n"
+        "    return json.loads(body.decode('utf-8'))\n"
+        "def write_msg(msg):\n"
+        "    raw = json.dumps(msg).encode('utf-8')\n"
+        "    sys.stdout.buffer.write(\n"
+        "        ('Content-Length: %s\\r\\n\\r\\n' % len(raw)).encode('ascii') + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "while True:\n"
+        "    msg = read_msg()\n"
+        "    if msg is None:\n"
+        "        break\n"
+        "    method = msg.get('method')\n"
+        "    msg_id = msg.get('id')\n"
+        "    if method == 'initialize':\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'capabilities':{'hoverProvider':True}}})\n"
+        "        continue\n"
+        "    if method in {'initialized','textDocument/didOpen',"
+        "'textDocument/didChange','shutdown'}:\n"
+        "        continue\n"
+        "    if method == 'textDocument/hover':\n"
+        "        hovers += 1\n"
+        "        if hovers == 1:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'result':None})\n"
+        "        else:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'contents':'indexed'}})\n"
+        "        continue\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=3.0
+    )
+    try:
+        hover = lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+        assert hover["ok"] is True
+        assert hover["result"] == {"contents": "indexed"}
+        assert hover["verified"] is False
+    finally:
+        transport.close()
