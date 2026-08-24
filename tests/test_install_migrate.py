@@ -12,6 +12,8 @@ import pytest
 from omg_cli.install_manifest import load_manifest, persist_manifest
 from omg_cli.install_migrate import (
     InstallMigrateError,
+    apply_owned_uninstall,
+    plan_owned_uninstall,
     run_import,
     run_migrate,
 )
@@ -320,6 +322,154 @@ def test_uninstall_preserves_hash_drifted_and_removes_matching(
     doc = load_manifest(project_root=tmp_path, scope="project")
     assert doc is not None
     assert doc.get("verified") is False
+
+
+def test_uninstall_rejects_dotdot_escape_of_install_and_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tampered ``..`` targets must not be unlinked even when hashes match."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    victim_body = b"outside victim matching hash\n"
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(victim_body)
+    state_body = b"state must survive uninstall\n"
+    state = project / ".omg" / "state" / "keep-me.txt"
+    state.parent.mkdir(parents=True)
+    state.write_bytes(state_body)
+    match_body = b"owned unchanged\n"
+    matching = project / ".omg" / "install" / "imported" / "skill" / "owned.md"
+    matching.parent.mkdir(parents=True)
+    matching.write_bytes(match_body)
+    drift_original = b"original managed\n"
+    drifted = project / ".omg" / "install" / "imported" / "skill" / "edited.md"
+    drifted.write_bytes(b"user edited this file\n")
+    install = project / ".omg" / "install"
+    escape_victim = install / ".." / ".." / ".." / "victim.txt"
+    escape_state = install / ".." / "state" / "keep-me.txt"
+    assert ".." in escape_victim.parts
+    assert ".." in escape_state.parts
+    assert escape_victim.resolve() == victim.resolve()
+    assert escape_state.resolve() == state.resolve()
+    persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [
+                {
+                    "id": "imported.skill.owned",
+                    "type": "skill",
+                    "target": str(matching),
+                    "ownership": "imported",
+                    "content_hash": _sha(match_body),
+                    "enabled": True,
+                },
+                {
+                    "id": "imported.skill.edited",
+                    "type": "skill",
+                    "target": str(drifted),
+                    "ownership": "OMG-managed",
+                    "content_hash": _sha(drift_original),
+                    "enabled": True,
+                },
+                {
+                    "id": "imported.skill.escape-victim",
+                    "type": "skill",
+                    "target": str(escape_victim),
+                    "ownership": "imported",
+                    "content_hash": _sha(victim_body),
+                    "enabled": True,
+                },
+                {
+                    "id": "imported.skill.escape-state",
+                    "type": "skill",
+                    "target": str(escape_state),
+                    "ownership": "OMG-managed",
+                    "content_hash": _sha(state_body),
+                    "enabled": True,
+                },
+            ],
+        },
+        project_root=project,
+        scope="project",
+    )
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    plan = plan_owned_uninstall(project_root=project, grok_home=grok_home)
+    assert plan["verified"] is False
+    remove_paths = [row["path"] for row in plan["remove"]]
+    preserve_by_id = {row["id"]: row for row in plan["preserve"]}
+    assert str(escape_victim) not in remove_paths
+    assert str(escape_state) not in remove_paths
+    assert str(victim) not in remove_paths
+    assert str(state) not in remove_paths
+    assert preserve_by_id["imported.skill.escape-victim"]["reason"] == "escape"
+    assert preserve_by_id["imported.skill.escape-state"]["reason"] == "state"
+    assert preserve_by_id["imported.skill.edited"]["reason"] == "hash-drift"
+    assert str(matching) in remove_paths
+
+    applied = apply_owned_uninstall(plan)
+    assert applied["verified"] is False
+    assert victim.read_bytes() == victim_body
+    assert state.read_bytes() == state_body
+    assert drifted.read_bytes() == b"user edited this file\n"
+    assert not matching.exists()
+    assert str(escape_victim) not in applied["removed"]
+    assert str(escape_state) not in applied["removed"]
+
+    matching.parent.mkdir(parents=True, exist_ok=True)
+    matching.write_bytes(match_body)
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    rc = run_uninstall(
+        yes=True,
+        runner=_fake_runner(),
+        home=grok_home,
+        project_root=project,
+        include_user_manifest=False,
+    )
+    assert rc == 0
+    assert not matching.exists()
+    assert victim.read_bytes() == victim_body
+    assert state.read_bytes() == state_body
+    assert drifted.is_file()
+
+
+def test_apply_owned_uninstall_refuses_dotdot_remove_row(tmp_path: Path) -> None:
+    victim_body = b"crafted plan must not unlink\n"
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(victim_body)
+    state_body = b"state via crafted plan\n"
+    state = tmp_path / "proj" / ".omg" / "state" / "keep-me.txt"
+    state.parent.mkdir(parents=True)
+    state.write_bytes(state_body)
+    install = tmp_path / "proj" / ".omg" / "install"
+    install.mkdir(parents=True)
+    escape_victim = install / ".." / ".." / ".." / "victim.txt"
+    escape_state = install / ".." / "state" / "keep-me.txt"
+    applied = apply_owned_uninstall(
+        {
+            "remove": [
+                {
+                    "id": "imported.skill.escape-victim",
+                    "path": str(escape_victim),
+                    "content_hash": _sha(victim_body),
+                },
+                {
+                    "id": "imported.skill.escape-state",
+                    "path": str(escape_state),
+                    "content_hash": _sha(state_body),
+                },
+            ],
+            "preserve": [],
+        }
+    )
+    assert applied["removed"] == []
+    assert victim.read_bytes() == victim_body
+    assert state.read_bytes() == state_body
+    assert str(escape_victim) in applied["preserved"]
+    assert str(escape_state) in applied["preserved"]
+    assert applied["verified"] is False
+    assert "passes" not in applied
 
 
 def test_never_writes_passes_or_verified(tmp_path: Path) -> None:

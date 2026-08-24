@@ -30,6 +30,7 @@ from omg_cli.install_manifest import (
     upsert_manifest_artifacts,
     user_store,
 )
+from omg_cli.project_root import path_is_under as resolved_path_is_under
 
 # Same credential needles as medley_inspect / redaction.
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
@@ -241,6 +242,30 @@ def _containment_roots(
 
 def _contained(path: Path, roots: tuple[Path, ...]) -> bool:
     return any(path_is_under(path, root) for root in roots)
+
+
+def _path_has_dotdot(path: Path) -> bool:
+    """True when any lexical component is ``..`` (``relative_to`` allows these)."""
+    return any(part == ".." for part in Path(path).parts)
+
+
+def _uninstall_target_contained(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Admit an uninstall target only after rejecting ``..`` and resolving under *roots*."""
+    if not roots or _path_has_dotdot(path):
+        return False
+    return any(resolved_path_is_under(path, root) for root in roots)
+
+
+def _resolved_under_omg_state(path: Path) -> bool:
+    """True when *path* resolves under a ``.omg/state`` directory."""
+    try:
+        parts = Path(path).resolve().parts
+    except OSError:
+        return True
+    for index, part in enumerate(parts[:-1]):
+        if part == ".omg" and parts[index + 1] == "state":
+            return True
+    return False
 
 
 def _symlink_parent(path: Path, roots: tuple[Path, ...]) -> bool:
@@ -696,7 +721,7 @@ def _is_state_path(path: Path, project_root: Path | None) -> bool:
     if project_root is None:
         return False
     state = Path(project_root) / ".omg" / "state"
-    return path_is_under(path, state)
+    return path_is_under(path, state) or resolved_path_is_under(path, state)
 
 
 def plan_owned_uninstall(
@@ -758,7 +783,14 @@ def plan_owned_uninstall(
                     {"id": ident, "path": str(target), "reason": "state"}
                 )
                 continue
-            if not uninstall_tuple or not _contained(target, uninstall_tuple):
+            if _path_has_dotdot(target):
+                preserve.append(
+                    {"id": ident, "path": str(target), "reason": "escape"}
+                )
+                continue
+            if not uninstall_tuple or not _uninstall_target_contained(
+                target, uninstall_tuple
+            ):
                 preserve.append(
                     {"id": ident, "path": str(target), "reason": "out-of-scope"}
                 )
@@ -840,7 +872,12 @@ def apply_owned_uninstall(plan: Mapping[str, Any]) -> dict[str, Any]:
             continue
         target = Path(str(row.get("path") or ""))
         expected = str(row.get("content_hash") or "")
-        if target.is_symlink() or not target.is_file():
+        if (
+            _path_has_dotdot(target)
+            or _resolved_under_omg_state(target)
+            or target.is_symlink()
+            or not target.is_file()
+        ):
             preserved.append(str(target))
             continue
         try:
