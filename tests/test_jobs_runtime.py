@@ -388,6 +388,41 @@ def test_prove_missing_record_unproven_even_with_dead_extra(root: Path) -> None:
         )
 
 
+def test_prove_does_not_replace_trusted_extra_with_forged_record(root: Path) -> None:
+    import os
+    import subprocess
+
+    from omg_cli.jobs.models import JobRecord
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs.store import write_job_record
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    rec = JobRecord(
+        job_id="20260824T000000Z-c0de0002",
+        created_at="2026-08-24T00:00:00Z",
+        provider="grok",
+        role="researcher",
+        state=JobState.SUCCEEDED,
+        pid=ident.pid,
+        pgid=ident.pgid,
+        pid_starttime="lstart:forged",
+        result="artifacts/result.md",
+    )
+    (job_dir(root, rec.job_id) / "artifacts").mkdir(parents=True, exist_ok=True)
+    write_job_record(root, rec)
+    try:
+        with pytest.raises(JobStoreError, match="still live"):
+            prove_job_processes_gone(
+                root, rec.job_id, timeout_s=0.2, extra_identities=(ident,)
+            )
+        assert pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:
     from omg_cli.jobs.ownership import ProcessIdentity, merge_identity
 

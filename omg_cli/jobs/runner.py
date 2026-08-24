@@ -27,7 +27,12 @@ from pathlib import Path
 from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes, ensure_managed_dir
 from omg_cli.jobs.lease import DEFAULT_JOB_HEARTBEAT_INTERVAL_S
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
-from omg_cli.jobs.ownership import become_child_subreaper, capture_identity
+from omg_cli.jobs.ownership import (
+    become_child_subreaper,
+    capture_identity,
+    child_identities,
+    reap_child,
+)
 from omg_cli.jobs.providers import resolve_job_provider
 from omg_cli.jobs.store import (
     append_jsonl,
@@ -304,32 +309,50 @@ def _stamp_running_terminal(
     )
 
 
+def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
+    """Stay alive as subreaper until direct children exit or *timeout_s*."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    me = os.getpid()
+    while time.monotonic() < deadline:
+        kids = child_identities(me)
+        if not kids:
+            return
+        for ident in kids:
+            reap_child(ident.pid)
+        time.sleep(0.05)
+
+
 def run_job(project_root: Path, job_id: str) -> int:
     """Wait for parent running commit, then Adapter.run, then terminal stamp."""
     become_child_subreaper()
+    rc = 2
     try:
-        record = read_job_record(project_root, job_id)
-    except JobStoreError as exc:
-        print(f"omg job runner: {exc}", file=sys.stderr)
-        return 2
+        try:
+            record = read_job_record(project_root, job_id)
+        except JobStoreError as exc:
+            print(f"omg job runner: {exc}", file=sys.stderr)
+            return 2
 
-    if record.state in TERMINAL_STATES:
-        return 0
+        if record.state in TERMINAL_STATES:
+            return 0
 
-    jdir = job_dir(project_root, job_id)
-    env_updates: dict[str, str | None] = {
-        "OMG_JOB_ID": job_id,
-        "OMG_JOB_DIR": str(jdir),
-        "OMG_PROJECT_ROOT": str(project_root),
-        # Clear fake-mode leftovers unless worker opts in below.
-        "OMG_JOB_FAKE_FAIL": None,
-        "OMG_JOB_FAKE_LARGE": None,
-        "OMG_JOB_FAKE_IGNORE_SIGTERM": None,
-        "OMG_JOB_FAKE_SLEEP": None,
-    }
+        jdir = job_dir(project_root, job_id)
+        env_updates: dict[str, str | None] = {
+            "OMG_JOB_ID": job_id,
+            "OMG_JOB_DIR": str(jdir),
+            "OMG_PROJECT_ROOT": str(project_root),
+            # Clear fake-mode leftovers unless worker opts in below.
+            "OMG_JOB_FAKE_FAIL": None,
+            "OMG_JOB_FAKE_LARGE": None,
+            "OMG_JOB_FAKE_IGNORE_SIGTERM": None,
+            "OMG_JOB_FAKE_SLEEP": None,
+        }
 
-    with _env_scope(env_updates):
-        return _run_job_with_env(project_root, job_id, record, jdir)
+        with _env_scope(env_updates):
+            rc = _run_job_with_env(project_root, job_id, record, jdir)
+            return rc
+    finally:
+        _wait_adopted_children()
 
 
 def _run_job_with_env(

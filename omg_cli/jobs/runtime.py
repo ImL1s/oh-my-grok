@@ -1162,9 +1162,12 @@ def prove_job_processes_gone(
     if captured_runner is None:
         captured_runner = _read_spawn_identity_recovery(project_root, job_id)
     captured_provider = _provider_identity(record)
-    if captured_runner is not None:
+    # job.json can name the real pid with a forged pgid/starttime. Never
+    # replace independently captured extras; only add unknown pids for
+    # fail-closed liveness (this function does not signal them).
+    if captured_runner is not None and captured_runner.pid not in found:
         found[captured_runner.pid] = captured_runner
-    if captured_provider is not None:
+    if captured_provider is not None and captured_provider.pid not in found:
         found[captured_provider.pid] = captured_provider
     if not found:
         return

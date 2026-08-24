@@ -58,7 +58,11 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   PR_SET_CHILD_SUBREAPER so a setsid grandchild is reparented to the
   runner instead of init. A later ``setsid()`` on a captured pid with
   the same start-time fingerprint refreshes PGID instead of treating
-  the mismatch as reuse. Refs #76 (does not close).
+  the mismatch as reuse. Terminal job.json never overwrites captured
+  extras. PGID scans run only while that identity is live. The job
+  runner waits for adopted children before exit so a Linux subreaper
+  is not dropped immediately after the provider returns.
+  Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
   (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait

@@ -691,8 +691,9 @@ def _absorb_runner_children(
             if refreshed is not None:
                 merge_identity(identities, refreshed)
                 ident = identities[ident.pid]
-            extras = list(pgid_member_identities(ident.pgid))
+            extras: list[ProcessIdentity] = []
             if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                extras.extend(pgid_member_identities(ident.pgid))
                 extras.extend(child_identities(ident.pid))
             for extra in extras:
                 if merge_identity(identities, extra):
