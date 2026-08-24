@@ -3341,15 +3341,35 @@ def _pending_scale_records(
             run_id=run_id,
             task_id=task_id,
         )
-        prompt_dir = expected_worktree / ".omg" / "team-prompt"
         expected_artifacts.add(str(expected_argv.relative_to(root)))
-        expected_artifacts.add(
-            str((prompt_dir / f"{task_id}.prompt.md").relative_to(root))
-        )
-        if record.get("provider") == "grok":
-            expected_artifacts.add(
-                str((prompt_dir / "last_prompt.md").relative_to(root))
+        # Intent records omit inbox_path; reconstruct from delivery + attempt.
+        if record.get("prompt_delivery") == "interactive-tty":
+            from omg_cli.team.interactive import (
+                coerce_attempt,
+                interactive_inbox_basename,
             )
+
+            tdir = team_dir(root, run_id)
+            attempt = coerce_attempt(record.get("attempt"))
+            expected_artifacts.add(
+                str(
+                    (tdir / interactive_inbox_basename(task_id, attempt)).relative_to(
+                        root
+                    )
+                )
+            )
+            expected_artifacts.add(
+                str((tdir / f"{task_id}.interactive.sh").relative_to(root))
+            )
+        else:
+            prompt_dir = expected_worktree / ".omg" / "team-prompt"
+            expected_artifacts.add(
+                str((prompt_dir / f"{task_id}.prompt.md").relative_to(root))
+            )
+            if record.get("provider") == "grok":
+                expected_artifacts.add(
+                    str((prompt_dir / "last_prompt.md").relative_to(root))
+                )
         records.append(record)
 
     artifact_hashes: dict[str, str] = {}

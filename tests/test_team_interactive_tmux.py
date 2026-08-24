@@ -78,8 +78,6 @@ def test_interactive_fixture_tui_ready_then_provider_echo(
     Plain send-keys echo of the marker is not sufficient: the fixture prints
     PROVIDER_ECHO only after a TTY read with echo disabled.
     """
-    from omg_cli.team import operator
-
     leader = _leader(tmux_server)
     _bind_leader(monkeypatch, leader)
     meta = launch_team_inside(

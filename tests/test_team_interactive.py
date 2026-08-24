@@ -1078,6 +1078,246 @@ def test_scale_up_interactive_team_uses_exec_wrapper_not_supervisor(
 
 
 @_POSIX
+def test_pending_scale_records_interactive_expects_inbox_exec_not_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
+    from omg_cli.team.plane import IDENTITY_RECEIPT_SCHEMA_VERSION, team_dir
+    from omg_cli.team.scaling import (
+        STATUS_RUNNING,
+        _build_scale_intent,
+        _pending_scale_records,
+    )
+    from omg_cli.workers import load_ownership_manifest, worktree_dir
+
+    _enable(monkeypatch)
+    root = tmp_path.resolve()
+    _git_init(root)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=root,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    rid = str(meta["run_id"])
+    out = scale_team(root, rid, add=1, dry_run=True)
+    added = out.get("tasks_added") or []
+    assert len(added) == 1
+    rec = dict(added[0])
+    tid = str(rec["task_id"])
+    attempt = int(rec.get("attempt") or 1)
+    tdir = team_dir(root, rid)
+    inbox = tdir / interactive_inbox_basename(tid, attempt)
+    exec_script = tdir / f"{tid}.interactive.sh"
+    argv_path = tdir / f"{tid}.argv.json"
+    assert inbox.is_file()
+    assert exec_script.is_file()
+    assert argv_path.is_file()
+    inbox_before = inbox.read_bytes()
+    exec_before = exec_script.read_bytes()
+    rec["status"] = STATUS_RUNNING
+    rec["_artifact_paths"] = [
+        str(inbox.relative_to(root)),
+        str(exec_script.relative_to(root)),
+        str(argv_path.relative_to(root)),
+    ]
+    request_sha256 = "ab" * 32
+    intent = _build_scale_intent(
+        root,
+        rid,
+        request_sha256=request_sha256,
+        scale_wal_sha256="cd" * 32,
+        records=[rec],
+    )
+    intent.pop("scale_wal_sha256", None)
+    artifact_paths = {row["path"] for row in intent["artifacts"]}
+    assert str(inbox.relative_to(root)) in artifact_paths
+    assert str(exec_script.relative_to(root)) in artifact_paths
+    assert str(argv_path.relative_to(root)) in artifact_paths
+    assert not any(path.endswith(".prompt.md") for path in artifact_paths)
+    assert not any(Path(path).name == "last_prompt.md" for path in artifact_paths)
+    prompt_dir = worktree_dir(root, rid, tid) / ".omg" / "team-prompt"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    (prompt_dir / f"{tid}.prompt.md").write_text("unused-prompt\n", encoding="utf-8")
+    (prompt_dir / "last_prompt.md").write_text("unused-last\n", encoding="utf-8")
+    receipt = {
+        "schema_version": IDENTITY_RECEIPT_SCHEMA_VERSION,
+        "scale_intent": intent,
+        "scale_intent_sha256": sha256_hex(canonical_json_bytes(intent)),
+    }
+    owned = load_ownership_manifest(root, rid)
+    spec = next(row for row in owned["tasks"] if row["task_id"] == tid)
+    recovered = _pending_scale_records(
+        root,
+        rid,
+        receipt=receipt,
+        request_sha256=request_sha256,
+        task_specs=[
+            {
+                "task_id": tid,
+                "owned_files": list(spec["owned_files"]),
+                "role": spec.get("role") or "executor",
+            }
+        ],
+    )
+    assert [row["task_id"] for row in recovered] == [tid]
+    assert recovered[0]["prompt_delivery"] == "interactive-tty"
+    assert inbox.is_file()
+    assert exec_script.is_file()
+    assert inbox.read_bytes() == inbox_before
+    assert exec_script.read_bytes() == exec_before
+
+
+@_POSIX
+def test_promote_lock_mismatch_returns_no_stamped_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+    evidence = {
+        "t1": {
+            "task_id": "t1",
+            "ready_marker": f"TUI_READY:{nonce}",
+            "pane_id": "%7",
+            "provider_pid": 111,
+            "pid_start": "start-a",
+            "attempt": 1,
+            "generation": 0,
+        }
+    }
+    real_filter = runtime_mod._filter_interactive_ready_evidence
+
+    def _filter_then_flip(
+        root: object, run_id_arg: str, evidence_by_id: object
+    ) -> dict:
+        proven = real_filter(root, run_id_arg, evidence_by_id)
+
+        def _flip(current: dict) -> dict:
+            current["tasks"][0]["pane_id"] = "%99"
+            current["tasks"][0]["pid"] = 999
+            current["tasks"][0]["pid_start"] = "flipped"
+            return current
+
+        mutate_team_meta(tmp_path, run_id, _flip)
+        return proven
+
+    monkeypatch.setattr(runtime_mod, "_filter_interactive_ready_evidence", _filter_then_flip)
+    stamped = runtime_mod._promote_interactive_input_ready(tmp_path, run_id, evidence)
+    assert stamped == []
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%99"
+
+
+@_POSIX
+def test_promote_lock_mismatch_omits_worker_from_stamped_and_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+    from omg_cli.team.runtime import apply_start_readiness
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _pane(current: dict) -> dict:
+        current["tasks"][0]["pane_id"] = "%7"
+        current["tasks"][0]["pid"] = 111
+        current["tasks"][0]["pid_start"] = "start-a"
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _pane)
+
+    real_filter = runtime_mod._filter_interactive_ready_evidence
+    filter_calls = {"n": 0}
+
+    def _filter_then_flip_on_promote(
+        root: object, run_id_arg: str, evidence_by_id: object
+    ) -> dict:
+        proven = real_filter(root, run_id_arg, evidence_by_id)
+        filter_calls["n"] += 1
+        if filter_calls["n"] >= 2:
+
+            def _flip(current: dict) -> dict:
+                current["tasks"][0]["pane_id"] = "%99"
+                current["tasks"][0]["pid"] = 999
+                current["tasks"][0]["pid_start"] = "flipped"
+                return current
+
+            mutate_team_meta(tmp_path, run_id, _flip)
+        return proven
+
+    captured: dict[str, list[str]] = {}
+    real_promote = runtime_mod._promote_interactive_input_ready
+
+    def _capture_promote(*args: object, **kwargs: object) -> list[str]:
+        stamped = real_promote(*args, **kwargs)
+        captured["stamped"] = list(stamped)
+        return stamped
+
+    monkeypatch.setattr(
+        runtime_mod, "_filter_interactive_ready_evidence", _filter_then_flip_on_promote
+    )
+    monkeypatch.setattr(runtime_mod, "_promote_interactive_input_ready", _capture_promote)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: f"TUI_READY:{nonce}\n",
+    )
+    out = apply_start_readiness(
+        tmp_path,
+        {**meta, "dry_run": False},
+        dry_run=False,
+        env={"OMG_TEAM_READY_TIMEOUT_MS": "2000"},
+    )
+    assert captured.get("stamped") == []
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    assert "t1" in (out.get("startup_missing_workers") or [])
+    assert out["startup_status"] == "failed_start"
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is False
+    assert disk["tasks"][0]["pane_id"] == "%99"
+
+
+@_POSIX
 def test_scale_up_refuses_mixed_interactive_headless(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

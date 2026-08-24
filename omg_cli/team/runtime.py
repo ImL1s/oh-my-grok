@@ -946,11 +946,14 @@ def _promote_interactive_input_ready(
     root: Path | str,
     run_id: str,
     evidence_by_id: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
+) -> list[str]:
     """CLI-only ``input_ready`` promotion after proven TUI-ready evidence.
 
     Refuses to stamp when pane/PID/start flipped between capture and this
     call (TOCTOU). Live workers additionally re-prove ExactPaneProof.
+
+    Returns the task_ids actually stamped under the meta lock. Callers must
+    treat only this list as ready — pre-lock evidence is not a ready set.
     """
     from omg_cli.team.io_capability import (
         IO_MODE_INTERACTIVE_TTY,
@@ -960,8 +963,10 @@ def _promote_interactive_input_ready(
     )
 
     proven = _filter_interactive_ready_evidence(root, run_id, evidence_by_id)
+    stamped: list[str] = []
 
     def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        stamped.clear()
         tasks = current.get("tasks")
         if not isinstance(tasks, list):
             return current
@@ -1004,9 +1009,11 @@ def _promote_interactive_input_ready(
                     else None,
                 ),
             )
+            stamped.append(tid)
         return current
 
-    return mutate_team_meta(root, run_id, _apply)
+    mutate_team_meta(root, run_id, _apply)
+    return list(stamped)
 
 
 def evidence_matches_locked_row(raw: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
@@ -1165,11 +1172,13 @@ def _interactive_startup_payload(
     evidence = _filter_interactive_ready_evidence(
         root, run_id, raw_evidence if isinstance(raw_evidence, Mapping) else {}
     )
-    ready = [tid for tid in expected if tid in evidence]
-    missing = [tid for tid in expected if tid not in evidence]
+    stamped: list[str] = []
     if evidence:
-        _promote_interactive_input_ready(root, run_id, evidence)
-        _submit_interactive_inbox_instructions(root, run_id, list(evidence))
+        stamped = _promote_interactive_input_ready(root, run_id, evidence)
+        _submit_interactive_inbox_instructions(root, run_id, stamped)
+    stamped_set = set(stamped)
+    ready = [tid for tid in expected if tid in stamped_set]
+    missing = [tid for tid in expected if tid not in stamped_set]
     if expected and not missing:
         status = "running"
         note = (
