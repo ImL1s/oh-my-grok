@@ -618,6 +618,46 @@ def test_simplify_provider_detects_omg_state_and_gitignored_mutation(
     assert forged.read_text(encoding="utf-8") == '{"verified": true, "passes": true}\n'
 
 
+def test_simplify_provider_ignores_current_job_lock(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_lock(project_root: Path, job_id: str, **kwargs: object):
+        lock = project_root / ".omg" / "jobs" / ".locks" / f"{job_id}.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("lock\n", encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_lock  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    assert payload["ok"] is True
+    assert payload["verified"] is False
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
 def test_simplify_provider_ignores_cli_event_journal(
     project: Path,
     capsys: pytest.CaptureFixture[str],

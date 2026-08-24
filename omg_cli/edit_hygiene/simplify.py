@@ -885,7 +885,14 @@ def _propose_with_grok(
                 job_id=job_id,
             )
             porcelain_after = _git_porcelain(root)
-            extra_skip = (f".omg/jobs/{job_id}/",) if job_id else ()
+            extra_skip = (
+                (
+                    f".omg/jobs/{job_id}/",
+                    f".omg/jobs/.locks/{job_id}.lock",
+                )
+                if job_id
+                else ()
+            )
             fingerprint_after = _workspace_content_fingerprint(
                 root, extra_skip=extra_skip
             )
