@@ -135,6 +135,10 @@ COMMON_LSP_SERVERS = (
 # hover/definition. Bounded, not infinite.
 DEFAULT_LSP_TIMEOUT_S = 30.0
 LSP_SEMANTIC_RETRY_S = 0.25
+# LSP ContentModified: client may retry (rust-analyzer while indexing/didOpen).
+LSP_CONTENT_MODIFIED = -32801
+_CONTENT_MODIFIED_MSG = "content modified"
+_CONTENT_MODIFIED_CODES = frozenset({LSP_CONTENT_MODIFIED, "-32801"})
 _MAX_LSP_STDERR_BYTES = 4096
 _LSP_CONTINUE = object()
 
@@ -406,6 +410,21 @@ def semantic_result_inspectable(operation: str, result: Any) -> bool:
     return True
 
 
+def _lsp_rpc_is_content_modified(exc: ToolsError) -> bool:
+    """True for JSON-RPC ContentModified (-32801 / ``content modified``)."""
+    if exc.code != "E_LSP_RPC":
+        return False
+    payload = exc.details if isinstance(exc.details, Mapping) else None
+    if payload is not None:
+        if payload.get("code") in _CONTENT_MODIFIED_CODES:
+            return True
+        message = payload.get("message")
+        if isinstance(message, str) and _CONTENT_MODIFIED_MSG in message.lower():
+            return True
+    blob = str(exc.message or "").lower()
+    return _CONTENT_MODIFIED_MSG in blob
+
+
 def _lsp_timeout_s(transport: LspTransport) -> float:
     timeout = getattr(transport, "timeout_s", None)
     if isinstance(timeout, (int, float)) and timeout > 0:
@@ -451,7 +470,12 @@ def _await_inspectable_semantic(
     params: Mapping[str, Any],
     first: Any,
 ) -> Any:
-    """Retry hover/definition until inspectable or the session deadline."""
+    """Retry hover/definition until inspectable or the sidecar deadline.
+
+    JSON ``null`` and LSP ContentModified (``-32801`` / ``content modified``)
+    are the same retry family while the language server indexes. Other RPC
+    errors still fail closed.
+    """
     if semantic_result_inspectable(operation, first):
         return first
     deadline = time.monotonic() + _lsp_timeout_s(transport)
@@ -462,7 +486,12 @@ def _await_inspectable_semantic(
         )
         if time.monotonic() >= deadline:
             break
-        last = transport.request(method, params)
+        try:
+            last = transport.request(method, params)
+        except ToolsError as exc:
+            if _lsp_rpc_is_content_modified(exc):
+                continue
+            raise
         if semantic_result_inspectable(operation, last):
             return last
     raise ToolsError(
@@ -781,7 +810,8 @@ class StdioLspTransport:
         if expected_id is None or msg.get("id") != expected_id:
             return _LSP_CONTINUE
         if msg.get("error") is not None:
-            raise ToolsError("E_LSP_RPC", str(msg["error"]))
+            error = msg["error"]
+            raise ToolsError("E_LSP_RPC", str(error), details=error)
         return msg.get("result")
 
     def pump(self, deadline: float) -> None:
@@ -1160,7 +1190,15 @@ def lsp_operation(
             if operation == "references":
                 params["context"] = {"includeDeclaration": True}
     method = _LSP_METHODS[operation]
-    result = transport.request(method, params)
+    try:
+        result = transport.request(method, params)
+    except ToolsError as exc:
+        if not (
+            operation in {"hover", "definition"}
+            and _lsp_rpc_is_content_modified(exc)
+        ):
+            raise
+        result = None
     if operation in {"hover", "definition"}:
         result = _await_inspectable_semantic(
             transport, operation, method, params, result

@@ -1517,3 +1517,159 @@ def test_lsp_operation_retries_null_hover_until_payload(tmp_path: Path) -> None:
         assert hover["verified"] is False
     finally:
         transport.close()
+
+
+def test_lsp_operation_retries_content_modified_until_payload(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    script = tmp_path / "content_modified_then_hover.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "pending = bytearray()\n"
+        "hovers = 0\n"
+        "definitions = 0\n"
+        "def read_more():\n"
+        "    chunk = os.read(sys.stdin.fileno(), 4096)\n"
+        "    if not chunk:\n"
+        "        return False\n"
+        "    pending.extend(chunk)\n"
+        "    return True\n"
+        "def read_msg():\n"
+        "    global pending\n"
+        "    while b'\\r\\n\\r\\n' not in pending:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    head, rest = bytes(pending).split(b'\\r\\n\\r\\n', 1)\n"
+        "    length = None\n"
+        "    for line in head.decode('ascii', 'replace').split('\\r\\n'):\n"
+        "        if line.lower().startswith('content-length:'):\n"
+        "            length = int(line.split(':', 1)[1].strip())\n"
+        "    pending = bytearray(rest)\n"
+        "    while len(pending) < length:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    body = bytes(pending[:length]); del pending[:length]\n"
+        "    return json.loads(body.decode('utf-8'))\n"
+        "def write_msg(msg):\n"
+        "    raw = json.dumps(msg).encode('utf-8')\n"
+        "    sys.stdout.buffer.write(\n"
+        "        ('Content-Length: %s\\r\\n\\r\\n' % len(raw)).encode('ascii') + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "while True:\n"
+        "    msg = read_msg()\n"
+        "    if msg is None:\n"
+        "        break\n"
+        "    method = msg.get('method')\n"
+        "    msg_id = msg.get('id')\n"
+        "    if method == 'initialize':\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'capabilities':{'hoverProvider':True,'definitionProvider':True}}})\n"
+        "        continue\n"
+        "    if method in {'initialized','textDocument/didOpen',"
+        "'textDocument/didChange','shutdown'}:\n"
+        "        continue\n"
+        "    if method == 'textDocument/hover':\n"
+        "        hovers += 1\n"
+        "        if hovers == 1:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'error':"
+        "{'code':-32801,'message':'content modified'}})\n"
+        "        else:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'contents':'indexed'}})\n"
+        "        continue\n"
+        "    if method == 'textDocument/definition':\n"
+        "        definitions += 1\n"
+        "        if definitions == 1:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'error':"
+        "{'code':-32801,'message':'content modified'}})\n"
+        "        else:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'uri':'file:///indexed.rs'}})\n"
+        "        continue\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=3.0
+    )
+    try:
+        hover = lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+        assert hover["ok"] is True
+        assert hover["result"] == {"contents": "indexed"}
+        assert hover["verified"] is False
+        definition = lsp_operation(
+            "definition", root=tmp_path, path="a.py", transport=transport
+        )
+        assert definition["ok"] is True
+        assert definition["result"] == {"uri": "file:///indexed.rs"}
+        assert definition["verified"] is False
+    finally:
+        transport.close()
+
+
+def test_lsp_operation_does_not_retry_unrelated_rpc_error(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    script = tmp_path / "method_not_found.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "pending = bytearray()\n"
+        "hovers = 0\n"
+        "def read_more():\n"
+        "    chunk = os.read(sys.stdin.fileno(), 4096)\n"
+        "    if not chunk:\n"
+        "        return False\n"
+        "    pending.extend(chunk)\n"
+        "    return True\n"
+        "def read_msg():\n"
+        "    global pending\n"
+        "    while b'\\r\\n\\r\\n' not in pending:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    head, rest = bytes(pending).split(b'\\r\\n\\r\\n', 1)\n"
+        "    length = None\n"
+        "    for line in head.decode('ascii', 'replace').split('\\r\\n'):\n"
+        "        if line.lower().startswith('content-length:'):\n"
+        "            length = int(line.split(':', 1)[1].strip())\n"
+        "    pending = bytearray(rest)\n"
+        "    while len(pending) < length:\n"
+        "        if not read_more():\n"
+        "            return None\n"
+        "    body = bytes(pending[:length]); del pending[:length]\n"
+        "    return json.loads(body.decode('utf-8'))\n"
+        "def write_msg(msg):\n"
+        "    raw = json.dumps(msg).encode('utf-8')\n"
+        "    sys.stdout.buffer.write(\n"
+        "        ('Content-Length: %s\\r\\n\\r\\n' % len(raw)).encode('ascii') + raw)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "while True:\n"
+        "    msg = read_msg()\n"
+        "    if msg is None:\n"
+        "        break\n"
+        "    method = msg.get('method')\n"
+        "    msg_id = msg.get('id')\n"
+        "    if method == 'initialize':\n"
+        "        write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'capabilities':{'hoverProvider':True}}})\n"
+        "        continue\n"
+        "    if method in {'initialized','textDocument/didOpen',"
+        "'textDocument/didChange','shutdown'}:\n"
+        "        continue\n"
+        "    if method == 'textDocument/hover':\n"
+        "        hovers += 1\n"
+        "        if hovers == 1:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'error':"
+        "{'code':-32601,'message':'Method not found'}})\n"
+        "        else:\n"
+        "            write_msg({'jsonrpc':'2.0','id':msg_id,'result':"
+        "{'contents':'indexed'}})\n"
+        "        continue\n",
+        encoding="utf-8",
+    )
+    transport = StdioLspTransport(
+        [sys.executable, str(script)], cwd=tmp_path, timeout_s=3.0
+    )
+    try:
+        with pytest.raises(ToolsError, match="E_LSP_RPC") as excinfo:
+            lsp_operation("hover", root=tmp_path, path="a.py", transport=transport)
+        assert excinfo.value.details["code"] == -32601
+        assert "Method not found" in str(excinfo.value.details["message"])
+    finally:
+        transport.close()

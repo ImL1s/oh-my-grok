@@ -17,6 +17,7 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 - Detected language servers (for example `rust-analyzer` on PATH) are **not** `ready` until a sidecar session actually starts/initializes them. Doctor never auto-starts arbitrary LSPs.
 - `omg tools doctor --strict` emits a **failure** envelope (`ok: false`) when inner checks fail. Inner and outer `ok` stay consistent. Doctor never sets `verified` / `observed` / `healthy` true.
 - Server `workspace/configuration` requests during initialize/hover/definition are answered with empty settings (one `{}` per item, or `[]`) so the language server can proceed. They are not dropped.
+- Hover / definition retry on LSP JSON-RPC `-32801` (`content modified`) while the language server indexes, the same way they retry JSON `null`.
 - `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
 - CodeGraph is a **toy local import/symbol scan** with bounded SCIP-inspired JSON `occurrences` (`definition`/`reference`). It is **not** SCIP protobuf, not a real SCIP indexer, and not a branch-accurate shared graph.
 - Network research stays opt-in and **blocked** until a provider and credentials exist (none are bundled).
