@@ -34,6 +34,7 @@ Each command family must document whether empty/missing state is exit `0` or `1`
 | `omg visual capture` | captured or blocked (no driver → blocked, not a fake pass) | — | missing `--config` / `E_VISUAL_PATH` / `E_VISUAL_INPUT` |
 | `omg visual verdict` | scored or blocked envelope with `reviewer_status` | — | missing images / `E_VISUAL_REVIEWER` / `E_VISUAL_PATH` / `E_VISUAL_METADATA` |
 | `omg visual ralph` | loop finished (threshold_met / blocked / budget) | — | missing `--config` / `E_VISUAL_REVIEWER` / `E_VISUAL_PATH` |
+| `omg visual overlay` | PNG pixel overlay envelope (`pixel_decode: true`, `changed_pixels`) | — | missing images / symlink / truncated / non-PNG (`E_VISUAL_PATH` / `E_VISUAL_PIXEL`) |
 
 ---
 

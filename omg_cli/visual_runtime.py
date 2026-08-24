@@ -1,12 +1,14 @@
 """Provider-neutral visual capture / verdict / Ralph runtime (#75).
 
 Honesty constraints:
-- Never decode image pixels (no PIL/Pillow, no Playwright import).
+- Never import PIL/Pillow, numpy, or Playwright.
+- PNG pixel overlay lives in ``visual_pixels`` (stdlib zlib/struct only).
+- Visual Contract V1 (``visual_contract.py``) stays pixel-agnostic.
 - Never emit ``approved`` / ``passes`` / ``verified``.
-- Never inline image bytes or base64 in JSON; descriptors only.
-- Overlay sidecars are descriptor-only (masks + byte-identity).
+- Never inline image bytes or base64 in JSON; overlay PNG is a sidecar path.
 - Missing capture is ``blocked``, not a fake pass.
-- Visual scores are evidence only; this module does not write ``.omg/state``.
+- Visual scores / overlay stats are evidence only; this module does not
+  write ``.omg/state``.
 """
 
 from __future__ import annotations
@@ -35,6 +37,12 @@ from omg_cli.contracts.visual_contract import (
     validate_image_descriptor,
 )
 from omg_cli.redaction import redact_argv, redact_text
+from omg_cli.visual_pixels import (
+    VisualPixelError,
+    decode_png_rgba,
+    pixel_diff_stats,
+    write_overlay_png,
+)
 
 SCHEMA_VERSION = 1
 CAPTURE_RESULT_KIND = "omg.visual.capture_result"
@@ -80,7 +88,10 @@ DEFAULT_EDITOR_ROLE = "omg-designer"
 DEFAULT_REVIEWER_ROLE = "omg-vision"
 OVERLAY_NOTE = (
     "overlay is descriptor-only; pixel diffs are not computed "
-    "(no image decoder / no vision model)"
+    "(caller opted --descriptor-only; no vision model)"
+)
+PIXEL_OVERLAY_NOTE = (
+    "PNG pixel overlay evidence; not an OMG accept stamp; no vision model"
 )
 
 
@@ -616,24 +627,85 @@ def copy_image(root: Path, source: Path, dest: Path) -> Path:
     return confine_workspace_path(root, dest)
 
 
+def require_regular_image(root: Path, candidate: str | Path) -> Path:
+    """Workspace-confine an image path and refuse symlink leaves."""
+    if candidate is None or str(candidate) == "":
+        raise VisualPathError("path is required")
+    base = Path(root).resolve()
+    raw = Path(str(candidate))
+    if not raw.is_absolute():
+        raw = base / raw
+    try:
+        if raw.is_symlink():
+            raise VisualPathError("image path must not be a symlink")
+    except OSError as exc:
+        raise VisualPathError("image path is not a regular file") from exc
+    confined = confine_workspace_path(root, candidate)
+    if confined.is_symlink() or not confined.is_file():
+        raise VisualPathError("image path is not a regular file")
+    return confined
+
+
 def overlay_sidecar(
     *,
     masks: Sequence[Mapping[str, int]],
     reference: Mapping[str, Any],
     candidate: Mapping[str, Any],
+    root: Path | None = None,
+    dest: Path | None = None,
+    reference_path: Path | str | None = None,
+    candidate_path: Path | str | None = None,
+    descriptor_only: bool = False,
 ) -> dict[str, Any]:
     byte_identity = (
         reference.get("sha256") == candidate.get("sha256")
         and reference.get("byte_size") == candidate.get("byte_size")
     )
+    if descriptor_only:
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "kind": OVERLAY_KIND,
+            "status": "overlay",
+            "mode": "descriptor_only",
+            "pixel_decode": False,
+            "byte_identity": bool(byte_identity),
+            "masks": list(masks),
+            "note": OVERLAY_NOTE,
+        }
+        _assert_honest(payload)
+        return payload
+    if root is None or dest is None or reference_path is None or candidate_path is None:
+        raise VisualPixelError(
+            "pixel overlay requires confined reference, candidate, and dest paths"
+        )
+    ref_file = require_regular_image(root, reference_path)
+    cand_file = require_regular_image(root, candidate_path)
+    dest_path = Path(dest)
+    if not dest_path.is_absolute():
+        dest_path = Path(root) / dest_path
+    if dest_path.is_symlink():
+        raise VisualPathError("overlay dest must not be a symlink")
+    dest_file = confine_workspace_path(root, dest_path)
+    if dest_file.is_symlink():
+        raise VisualPathError("overlay dest must not be a symlink")
+    ref_rgba = decode_png_rgba(ref_file)
+    cand_rgba = decode_png_rgba(cand_file)
+    stats = pixel_diff_stats(ref_rgba, cand_rgba, masks)
+    write_overlay_png(dest_file, ref_rgba, cand_rgba, masks)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "kind": OVERLAY_KIND,
-        "mode": "descriptor_only",
-        "pixel_decode": False,
+        "status": "overlay",
+        "mode": "pixel",
+        "pixel_decode": True,
         "byte_identity": bool(byte_identity),
         "masks": list(masks),
-        "note": OVERLAY_NOTE,
+        "changed_pixels": int(stats["changed_pixels"]),
+        "total_pixels": int(stats["total_pixels"]),
+        "changed_ratio_milli": int(stats["changed_ratio_milli"]),
+        "bbox": stats["bbox"],
+        "overlay_png": posix_relpath(root, dest_file),
+        "note": PIXEL_OVERLAY_NOTE,
     }
     _assert_honest(payload)
     return payload
@@ -857,6 +929,7 @@ def run_verdict(
     editor_role: str | None = None,
     reviewer_role: str | None = None,
     reviewer_capability: str | None = None,
+    descriptor_only: bool = False,
 ) -> dict[str, Any]:
     rid = validate_run_id(run_id or new_run_id())
     run_dir = artifact_dir(root, rid)
@@ -912,7 +985,16 @@ def run_verdict(
         media_type=act_media,
     )
     masks = config.get("masks") if isinstance(config.get("masks"), list) else []
-    overlay = overlay_sidecar(masks=masks, reference=reference, candidate=candidate)
+    overlay = overlay_sidecar(
+        masks=masks,
+        reference=reference,
+        candidate=candidate,
+        root=root,
+        dest=run_dir / "overlay.png",
+        reference_path=ref_copy,
+        candidate_path=act_copy,
+        descriptor_only=descriptor_only,
+    )
     write_json(run_dir / "overlay.json", overlay)
     write_json(run_dir / "reference.json", reference)
     write_json(run_dir / "current.json", candidate)
@@ -937,8 +1019,8 @@ def run_verdict(
                 "block_code": "scoring_unavailable",
                 "block_field": "dimensions",
                 "reviewer_status": "blocked",
-                "pixel_decode": False,
-                "overlay_mode": "descriptor_only",
+                "pixel_decode": bool(overlay.get("pixel_decode")),
+                "overlay_mode": overlay.get("mode") or "descriptor_only",
                 "reference": reference,
                 "current": candidate,
                 "overlay": overlay,
@@ -1011,8 +1093,8 @@ def run_verdict(
         "run_id": rid,
         "status": comparison.get("status"),
         "reviewer_status": reviewer_status,
-        "pixel_decode": False,
-        "overlay_mode": "descriptor_only",
+        "pixel_decode": bool(overlay.get("pixel_decode")),
+        "overlay_mode": overlay.get("mode") or "descriptor_only",
         "reference": reference,
         "current": candidate,
         "comparison": comparison,
@@ -1174,7 +1256,7 @@ def run_ralph(
                 reviewer_role=review["reviewer_role"],
                 reviewer_capability=review["reviewer_capability"],
             )
-        except VisualRuntimeError as exc:
+        except (VisualRuntimeError, VisualPixelError) as exc:
             stop_reason = "blocked"
             reviewer_status = "blocked"
             iterations.append(
@@ -1288,6 +1370,58 @@ def run_ralph(
     return result
 
 
+def run_overlay(
+    *,
+    root: Path,
+    reference_path: str | Path,
+    candidate_path: str | Path,
+    run_id: str | None = None,
+    masks: Sequence[Mapping[str, int]] | None = None,
+    descriptor_only: bool = False,
+) -> dict[str, Any]:
+    rid = validate_run_id(run_id or new_run_id())
+    run_dir = artifact_dir(root, rid)
+    ref_file = require_regular_image(root, reference_path)
+    cand_file = require_regular_image(root, candidate_path)
+    reference = {
+        "path": posix_relpath(root, ref_file),
+        "sha256": file_sha256(ref_file),
+        "byte_size": int(ref_file.stat().st_size),
+    }
+    candidate = {
+        "path": posix_relpath(root, cand_file),
+        "sha256": file_sha256(cand_file),
+        "byte_size": int(cand_file.stat().st_size),
+    }
+    overlay = overlay_sidecar(
+        masks=list(masks or []),
+        reference=reference,
+        candidate=candidate,
+        root=root,
+        dest=run_dir / "overlay.png",
+        reference_path=ref_file,
+        candidate_path=cand_file,
+        descriptor_only=descriptor_only,
+    )
+    overlay["run_id"] = rid
+    overlay["artifact_dir"] = posix_relpath(root, run_dir)
+    overlay["reference"] = reference
+    overlay["candidate"] = candidate
+    _assert_honest(overlay)
+    write_json(run_dir / "overlay.json", overlay)
+    _write_manifest(
+        root,
+        rid,
+        command="visual.overlay",
+        extra={
+            "overlay": overlay,
+            "pixel_decode": bool(overlay.get("pixel_decode")),
+            "overlay_mode": overlay.get("mode"),
+        },
+    )
+    return overlay
+
+
 def _write_manifest(
     root: Path,
     run_id: str,
@@ -1324,8 +1458,11 @@ __all__ = [
     "enforce_independent_reviewer",
     "load_visual_config",
     "new_run_id",
+    "overlay_sidecar",
     "percent_to_score",
+    "require_regular_image",
     "run_capture",
+    "run_overlay",
     "run_ralph",
     "run_verdict",
 ]

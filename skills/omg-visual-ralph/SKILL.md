@@ -21,7 +21,7 @@ Visual persistence is not shipped. Use when the user says visual-ralph. Route to
 - Phrases: `visual ralph`, `visual-ralph`
 - Aliases: `visual-ralph`
 - **When:** User asks for visual-ralph / screenshot persistence loop.
-- **Do not use when:** Claiming overlay/diff/reviewer agents or visual-Ralph runtime exist.
+- **Do not use when:** Claiming live screenshot smoke, Antigravity vision, or that visual-Ralph writes `verified`. PNG overlay evidence is `omg visual overlay` (never verified).
 - Informational questions (`what is omg-visual-ralph?`) do **not** activate this skill.
 
 ## 2. Preconditions / conflict
@@ -41,7 +41,7 @@ Visual persistence is not shipped. Use when the user says visual-ralph. Route to
 - Apply the **visual-loop** capture/fix slice this playbook owns (`capability_mode: read-write`).
 - Write reports/proposals under `.omg/artifacts/`.
 - Never write `passes` / `verified` under `.omg/state/`.
-- `omg visual compare` only (same compare-only envelope as visual-verdict). Persistence loop remains `omg ralph` if they need iterations — that loop is not visual-aware.
+- `omg visual compare` scores envelopes; `omg visual overlay` writes PNG pixel evidence (never `verified`). Persistence loop remains `omg ralph` if they need iterations — that loop is not a live screenshot smoke or AG vision reviewer.
 
 ## 6. capability_mode
 - This skill's catalog mode: `read-write` (never `execute` / `all`).

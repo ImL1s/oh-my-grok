@@ -3,16 +3,19 @@
 Pure, copy-safe comparison contract for Issue #75.
 
 Authoritative implementation: `omg_cli/contracts/visual_contract.py`.
-Public CLI: `omg visual compare|capture|verdict|ralph`.
+Public CLI: `omg visual compare|capture|verdict|ralph|overlay`.
 
-`compare` wraps `compare()` only. `capture` / `verdict` / `ralph` live in
-`omg_cli/visual_runtime.py` and write descriptors under
+`compare` wraps `compare()` only and stays pixel-agnostic. `capture` /
+`verdict` / `ralph` / `overlay` live in `omg_cli/visual_runtime.py` (PNG
+pixels in `omg_cli/visual_pixels.py`) and write artifacts under
 `.omg/artifacts/visual/<run_id>/`.
 
-This module does **not** decode images, talk to agents or providers, write
-`.omg/state`, or set OMG `verified`. A visual score is evidence only.
-Overlay artifacts are descriptor-only (masks + byte-identity); pixel diffs
-are not computed.
+The **contract module** does **not** decode images, talk to agents or
+providers, write `.omg/state`, or set OMG `verified`. A visual score is
+evidence only. Runtime `omg visual overlay` **may** decode PNG (stdlib
+`struct`/`zlib` only; no Pillow) and write an overlay PNG sidecar plus
+numeric stats. JSON never inlines image bytes. `--descriptor-only` keeps
+the sha/byte-identity sidecar.
 
 ## Honesty
 
@@ -153,7 +156,7 @@ or network, and adds no third-party dependency.
   `canonical_json_bytes` / `sha256_hex`
 - `VisualContractError`
 
-## CLI (`omg visual compare|capture|verdict|ralph`)
+## CLI (`omg visual compare|capture|verdict|ralph|overlay`)
 
 `omg visual compare --input <json>` reads a comparison document and wraps
 `compare()`. The CLI document is size-bounded (1 MiB) before JSON load.
@@ -168,7 +171,7 @@ It always emits a schema_version 1 JSON envelope:
 values (including image/base64 stuffed into a field) are not copied into
 the envelope.
 
-The nested `result` object is the contract output. The CLI does not decode
+The nested `result` object is the contract output. `compare` does not decode
 images, talk to agents or providers, or write `passes` / `verified`.
 `aggregate < threshold` is still `status: scored` and exit `0`.
 
@@ -177,14 +180,15 @@ images, talk to agents or providers, or write `passes` / `verified`.
 | Command | Contract |
 | --- | --- |
 | `omg visual capture --config visual.yaml --json` | Run `capture.command` argv, else `OMG_VISUAL_CAPTURE`, else **blocked** (not a fake pass). Playwright is not required. Records command/tool, target, viewport/DPR/platform/theme/locale, readiness, timestamp, content hash, exit/error. Width/height are declared metadata — files are hashed, not decoded. |
-| `omg visual verdict --reference ref.png --actual current.png --threshold 90 --json` | Wrap `compare()` plus artifacts under `.omg/artifacts/visual/<run_id>/`. `--threshold` is percent `0..100` (90 → score 9000). Independent read-only reviewer required (`reviewer_status`, never `verified`). `E_VISUAL_REVIEWER` if editor==reviewer or reviewer is read-write. |
+| `omg visual verdict --reference ref.png --actual current.png --threshold 90 --json` | Wrap `compare()` plus artifacts under `.omg/artifacts/visual/<run_id>/`. PNG overlay sidecar is written unless `--descriptor-only`. `--threshold` is percent `0..100` (90 → score 9000). Independent read-only reviewer required (`reviewer_status`, never `verified`). `E_VISUAL_REVIEWER` if editor==reviewer or reviewer is read-write. |
 | `omg visual ralph --config visual.yaml --max-iter 5 --json` | Bounded freeze → capture/actual → verdict → repair-prompt artifact → recapture loop. Stops on threshold, blocked, or budget. Does not spawn agents or edit UI. |
+| `omg visual overlay --reference ref.png --candidate current.png --json` | Stdlib PNG pixel overlay. Writes `overlay.png` + numeric `changed_pixels` / `changed_ratio_milli` / `bbox`. `pixel_decode: true`. Fail-closed on non-PNG, truncated, oversize, symlink, or path escape (`E_VISUAL_PIXEL` / `E_VISUAL_PATH`). `--descriptor-only` skips decode. Never `verified`. |
 
 Config is JSON or a restricted YAML subset (PyYAML is not a dependency; JSON is valid YAML 1.2). Capture precedence is always printed by `omg doctor` (`visual capture adapter`).
 
 ## Remaining gaps (#75 does not close)
 
-Plugin `visual-verdict` / `visual-ralph` SKILL.md playbooks, live screenshot
-smoke, and an Antigravity vision-model reviewer remain unproven. Pixel
-overlay/diff images are not produced (descriptor-only). Any write to
+Live screenshot smoke and an Antigravity vision-model reviewer remain
+unproven. PNG pixel overlay evidence is in-repo (`omg visual overlay`);
+it is **not** a live capture smoke and **not** AG vision. Any write to
 `passes` / `verified` stays out of scope.

@@ -65,12 +65,12 @@
     "skills/omg-ultraqa/SKILL.md": "8e2c3cd4c9f8f40685e9ca278a9837cfe8aff12e46dca00c60ea598e5f957748",
     "skills/omg-ultrawork/SKILL.md": "31ad59fd89d01fcdddadcb2eb8c6d62cc1ddc836cf64f1eeded2f10fd66fc123",
     "skills/omg-using/SKILL.md": "24448e251a6f0e1a0b0a2cb569f3b8806e74b17caa6df4b7fa647b91e4154abd",
-    "skills/omg-visual-ralph/SKILL.md": "baedff0cb07091beb06ceec6d08d2a78c7c8c016eec54176be49df08468cece8",
+    "skills/omg-visual-ralph/SKILL.md": "e86de8fa7e77d48efe08d975fd2baa18f250fc0bf6184afaeb4a0096c29cb1f7",
     "skills/omg-visual-verdict/SKILL.md": "dab68c1e57bf7d6793a6966d1f359c3dc3f92c01d737793153ad8193052d274e",
     "skills/omg-wiki/SKILL.md": "bd8f8f4fd809ffc1bde337ab4ec81c5d81eb90adea9dd4dfb83861afa79c6ac9",
     "skills/omg-writer-memory/SKILL.md": "f387a2607e5a643f450ff5c5c65743f8cf8e6fa85670b61693f62732e71def35"
   },
-  "aggregate": "ab69910de9653f4fa4e7f90f47724d25a9a230b6bd27aacf9d89097b3a7baa84",
+  "aggregate": "7b6533a6abd260e053b21304f6e2be3c908a29c37641d944e6d9835f1e06e223",
   "session_surface": {
     "schema": "omg-plugin-session-surface/v1",
     "skills": [
@@ -323,7 +323,7 @@
       {
         "name": "omg-visual-ralph",
         "path": "skills/omg-visual-ralph/SKILL.md",
-        "sha256": "baedff0cb07091beb06ceec6d08d2a78c7c8c016eec54176be49df08468cece8",
+        "sha256": "e86de8fa7e77d48efe08d975fd2baa18f250fc0bf6184afaeb4a0096c29cb1f7",
         "metadata_status": "valid"
       },
       {
@@ -788,5 +788,5 @@
     },
     "issues": []
   },
-  "session_surface_aggregate": "d9eb8e76e71edd47373621ce71032ae92d6899787286fa25849bd034b0798c8d"
+  "session_surface_aggregate": "2147331402b55e20f6baaa325fb5e32ad9c2f44dce576d4e70b2537ccbb8f2f4"
 }
