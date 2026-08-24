@@ -30,7 +30,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   subject, depends-on, board task id, worker protocol), not only
   the shared team goal. Interactive scale-up persists and returns
   readiness (`startup_status`); failed/degraded/blocked is not a
-  silent success. Mixed interactive/headless active sets
+  silent success. Scale routing reload accepts persisted `by_role`
+  snapshots from `start_team`. Mixed interactive/headless active sets
   fail closed. Fixture `interactive_tty.py` prints `WINCH:` on
   SIGWINCH and `INT:` on SIGINT without killing the leader.
   Default/`auto` stay headless. No `LIVE_TEAM_INTERACTIVE_TTY_OK`

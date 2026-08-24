@@ -1785,11 +1785,19 @@ def _resolve_routing_from_meta(
     routing = meta.get("routing")
     if not isinstance(routing, Mapping):
         return None
-    # team.json stores resolved.to_dict() shape: {roles: {role: {...}}, ...}
-    # or the original role map. Accept both.
-    if "roles" in routing and isinstance(routing.get("roles"), Mapping):
+    # team.json stores ResolvedRouting.to_dict():
+    # {default_provider, by_role: {role: {...}}, warnings}. Also accept a
+    # legacy {roles: {...}} wrapper or a raw role→{provider,model} map.
+    nested: Mapping[str, Any] | None = None
+    by_role = routing.get("by_role")
+    roles = routing.get("roles")
+    if isinstance(by_role, Mapping):
+        nested = by_role
+    elif isinstance(roles, Mapping):
+        nested = roles
+    if nested is not None:
         role_map: dict[str, Any] = {}
-        for role, entry in routing["roles"].items():
+        for role, entry in nested.items():
             if isinstance(entry, Mapping):
                 role_map[str(role)] = {
                     "provider": entry.get("provider") or "grok",
@@ -1797,11 +1805,19 @@ def _resolve_routing_from_meta(
                 }
         raw = role_map
     else:
-        raw = dict(routing)
+        raw = {
+            key: value
+            for key, value in routing.items()
+            if key not in {"default_provider", "warnings", "by_role", "roles"}
+        }
+    default_provider = routing.get("default_provider")
+    if not isinstance(default_provider, str) or not default_provider.strip():
+        default_provider = "grok"
     try:
         return resolve_routing(
             raw,
             roles_needed=list(roles_needed) or ["executor"],
+            default_provider=default_provider.strip(),
             check_binary=False,
         )
     except RoutingError as exc:

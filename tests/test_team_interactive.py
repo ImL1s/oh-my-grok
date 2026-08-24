@@ -1889,6 +1889,29 @@ def test_scale_up_refreshes_readiness_for_all_interactive_workers() -> None:
     assert "startup_status" in src
 
 
+def test_resolve_routing_from_meta_accepts_persisted_by_role() -> None:
+    from omg_cli.team.routing import resolve_routing
+    from omg_cli.team.scaling import _resolve_routing_from_meta
+
+    snap = resolve_routing(
+        {"executor": {"provider": "codex", "model": "m1"}},
+        roles_needed=["executor"],
+        check_binary=False,
+        available_providers={"codex", "grok"},
+    )
+    persisted = snap.to_dict()
+    assert "by_role" in persisted
+    assert "default_provider" in persisted
+    out = _resolve_routing_from_meta(
+        {"multi_cli": True, "routing": persisted},
+        ["executor"],
+    )
+    assert out is not None
+    route = out.for_role("executor")
+    assert route.provider == "codex"
+    assert route.model == "m1"
+
+
 def test_scale_command_uses_startup_exit_gate() -> None:
     import inspect
 
