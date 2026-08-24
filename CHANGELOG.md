@@ -40,6 +40,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#77 leftover Windows O_NOFOLLOW:** confined hash-edit read/write/apply
+  and agent/skill catalog pin/write on Windows open each path component with
+  `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` (no
+  `Path.open()` follow) and reject symlink plus mount-point reparse.
+  POSIX `O_NOFOLLOW`/`dir_fd` is unchanged. Hermetic fake-win32 tests drive
+  the real entries; `windows-nofollow` CI (`windows-latest`, `pytest -m
+  "not live"`) is the live Windows proof path. Does **not** close #77
+  (live AG install matrix, doctor live evidence, managed-store `dir_fd`
+  remain). Refs #77.
 - **#69 leftover: grok composition executor:** `omg team hyperplan|security-research
   execute --executor grok` no longer raises `E_TEAM_COMPOSITION_EXEC_EXECUTOR`.
   Grok is admitted and launched through existing `launch_worker` Jobs machinery

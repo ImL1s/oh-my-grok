@@ -711,7 +711,9 @@ drift. Load fail-closes when an agent's frontmatter omits,
 uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
 must not conceal a more permissive plugin definition). Agent markdown is
-opened with `O_NOFOLLOW|O_NONBLOCK` and read through that pinned descriptor. Category
+opened with `O_NOFOLLOW|O_NONBLOCK` (POSIX) or Windows `CreateFileW` /
+`NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` and read through that pinned
+handle. Category
 routing (`quick` / `deep` / `ultrabrain` / `visual-engineering` / `research` /
 `review`) is deterministic and inspectable; reviewer/verifier/planner cannot
 receive `read-write`. Antigravity

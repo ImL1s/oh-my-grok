@@ -25,6 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from omg_cli.win32_nofollow import (
+    Win32NofollowError,
+    reject_existing_reparse,
+    windows_nofollow_ready,
+    write_path_regular,
+)
+
 SCHEMA = "omg-skills-catalog/v1"
 KIND = "read_only_machine_catalog"
 CATALOG_RELATIVE = "skills/catalog.json"
@@ -1068,6 +1075,14 @@ def _refuse_symlink_dest(path: Path) -> None:
         raise SkillsCatalogError(
             f"refusing symlink dest: {path.as_posix()}"
         )
+    if windows_nofollow_ready() and (path.exists() or path.is_symlink()):
+        try:
+            reject_existing_reparse(path)
+        except Win32NofollowError as exc:
+            raise SkillsCatalogError(
+                f"refusing dest (O_NOFOLLOW): {path.as_posix()}: {exc}"
+            ) from exc
+        return
     if (
         os.name == "posix"
         and hasattr(os, "O_NOFOLLOW")
@@ -1081,14 +1096,21 @@ def _refuse_symlink_dest(path: Path) -> None:
             raise SkillsCatalogError(
                 f"refusing dest (O_NOFOLLOW): {path.as_posix()}: {exc}"
             ) from exc
-
-
+        return
 def _atomic_write_text(path: Path, text: str) -> None:
     """Same-dir temp + ``os.replace``. Refuses symlink dest; POSIX O_NOFOLLOW."""
     dest = Path(path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
         _refuse_symlink_dest(dest)
+    if windows_nofollow_ready():
+        try:
+            write_path_regular(dest, text.encode("utf-8"))
+        except Win32NofollowError as exc:
+            raise SkillsCatalogError(
+                f"cannot write {dest.as_posix()}: {exc}"
+            ) from exc
+        return
     fd, tmp_name = tempfile.mkstemp(
         dir=str(dest.parent),
         prefix=f".{dest.name}.",

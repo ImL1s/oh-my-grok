@@ -347,6 +347,9 @@ def test_catalog_pin_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         "omg_cli.agents_catalog._posix_nofollow_ready", lambda: False
     )
+    monkeypatch.setattr(
+        "omg_cli.agents_catalog._windows_nofollow_ready", lambda: False
+    )
     with pytest.raises(AgentsCatalogError, match="O_NOFOLLOW"):
         load_agents_catalog(ROOT, require_projections=False)
 

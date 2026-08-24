@@ -27,6 +27,12 @@ from omg_cli.contracts.path_keys import (
     confined_path,
 )
 from omg_cli.contracts.state_schemas import require_integer, require_safe_id, require_sha256
+from omg_cli.win32_nofollow import (
+    Win32NofollowError,
+    read_relative_regular,
+    windows_nofollow_ready,
+    write_relative_regular,
+)
 
 from .descriptor import (
     HASH_EDIT_SCHEMA_VERSION,
@@ -155,19 +161,163 @@ def _posix_nofollow_ready() -> bool:
     )
 
 
+def _windows_nofollow_ready() -> bool:
+    return windows_nofollow_ready()
+
+
+def _map_win32(exc: Win32NofollowError, name: str) -> Exception:
+    kind = exc.kind
+    if kind == "symlink":
+        return HashEditPathError(f"target may not be a symlink: {name}")
+    if kind == "missing":
+        return HashEditPathError(f"target does not exist: {name}")
+    if kind == "not_regular":
+        return HashEditPathError(f"target must be a regular file: {name}")
+    if kind == "links":
+        return HashEditPathError(
+            f"target must be a single-link regular file: {name}"
+        )
+    if kind == "size":
+        return HashEditInputError(
+            f"current bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
+    if kind == "changed":
+        return HashEditConcurrencyError(f"target changed while reading: {name}")
+    if kind == "expected":
+        return HashEditConcurrencyError("current file bytes do not match expected")
+    if kind == "write":
+        return HashEditApplyError("atomic replace failed")
+    return HashEditPathError(str(exc))
+
+
+def _read_confined_windows(workspace_root: Path | str, rel: str) -> bytes:
+    root = _workspace_root(workspace_root)
+    parts = rel.split("/")
+    try:
+        body, _mode = read_relative_regular(
+            root, parts, max_bytes=MAX_PLAN_FILE_BYTES
+        )
+    except Win32NofollowError as exc:
+        raise _map_win32(exc, parts[-1] if parts else rel) from exc
+    return body
+
+
+def _write_confined_windows(
+    workspace_root: Path | str,
+    rel: str,
+    payload: bytes,
+    *,
+    expected_payload: bytes | None,
+    mode: int | None,
+) -> int:
+    root = _workspace_root(workspace_root)
+    parts = rel.split("/")
+    try:
+        return write_relative_regular(
+            root,
+            parts,
+            payload,
+            expected=expected_payload,
+            mode=mode,
+            max_bytes=MAX_PLAN_FILE_BYTES,
+        )
+    except Win32NofollowError as exc:
+        raise _map_win32(exc, parts[-1] if parts else rel) from exc
+
+
+def _apply_hash_edit_windows(
+    root: Path,
+    desc: HashEditDescriptorV1,
+    locked_plan: HashEditPlanV1,
+) -> HashEditApplyResultV1:
+    parts = desc.path.split("/")
+    try:
+        current, preserved_mode = read_relative_regular(
+            root, parts, max_bytes=MAX_PLAN_FILE_BYTES
+        )
+    except Win32NofollowError as exc:
+        raise _map_win32(exc, parts[-1]) from exc
+    fresh_digest = _sha256_bytes(current)
+    if fresh_digest != locked_plan.before_sha256:
+        raise HashEditConcurrencyError(
+            "current file digest does not match plan.before_sha256"
+        )
+    fresh_plan = plan_hash_edit(
+        desc,
+        HashEditCurrentFact(path=desc.path, current_bytes=current),
+    )
+    if (
+        fresh_plan.before_sha256 != locked_plan.before_sha256
+        or fresh_plan.after_sha256 != locked_plan.after_sha256
+        or fresh_plan.start_offset != locked_plan.start_offset
+        or fresh_plan.end_offset != locked_plan.end_offset
+        or fresh_plan.descriptor_digest != locked_plan.descriptor_digest
+    ):
+        raise HashEditConcurrencyError("re-plan does not match the supplied plan")
+    spliced = (
+        current[: fresh_plan.start_offset]
+        + desc.replacement.encode("utf-8")
+        + current[fresh_plan.end_offset :]
+    )
+    if len(spliced) > MAX_PLAN_FILE_BYTES:
+        raise HashEditApplyError(
+            f"planned bytes exceed {MAX_PLAN_FILE_BYTES} byte limit"
+        )
+    if _sha256_bytes(spliced) != locked_plan.after_sha256:
+        raise HashEditApplyError("spliced bytes do not match plan.after_sha256")
+    result = HashEditApplyResultV1(
+        path=desc.path,
+        descriptor_digest=desc.digest(),
+        before_sha256=fresh_digest,
+        after_sha256=_sha256_bytes(spliced),
+        start_offset=fresh_plan.start_offset,
+        end_offset=fresh_plan.end_offset,
+        start_line=fresh_plan.start_line,
+        end_line=fresh_plan.end_line,
+        rebased=fresh_plan.rebased,
+        unified_diff_sha256=fresh_plan.unified_diff_sha256,
+        preserved_mode=preserved_mode,
+    )
+    if spliced == current:
+        return result
+    try:
+        write_relative_regular(
+            root,
+            parts,
+            spliced,
+            expected=current,
+            mode=preserved_mode,
+            max_bytes=MAX_PLAN_FILE_BYTES,
+        )
+    except Win32NofollowError as exc:
+        raise _map_win32(exc, parts[-1]) from exc
+    try:
+        published, _published_mode = read_relative_regular(
+            root, parts, max_bytes=MAX_PLAN_FILE_BYTES
+        )
+    except Win32NofollowError as exc:
+        raise _map_win32(exc, parts[-1]) from exc
+    if published != spliced:
+        raise HashEditApplyError("post-replace readback mismatch")
+    return result
+
+
 def read_confined_regular_file(workspace_root: Path | str, relative: str) -> bytes:
     """Read a workspace-relative regular file without following a swapped symlink.
 
     POSIX: pinned ``O_NOFOLLOW`` directory descriptors (same walk as apply).
-    Other hosts fail closed — there is no no-follow ``dir_fd`` walk to pin the
-    target, so a pathname reopen would race. Size is inspected on the pinned
-    descriptor before allocating the full contents.
+    Windows: CreateFileW / NtCreateFile with ``FILE_FLAG_OPEN_REPARSE_POINT``
+    then reject symlink and mount-point reparse. Other hosts fail closed —
+    a pathname reopen would race. Size is inspected on the pinned handle
+    before allocating the full contents.
     """
 
     rel = require_workspace_relpath(relative, label="edit path")
     if not _posix_nofollow_ready():
+        if _windows_nofollow_ready():
+            return _read_confined_windows(workspace_root, rel)
         raise HashEditPathError(
-            "confined target read requires POSIX O_NOFOLLOW/dir_fd"
+            "confined target read requires POSIX O_NOFOLLOW/dir_fd or Windows no-follow open"
         )
     root = _workspace_root(workspace_root)
     parts = rel.split("/")
@@ -347,6 +497,12 @@ def apply_hash_edit(
     if locked_plan.path != desc.path or locked_plan.descriptor_digest != desc.digest():
         raise HashEditApplyError("plan is not bound to this descriptor")
     root = _workspace_root(workspace_root)
+    if not _posix_nofollow_ready():
+        if _windows_nofollow_ready():
+            return _apply_hash_edit_windows(root, desc, locked_plan)
+        raise HashEditPathError(
+            "confined target apply requires POSIX O_NOFOLLOW/dir_fd or Windows no-follow open"
+        )
     _confined_target(root, desc.path)
     parts = desc.path.split("/")
     if fcntl is None:  # pragma: no cover
@@ -447,7 +603,7 @@ def write_confined_regular_file(
     When ``expected`` is set, the locked current bytes must match it or the
     write is skipped and ``HashEditConcurrencyError`` is raised.
     Returns the permission mask written. Fail-closed on hosts without
-    ``O_NOFOLLOW`` / ``dir_fd``.
+    POSIX ``O_NOFOLLOW`` / ``dir_fd`` or Windows no-follow open.
     """
 
     if not isinstance(body, (bytes, bytearray)):
@@ -469,8 +625,16 @@ def write_confined_regular_file(
             raise HashEditApplyError("mode is not a permission mask")
     rel = require_workspace_relpath(relative, label="edit path")
     if not _posix_nofollow_ready():
+        if _windows_nofollow_ready():
+            return _write_confined_windows(
+                workspace_root,
+                rel,
+                payload,
+                expected_payload=expected_payload,
+                mode=mode,
+            )
         raise HashEditPathError(
-            "confined target write requires POSIX O_NOFOLLOW/dir_fd"
+            "confined target write requires POSIX O_NOFOLLOW/dir_fd or Windows no-follow open"
         )
     if fcntl is None:  # pragma: no cover
         raise HashEditApplyError("advisory locking is unavailable")

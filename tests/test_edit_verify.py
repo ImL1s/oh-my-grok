@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -18,13 +17,14 @@ from omg_cli.hash_edit import (
     apply_hash_edit,
     write_confined_regular_file,
 )
+from omg_cli.hash_edit.apply import _posix_nofollow_ready, _windows_nofollow_ready
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 from omg_cli.main import build_parser, main
 
-_APPLY_SUPPORTED = sys.platform != "win32" and hasattr(os, "O_NOFOLLOW")
+_APPLY_SUPPORTED = _posix_nofollow_ready() or _windows_nofollow_ready()
 _SKIP_POSIX = pytest.mark.skipif(
     not _APPLY_SUPPORTED,
-    reason="hash-edit confined read/write requires POSIX O_NOFOLLOW/fcntl",
+    reason="hash-edit confined read/write requires POSIX O_NOFOLLOW or Windows no-follow",
 )
 _REPLACEMENT = "UNIQUE_VERIFY_REPLACEMENT_XYZ"
 
@@ -284,13 +284,17 @@ def test_verify_allowed_when_read_only(
     _assert_no_verified(payload)
 
 
-@pytest.mark.skipif(
-    _APPLY_SUPPORTED,
-    reason="win32-only: verify must fail closed without O_NOFOLLOW/dir_fd",
-)
-def test_verify_fail_closed_without_posix_nofollow(
-    project: Path, capsys: pytest.CaptureFixture[str]
+def test_verify_fail_closed_without_nofollow_backend(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._posix_nofollow_ready", lambda: False
+    )
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._windows_nofollow_ready", lambda: False
+    )
     current = "before\nalpha\nafter\n"
     target = _write_target(project, current)
     desc = _write_descriptor(project, _payload(current))

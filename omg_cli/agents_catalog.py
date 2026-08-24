@@ -11,8 +11,9 @@ Fail-closed: missing catalog, missing agent file, extra uncatalogued
 disagrees with catalog ``capabilityMode`` / ``permissionMode``. Grok agent
 files must use those camelCase keys; snake_case aliases are rejected so a
 read-only/plan agent cannot silently fall back to host defaults. Agent
-markdown is opened with ``O_NOFOLLOW|O_NONBLOCK`` and read through that
-pinned descriptor (fail-closed without POSIX ``dir_fd``). Never ``execute`` /
+markdown is opened with ``O_NOFOLLOW|O_NONBLOCK`` (POSIX) or Windows
+CreateFileW/NtCreateFile ``FILE_FLAG_OPEN_REPARSE_POINT`` and read through
+that pinned handle (fail-closed without a no-follow backend). Never ``execute`` /
 ``all``. Reviewer / verifier / planner tiers cannot receive ``read-write``.
 
 Category routing (``resolve_category``) is deterministic and inspectable.
@@ -26,13 +27,18 @@ import errno
 import json
 import os
 import stat
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from omg_cli.catalog_yaml import CatalogYamlError, parse_yaml
+from omg_cli.win32_nofollow import (
+    Win32NofollowError,
+    read_relative_regular,
+    windows_nofollow_ready,
+    write_path_regular,
+)
 
 SCHEMA = "omg-agents-catalog/v1"
 KIND = "read_only_machine_catalog"
@@ -415,13 +421,44 @@ def _posix_nofollow_ready() -> bool:
     )
 
 
+def _windows_nofollow_ready() -> bool:
+    return windows_nofollow_ready()
+
+
+def _read_plugin_regular_text_windows(root: Path, relative: str) -> str:
+    rel = _posix_relative(relative, label="agent file")
+    parts = rel.split("/")
+    try:
+        body, _mode = read_relative_regular(
+            root, parts, max_bytes=MAX_AGENT_FILE_BYTES
+        )
+    except Win32NofollowError as exc:
+        if exc.kind in {"symlink", "missing", "not_regular"}:
+            raise AgentsCatalogError(f"missing agent: {relative}") from exc
+        if exc.kind == "size":
+            raise AgentsCatalogError(
+                f"agent file exceeds size bound: {relative}"
+            ) from exc
+        if exc.kind == "changed":
+            raise AgentsCatalogError(
+                f"agent file changed while reading: {relative}"
+            ) from exc
+        raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+    try:
+        return body.decode("utf-8")
+    except UnicodeError as exc:
+        raise AgentsCatalogError(f"cannot read agent: {relative}") from exc
+
+
 def _read_plugin_regular_text(root: Path, relative: str) -> str:
     """Read a plugin-relative regular file without following a swapped symlink."""
 
     rel = _posix_relative(relative, label="agent file")
     if not _posix_nofollow_ready():
+        if _windows_nofollow_ready():
+            return _read_plugin_regular_text_windows(root, relative)
         raise AgentsCatalogError(
-            "agent catalog load requires POSIX O_NOFOLLOW/dir_fd"
+            "agent catalog load requires POSIX O_NOFOLLOW/dir_fd or Windows no-follow open"
         )
     parts = rel.split("/")
     if not parts or any(not part for part in parts):
@@ -1033,23 +1070,15 @@ def _atomic_write_text(path: Path, text: str) -> None:
     if _posix_nofollow_ready():
         _atomic_nofollow_write(path, data)
         return
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    if _windows_nofollow_ready():
+        try:
+            write_path_regular(path, data)
+        except Win32NofollowError as exc:
+            raise AgentsCatalogError(f"cannot write {path}: {exc}") from exc
+        return
+    raise AgentsCatalogError(
+        "agent catalog write requires POSIX O_NOFOLLOW/dir_fd or Windows no-follow open"
     )
-    try:
-        os.write(fd, data)
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
-        os.replace(tmp, path)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        if os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
 
 
 def _atomic_nofollow_write(path: Path, data: bytes) -> None:
