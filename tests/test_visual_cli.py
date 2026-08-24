@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -327,6 +328,67 @@ def _argv(tmp_path: Path, *rest: str) -> list[str]:
     return ["--project-root", str(tmp_path), "--json", *rest]
 
 
+def _hide_path_screencapture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hermetic: no PATH /usr/sbin screencapture fallback (not a fake pass)."""
+    orig_which = shutil.which
+
+    def fake_which(cmd: str | None = None, *args: object, **kwargs: object) -> str | None:
+        name = Path(str(cmd or "")).name.lower()
+        if name in {"screencapture", "screencapture.exe"}:
+            return None
+        return orig_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("omg_cli.visual_runtime.shutil.which", fake_which)
+    monkeypatch.setattr(
+        "omg_cli.visual_runtime.MACOS_SCREENCAPTURE",
+        Path("/nonexistent/omg-no-screencapture"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_hide_path_screencapture(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hide_path_screencapture(monkeypatch)
+
+
+def _install_fake_path_screencapture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """PATH ``screencapture`` that writes PNG to the last argv (ignores env)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "screencapture"
+    png_hex = (
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"PNG = bytes.fromhex({png_hex!r})\n"
+        "if len(sys.argv) < 2:\n"
+        "    raise SystemExit('missing output path')\n"
+        "dest = Path(sys.argv[-1])\n"
+        "if dest.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.gif'}:\n"
+        "    raise SystemExit('last argv is not an output file')\n"
+        "dest.parent.mkdir(parents=True, exist_ok=True)\n"
+        "dest.write_bytes(PNG)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.delenv("OMG_VISUAL_CAPTURE", raising=False)
+
+    def fake_which(cmd: str | None = None, *args: object, **kwargs: object) -> str | None:
+        name = Path(str(cmd or "")).name.lower()
+        if name in {"screencapture", "screencapture.exe"}:
+            return str(fake)
+        return None
+
+    monkeypatch.setattr("omg_cli.visual_runtime.shutil.which", fake_which)
+    return fake
+
+
 def test_runtime_does_not_import_pixel_decoders() -> None:
     banned = {"PIL", "Pillow", "pillow", "playwright", "numpy"}
     paths = (
@@ -370,7 +432,11 @@ def test_capture_fake_driver(tmp_path: Path, capsys) -> None:
     assert (tmp_path / ".omg" / "artifacts" / "visual" / "cap1" / "current.png").is_file()
 
 
-def test_capture_none_is_blocked_not_fake_pass(tmp_path: Path, capsys) -> None:
+def test_capture_none_is_blocked_not_fake_pass(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hide_path_screencapture(monkeypatch)
+    monkeypatch.delenv("OMG_VISUAL_CAPTURE", raising=False)
     _seed(tmp_path)
     cfg = _write_config(tmp_path, _compat_cfg())
     rc = main(_argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "capnone"))
@@ -699,6 +765,7 @@ def test_ralph_no_verified_mutation(tmp_path: Path, capsys) -> None:
 def test_doctor_visual_capture_none(monkeypatch, tmp_path: Path) -> None:
     from omg_cli.doctor import check_visual_capture
 
+    _hide_path_screencapture(monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OMG_VISUAL_CAPTURE", raising=False)
     monkeypatch.delenv("OMG_PROJECT_ROOT", raising=False)
@@ -709,7 +776,11 @@ def test_doctor_visual_capture_none(monkeypatch, tmp_path: Path) -> None:
     assert "playwright" not in detail.lower() or "not required" in detail.lower() or "none" in detail
 
 
-def test_yaml_config_roundtrip(tmp_path: Path, capsys) -> None:
+def test_yaml_config_roundtrip(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hide_path_screencapture(monkeypatch)
+    monkeypatch.delenv("OMG_VISUAL_CAPTURE", raising=False)
     _seed(tmp_path)
     yaml_text = (
         "width: 200\n"
@@ -1095,3 +1166,149 @@ def test_overlay_missing_flags_are_usage(capsys) -> None:
     payload = _out(capsys)
     err = payload.get("error") or {}
     assert err.get("code") == "E_USAGE" or payload.get("error_code") == "E_USAGE"
+
+
+class _FakeProc:
+    def __init__(self, code: int = 0, stderr: str = "") -> None:
+        self.returncode = code
+        self.stdout = ""
+        self.stderr = stderr
+
+
+def test_execute_capture_command_appends_screencapture_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.visual_runtime import ENV_OUTPUT, execute_capture_command
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kwargs.get("env") or {})
+        return _FakeProc()
+
+    monkeypatch.setattr("omg_cli.visual_runtime.subprocess.run", fake_run)
+    output = tmp_path / "out.png"
+    result = execute_capture_command(
+        ["screencapture", "-x"],
+        root=tmp_path,
+        output=output,
+        env={},
+    )
+    assert seen["argv"] == ["screencapture", "-x", str(output)]
+    assert seen["env"][ENV_OUTPUT] == str(output)
+    assert result["status"] == "captured"
+    assert result["exit_code"] == 0
+    for key in ("approved", "passes", "verified"):
+        assert key not in result
+    result = execute_capture_command(
+        ["screencapture.exe", "-x"],
+        root=tmp_path,
+        output=output,
+        env={},
+    )
+    assert seen["argv"] == ["screencapture.exe", "-x", str(output)]
+    assert result["status"] == "captured"
+    result = execute_capture_command(
+        ["screencapture", "-x", str(output)],
+        root=tmp_path,
+        output=output,
+        env={},
+    )
+    assert seen["argv"] == ["screencapture", "-x", str(output)]
+
+
+def test_execute_capture_command_substitutes_output_placeholders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.visual_runtime import ENV_OUTPUT, execute_capture_command
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kwargs.get("env") or {})
+        return _FakeProc()
+
+    monkeypatch.setattr("omg_cli.visual_runtime.subprocess.run", fake_run)
+    output = tmp_path / "current.png"
+    result = execute_capture_command(
+        ["mycap", "--out", "{output}"],
+        root=tmp_path,
+        output=output,
+        env={},
+    )
+    assert seen["argv"] == ["mycap", "--out", str(output)]
+    assert seen["env"][ENV_OUTPUT] == str(output)
+    assert result["status"] == "captured"
+
+    result = execute_capture_command(
+        ["screencapture", "-x", "{OMG_VISUAL_OUTPUT}"],
+        root=tmp_path,
+        output=output,
+        env={},
+    )
+    assert seen["argv"] == ["screencapture", "-x", str(output)]
+    assert result["status"] == "captured"
+
+
+def test_diagnose_path_screencapture_keeps_absolute_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.visual_runtime import diagnose_capture_source
+
+    monkeypatch.setattr(
+        "omg_cli.visual_runtime.discover_path_screencapture",
+        lambda environ=None: "/usr/sbin/screencapture",
+    )
+    diagnosis = diagnose_capture_source({}, env={})
+    assert diagnosis["source"] == "path"
+    assert diagnosis["command"] == ["/usr/sbin/screencapture", "-x"]
+
+
+def test_diagnose_path_screencapture_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.visual_runtime import diagnose_capture_source
+
+    fake = _install_fake_path_screencapture(tmp_path, monkeypatch)
+    diagnosis = diagnose_capture_source({}, env={})
+    assert diagnosis["source"] == "path"
+    assert diagnosis["status"] == "ready"
+    assert diagnosis["command"] == [str(fake), "-x"]
+    assert diagnosis["playwright_required"] is False
+    assert diagnosis["block_code"] is None
+    assert Path(fake).name == "screencapture"
+
+
+def test_capture_path_screencapture_writes_via_output_argv(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.visual_runtime import diagnose_capture_source
+
+    _seed(tmp_path)
+    fake = _install_fake_path_screencapture(tmp_path, monkeypatch)
+    diagnosis = diagnose_capture_source({}, env={})
+    assert diagnosis["source"] == "path"
+    assert diagnosis["command"] == [str(fake), "-x"]
+    cfg = _write_config(tmp_path, _compat_cfg())
+    rc = main(
+        _argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "pathcap")
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    result = payload["result"]
+    assert payload["ok"] is True
+    assert payload["command"] == "visual.capture"
+    assert result["status"] == "captured"
+    assert result["source"] == "path"
+    assert result["command"][0] == str(fake)
+    assert result["playwright_required"] is False
+    current = tmp_path / ".omg" / "artifacts" / "visual" / "pathcap" / "current.png"
+    assert current.is_file()
+    assert current.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    _assert_no_forbidden(payload)
+    encoded = json.dumps(payload)
+    for token in ("approved", "passes", "verified"):
+        assert token not in encoded
+    assert not (tmp_path / ".omg" / "state").exists()

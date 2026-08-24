@@ -56,6 +56,11 @@ ENV_CAPTURE = "OMG_VISUAL_CAPTURE"
 ENV_OUTPUT = "OMG_VISUAL_OUTPUT"
 ENV_FAKE_SOURCE = "OMG_VISUAL_FAKE_SOURCE"
 ARTIFACT_DIR = ".omg/artifacts/visual"
+MACOS_SCREENCAPTURE = Path("/usr/sbin/screencapture")
+PATH_SCREENCAPTURE_ARGV = ("screencapture", "-x")
+SCREENCAPTURE_NAMES = frozenset({"screencapture", "screencapture.exe"})
+OUTPUT_PLACEHOLDERS = ("{output}", "{OMG_VISUAL_OUTPUT}")
+OUTPUT_ARG_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 MAX_CAPTURE_ERROR_CHARS = 4096
 MAX_CONFIG_BYTES = 256 * 1024
 CAPTURE_TIMEOUT_SEC = 60
@@ -465,13 +470,62 @@ def argv_from_env(raw: str) -> list[str]:
     return shlex.split(text, posix=os.name != "nt")
 
 
+def discover_path_screencapture(
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Return a PATH (or macOS default) ``screencapture`` executable, if present."""
+    which_kw: dict[str, str] = {}
+    if environ is not None and "PATH" in environ:
+        which_kw["path"] = str(environ.get("PATH") or "")
+    found = shutil.which("screencapture", **which_kw) or shutil.which(
+        "screencapture.exe", **which_kw
+    )
+    if found:
+        return found
+    try:
+        if MACOS_SCREENCAPTURE.is_file():
+            return str(MACOS_SCREENCAPTURE)
+    except OSError:
+        return None
+    return None
+
+
+def _looks_like_capture_output_arg(arg: str) -> bool:
+    if any(token in arg for token in OUTPUT_PLACEHOLDERS):
+        return True
+    return Path(arg).suffix.lower() in OUTPUT_ARG_SUFFIXES
+
+
+def capture_child_argv(argv: Sequence[str], output: Path) -> list[str]:
+    """Render capture argv with an output path tools can consume.
+
+    Substitutes ``{output}`` and ``{OMG_VISUAL_OUTPUT}``. For ``screencapture``
+    (and ``screencapture.exe``), appends the output path when no argv entry
+    already looks like an image output file or placeholder.
+    """
+    dest = str(output)
+    raw = [str(item) for item in argv]
+    has_output = any(_looks_like_capture_output_arg(item) for item in raw)
+    rendered = [
+        item.replace("{output}", dest).replace("{OMG_VISUAL_OUTPUT}", dest)
+        for item in raw
+    ]
+    if (
+        rendered
+        and Path(rendered[0]).name.lower() in SCREENCAPTURE_NAMES
+        and not has_output
+    ):
+        rendered.append(dest)
+    return rendered
+
+
 def diagnose_capture_source(
     config: Mapping[str, Any] | None = None,
     *,
     env: Mapping[str, str] | None = None,
     config_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Precedence: (1) config capture.command (2) OMG_VISUAL_CAPTURE (3) none."""
+    """Precedence: (1) config capture.command (2) OMG_VISUAL_CAPTURE (3) PATH screencapture (4) none."""
     environ = env if env is not None else os.environ
     loaded = dict(config or {})
     if config_path is not None and not loaded:
@@ -512,14 +566,22 @@ def diagnose_capture_source(
             if command:
                 source = "env"
     if source == "none" or not command:
-        return {
-            "source": "none",
-            "command": None,
-            "status": "blocked",
-            "block_code": "capture_unavailable",
-            "detail": "none (blocked; not a fake pass); set capture.command or OMG_VISUAL_CAPTURE",
-            "playwright_required": False,
-        }
+        path_bin = discover_path_screencapture(environ)
+        if path_bin:
+            command = [path_bin, *PATH_SCREENCAPTURE_ARGV[1:]]
+            source = "path"
+        else:
+            return {
+                "source": "none",
+                "command": None,
+                "status": "blocked",
+                "block_code": "capture_unavailable",
+                "detail": (
+                    "none (blocked; not a fake pass); set capture.command or "
+                    "OMG_VISUAL_CAPTURE or install screencapture on PATH"
+                ),
+                "playwright_required": False,
+            }
     return {
         "source": source,
         "command": command,
@@ -772,9 +834,20 @@ def execute_capture_command(
     if extra_env:
         merged.update(extra_env)
     merged[ENV_OUTPUT] = str(output)
+    child_argv = capture_child_argv(argv, output)
+    if child_argv:
+        first = child_argv[0]
+        if Path(first).name.lower() in SCREENCAPTURE_NAMES and not os.path.isabs(first):
+            which_kw: dict[str, str] = {}
+            search_path = merged.get("PATH")
+            if search_path is not None:
+                which_kw["path"] = str(search_path)
+            found = shutil.which(first, **which_kw)
+            if found:
+                child_argv = [found, *child_argv[1:]]
     try:
         proc = subprocess.run(
-            list(argv),
+            child_argv,
             cwd=str(root),
             env=merged,
             capture_output=True,
@@ -1473,8 +1546,11 @@ __all__ = [
     "VisualReviewerError",
     "VisualRuntimeError",
     "confine_workspace_path",
+    "capture_child_argv",
     "diagnose_capture_source",
+    "discover_path_screencapture",
     "discover_visual_config_path",
+    "execute_capture_command",
     "enforce_independent_reviewer",
     "load_visual_config",
     "new_run_id",

@@ -61,6 +61,14 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   to `agent_closed`. Refs #72 (does not close).
 
 ### Added
+- **#75 leftover PATH screencapture capture default:** `omg visual capture`
+  discovers `screencapture` on PATH (or `/usr/sbin/screencapture`) after
+  `capture.command` and `OMG_VISUAL_CAPTURE`, and runs `screencapture -x`
+  with the output path delivered on argv (`{output}` /
+  `{OMG_VISUAL_OUTPUT}` substitution, or append for `screencapture`).
+  Missing config, env, and PATH binary stays `capture_unavailable` (not
+  a fake pass). Not Playwright and not Antigravity vision. Hermetic:
+  `tests/test_visual_cli.py`. Refs #75 (does not close).
 - **#73 leftover PATH language-server semantic result:** `omg tools lsp`
   against `rust-analyzer` (default stdio; `--stdio` is dropped because
   rust-analyzer rejects that flag) answers unknown server→client JSON-RPC
