@@ -40,6 +40,7 @@ from omg_cli.scip_codec import (
     ScipCodecError,
     decode_index,
     detect_scip_cli,
+    make_scip_symbol,
     occurrences_to_index,
     write_scip_file,
 )
@@ -1662,7 +1663,7 @@ def _scip_lite_occurrences(
                 "name": name,
                 "role": role,
                 "line": int(line),
-                "symbol_id": f"{rel}#{name}",
+                "symbol_id": make_scip_symbol(rel, name),
             }
         )
 

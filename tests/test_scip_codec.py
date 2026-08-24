@@ -9,7 +9,11 @@ from omg_cli.scip_codec import (
     classify_scip_cli_text,
     decode_index,
     detect_scip_cli,
+    encode_document,
+    encode_index,
     encode_occurrence,
+    looks_like_scip_symbol,
+    make_scip_symbol,
     occurrences_to_index,
     write_scip_file,
 )
@@ -39,7 +43,10 @@ def test_occurrences_roundtrip_packed_range() -> None:
     assert by_name["hello"]["role"] == "definition"
     assert by_name["hello"]["line"] == 2
     assert by_name["hello"]["path"] == "mod.py"
-    assert by_name["hello"]["symbol_id"] == "mod.py/hello"
+    hello_sym = by_name["hello"]["symbol_id"]
+    assert looks_like_scip_symbol(hello_sym)
+    assert hello_sym.startswith("omg ")
+    assert hello_sym.endswith("hello.")
     hashed = decode_index(
         occurrences_to_index(
             [
@@ -54,10 +61,35 @@ def test_occurrences_roundtrip_packed_range() -> None:
         )
     )
     assert hashed[0]["name"] == "hello"
-    assert hashed[0]["symbol_id"] == "mod.py#hello"
-    assert by_name["json"]["role"] == "reference"
-    packed = encode_occurrence(symbol="mod.py/hello", line=2, definition=True)
-    assert packed[:1] == b"\x0a"  # Occurrence.range=1 packed (wire type 2)
+    assert looks_like_scip_symbol(hashed[0]["symbol_id"])
+    assert hashed[0]["symbol_id"] != "mod.py#hello"
+
+
+def test_document_occurrences_use_proto_field_2() -> None:
+    from omg_cli.scip_codec import _read_fields
+
+    occ = encode_occurrence(symbol=make_scip_symbol("mod.py", "hello"), line=2, definition=True)
+    doc = encode_document(relative_path="mod.py", language="Python", occurrences=[occ])
+    fields = [field for field, _wire, _val in _read_fields(doc)]
+    assert 2 in fields
+    assert 6 not in fields
+    decoded = decode_index(encode_index([doc]))
+    assert decoded[0]["name"] == "hello"
+    fake = (
+        b"\x0a\x06mod.py"  # relative_path=1
+        + b"\x32" + bytes([len(occ)]) + occ  # field 6 is PositionEncoding, not occurrences
+    )
+    assert decode_index(encode_index([fake])) == []
+
+
+def test_make_scip_symbol_matches_grammar() -> None:
+    symbol = make_scip_symbol("pkg/mod.py", "hello")
+    assert looks_like_scip_symbol(symbol)
+    assert symbol.startswith("omg . . . ")
+    assert symbol.endswith("/hello.")
+    assert not looks_like_scip_symbol("mod.py#hello")
+    assert not looks_like_scip_symbol("pkg/mod.py/hello")
+    assert looks_like_scip_symbol("local hello")
 
 
 def test_decode_empty_index() -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 # scip.proto (subset): Index.documents=2, Document.relative_path=1,
-# Document.language=4, Document.occurrences=6, Occurrence.range=1,
+# Document.occurrences=2, Document.language=4, Occurrence.range=1,
 # Occurrence.symbol=2, Occurrence.symbol_roles=3.
 _WT_VARINT = 0
 _WT_LEN = 2
@@ -82,7 +82,7 @@ def encode_document(
     occurrences: list[bytes],
 ) -> bytes:
     parts = [_string(1, relative_path), _string(4, language)]
-    parts.extend(_ld(6, occ) for occ in occurrences)
+    parts.extend(_ld(2, occ) for occ in occurrences)
     return b"".join(parts)
 
 
@@ -137,11 +137,15 @@ def decode_index(blob: bytes) -> list[dict[str, Any]]:
         if field != 2 or wire != _WT_LEN or not isinstance(val, bytes):
             continue
         path = ""
+        occ_blobs: list[bytes] = []
         for dfield, dwire, dval in _read_fields(val):
             if dfield == 1 and dwire == _WT_LEN and isinstance(dval, bytes):
                 path = dval.decode("utf-8", errors="replace")
-            if dfield != 6 or dwire != _WT_LEN or not isinstance(dval, bytes):
-                continue
+            elif dfield == 2 and dwire == _WT_LEN and isinstance(dval, bytes):
+                occ_blobs.append(dval)
+        if not path:
+            continue
+        for dval in occ_blobs:
             symbol = ""
             role_bits = 0
             line = 0
@@ -164,8 +168,7 @@ def decode_index(blob: bytes) -> list[dict[str, Any]]:
             if not symbol or not path:
                 continue
             role = "definition" if role_bits & SYMBOL_ROLE_DEFINITION else "reference"
-            leaf = symbol.rsplit("#", 1)[-1]
-            name = leaf.rsplit("/", 1)[-1]
+            name = scip_symbol_display_name(symbol)
             occs.append(
                 {
                     "path": path,
@@ -187,7 +190,9 @@ def occurrences_to_index(occurrences: list[dict[str, Any]]) -> bytes:
         name = str(occ.get("name") or "")
         if not path or not name:
             continue
-        symbol = str(occ.get("symbol_id") or f"{path}/{name}")
+        symbol = str(occ.get("symbol_id") or "")
+        if not looks_like_scip_symbol(symbol):
+            symbol = make_scip_symbol(path, name)
         line = int(occ.get("line") or 0)
         definition = occ.get("role") == "definition"
         by_path.setdefault(path, []).append(
@@ -198,6 +203,48 @@ def occurrences_to_index(occurrences: list[dict[str, Any]]) -> bytes:
         for path, occs in by_path.items()
     ]
     return encode_index(docs)
+
+
+def _scip_ident(raw: str) -> str:
+    text = str(raw or "")
+    if text and all(ch.isalnum() or ch in "_+-$" for ch in text):
+        return text
+    return "`" + text.replace("`", "``") + "`"
+
+
+def _unescape_scip_ident(ident: str) -> str:
+    if ident.startswith("`") and ident.endswith("`") and len(ident) >= 2:
+        return ident[1:-1].replace("``", "`")
+    return ident
+
+
+def make_scip_symbol(path: str, name: str) -> str:
+    """SCIP Symbol grammar: ``scheme manager package version descriptors``."""
+    ns = _scip_ident(path)
+    ident = _scip_ident(name)
+    return f"omg . . . {ns}/{ident}."
+
+
+def looks_like_scip_symbol(symbol: str) -> bool:
+    text = str(symbol or "")
+    if text.startswith("local "):
+        rest = text[6:]
+        return bool(rest) and all(ch.isalnum() or ch in "_+-$" for ch in rest)
+    parts = text.split(" ", 4)
+    return len(parts) == 5 and bool(parts[0]) and parts[0] != "local"
+
+
+def scip_symbol_display_name(symbol: str) -> str:
+    text = str(symbol or "").strip()
+    if text.startswith("local "):
+        return text[6:]
+    last = text.rsplit("/", 1)[-1]
+    last = last.rsplit(" ", 1)[-1]
+    for suffix in (".", "#", ":", "!"):
+        if last.endswith(suffix):
+            last = last[:-1]
+            break
+    return _unescape_scip_ident(last)
 
 
 def classify_scip_cli_text(text: str) -> str:
