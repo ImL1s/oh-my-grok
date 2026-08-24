@@ -920,6 +920,15 @@ def _fail_open_journal(
             "verified": False,
         }
         return
+    if journal_source == WRAPPER_SOURCE:
+        omg_dir = Path(workspace) / ".omg"
+        if not (omg_dir / "state").exists() and not (omg_dir / "jobs").exists():
+            result["journal"] = {
+                "ok": False,
+                "skipped": "no_state_dir",
+                "verified": False,
+            }
+            return
     try:
         from omg_cli.runtime_events import append_bus_event
 

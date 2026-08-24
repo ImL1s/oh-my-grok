@@ -283,6 +283,7 @@ def test_rendered_standalone_preserves_receipt_validation_under_isolated_python(
 
 
 def test_wrapper_events_use_wrapper_source_not_host_inject(tmp_path) -> None:
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
     result = emit_wrapper_event(
         "job.terminal",
         {

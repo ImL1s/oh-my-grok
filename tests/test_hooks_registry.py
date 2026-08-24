@@ -750,6 +750,7 @@ def test_emit_wrapper_event_refuses_prompt_submit(tmp_path: Path) -> None:
 
 
 def test_emit_wrapper_event_journals_kinds_schema_and_post_hoc(tmp_path: Path) -> None:
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
     for kind, extra in (
         (
             "artifact.created",
@@ -790,6 +791,7 @@ def test_emit_wrapper_event_redacts_secrets_and_omits_verified(
 ) -> None:
     from omg_cli.runtime_events import source_journal_path
 
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
     emit_wrapper_event(
         "job.terminal",
         {
@@ -817,6 +819,7 @@ def test_emit_wrapper_event_redacts_secrets_and_omits_verified(
 
 
 def test_compact_handoff_emits_artifact_created(tmp_path: Path) -> None:
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
     payload = write_compact_handoff(
         tmp_path, run_id="run-9", session_id="sess-9", task_ids=["t1"]
     )
@@ -832,6 +835,7 @@ def test_compact_handoff_emits_artifact_created(tmp_path: Path) -> None:
 def test_write_edit_artifact_emits_artifact_created(tmp_path: Path) -> None:
     from omg_cli.edit_hygiene.artifacts import ARTIFACT_KIND, write_edit_artifact
 
+    (tmp_path / ".omg" / "state").mkdir(parents=True)
     rel = write_edit_artifact(
         tmp_path, {"kind": ARTIFACT_KIND, "note": "classified", "secret": "nope"}
     )
