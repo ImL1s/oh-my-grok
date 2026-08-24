@@ -9,6 +9,8 @@ First cut of [#77](https://github.com/ImL1s/oh-my-grok/issues/77). Extends
 
 ```text
 omg setup --runtime grok|antigravity|both --scope project|user [--force] [--here]
+omg setup import --from PATH [--dry-run] [--json]
+omg setup migrate --from PATH [--dry-run] [--json]
 ```
 
 Defaults (`grok` + `project`) keep today's project scaffold (AGENTS.md, gitignore,
@@ -16,6 +18,23 @@ global rules/hook). Those legacy steps run **inside** the install transaction
 (not as a separate `run_setup` call). `--runtime antigravity` still applies
 generic `.omg` gitignore init. User scope writes `~/.omg-user/` and does **not**
 create a project `.omg`. Setup from `$HOME` as a project is refused unless `--here`.
+
+`omg setup import` copy-safe ingests a file or directory of user artifacts
+(rules, skills, agents, hooks, MCP JSON) into `.omg/install/imported/`
+(`~/.omg-user/install/imported/` for `--scope user`) as `ownership=imported`
+with provenance (source posix path, sha256, byte_size, imported_at). It never
+follows symlinks and refuses credential-shaped bytes (`api_key`, `sk-`, bearer
+tokens, private-key PEM — same needles as medley inspect / redaction).
+`--dry-run` prints planned rows and writes nothing.
+
+`omg setup migrate` classifies a legacy GROK_HOME or project tree in place
+(managed / imported / user-owned / foreign) and records rows without overwriting
+user-owned files. `--dry-run` is honored. Apply fails closed on foreign or
+malformed classification (no `--force` override).
+
+`omg uninstall --yes` consults the install manifest when present: only
+receipt-owned or manifest-owned **unchanged** regular files are unlinked.
+On-disk sha256 drift is preserved. Project `.omg/state` is never deleted.
 
 ## Honesty
 

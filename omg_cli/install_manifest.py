@@ -1214,6 +1214,131 @@ def classify_auth(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     }
 
 
+def load_manifest(
+    *,
+    project_root: Path | None,
+    scope: str = "project",
+    strict: bool = False,
+) -> dict[str, Any] | None:
+    """Load a stored install manifest. Missing → None. Malformed → None or raise."""
+    if scope == "user":
+        path = user_manifest_path()
+        inspect_root = user_store()
+    elif project_root is None:
+        if strict:
+            raise InstallManifestError("E_SCOPE", "project scope requires a project root")
+        return None
+    else:
+        path = project_manifest_path(Path(project_root))
+        inspect_root = Path(project_root)
+    if path.is_symlink():
+        if strict:
+            raise InstallManifestError("E_SYMLINK", f"manifest path is a symlink: {path}")
+        return None
+    if not path.is_file():
+        return None
+    try:
+        _assert_parents_not_symlink(path, inspect_root)
+    except InstallManifestError:
+        if strict:
+            raise
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        if strict:
+            raise InstallManifestError(
+                "E_MALFORMED", f"malformed install manifest: {exc}"
+            ) from exc
+        return None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != SCHEMA
+        or raw.get("kind") != "omg_install_manifest"
+        or raw.get("scope") not in SCOPES
+        or not isinstance(raw.get("artifacts"), list)
+    ):
+        if strict:
+            raise InstallManifestError(
+                "E_MALFORMED",
+                "malformed install manifest: required schema/kind/scope/artifacts missing",
+            )
+        return None
+    return raw
+
+
+def persist_manifest(
+    document: dict[str, Any],
+    *,
+    project_root: Path | None,
+    scope: str,
+) -> Path:
+    """Write an install manifest. Honesty flags stay false. Never follows symlinks."""
+    if scope not in SCOPES:
+        raise InstallManifestError("E_SCOPE", f"scope must be one of {SCOPES}")
+    payload = dict(document)
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise InstallManifestError("E_MALFORMED", "manifest artifacts must be a list")
+    payload["schema"] = SCHEMA
+    payload["kind"] = "omg_install_manifest"
+    payload["scope"] = scope
+    payload["verified"] = False
+    payload["observed"] = False
+    payload["healthy"] = False
+    if not payload.get("transaction_id"):
+        payload["transaction_id"] = uuid.uuid4().hex
+    if not payload.get("created_at"):
+        payload["created_at"] = _utc_now()
+    payload["updated_at"] = _utc_now()
+    dest = (
+        user_manifest_path()
+        if scope == "user"
+        else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
+    )
+    install_root = _install_root(scope, project_root)
+    _assert_parents_not_symlink(dest, install_root)
+    _mkdir(dest.parent)
+    _write_text_nofollow(
+        dest,
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+    )
+    return dest
+
+
+def upsert_manifest_artifacts(
+    document: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge artifact rows by id. Never replace an existing user-owned row."""
+    payload = dict(document)
+    by_id: dict[str, dict[str, Any]] = {}
+    existing = payload.get("artifacts") or []
+    if not isinstance(existing, list):
+        existing = []
+    for row in existing:
+        if isinstance(row, dict) and row.get("id"):
+            by_id[str(row["id"])] = dict(row)
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        ident = str(row["id"])
+        prior = by_id.get(ident)
+        if prior is not None and prior.get("ownership") == "user-owned":
+            continue
+        by_id[ident] = dict(row)
+    payload["artifacts"] = list(by_id.values())
+    payload["verified"] = False
+    payload["observed"] = False
+    payload["healthy"] = False
+    return payload
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """Lexical containment (no symlink resolve)."""
+    return _lexical_under(path, root)
+
+
 def run_scoped_setup(
     *,
     runtime: str = "grok",
@@ -1261,7 +1386,14 @@ __all__ = [
     "classify_path",
     "desired_artifacts",
     "inspect_install_manifest",
+    "load_manifest",
+    "path_is_under",
+    "persist_manifest",
+    "project_manifest_path",
     "refuse_home_project",
     "rollback_interrupted",
     "run_scoped_setup",
+    "upsert_manifest_artifacts",
+    "user_manifest_path",
+    "user_store",
 ]

@@ -10,6 +10,19 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Added
+- **#77 leftover migrate/import:** `omg setup import --from PATH` copy-safe
+  ingests user artifacts into the versioned install manifest as
+  `ownership=imported` with provenance (source posix path, sha256, byte_size,
+  imported_at). Never follows symlinks; refuses credential-shaped bytes
+  (`api_key`, `sk-`, bearer tokens, private-key PEM). `omg setup migrate --from PATH`
+  classifies a legacy GROK_HOME / project `.omg` layout (managed / imported /
+  user-owned / foreign) without overwriting user-owned files; apply fails closed
+  on foreign/malformed rows. `--dry-run` writes nothing. `omg uninstall --yes`
+  preserves manifest-owned paths whose on-disk sha256 drifted and only unlinks
+  matching regular files; never deletes project `.omg/state`. File copy is **not**
+  live Grok/Antigravity discovery; doctor `observed` / `healthy` / `verified`
+  stay false. Does **not** close #77 (live clean-host matrix, doctor live
+  evidence, Windows O_NOFOLLOW remain). Refs #77.
 - **#69 catalog v6 remaining OMX-named file-store ops:** default Team catalog
   is schema v6 (42 named / 42 dispatched). The leftover reserved names
   (`mailbox-mark-notified`, `write-worker-identity`, `await-event`,
@@ -347,6 +360,12 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   remain open. Refs #71 (does not close).
 
 ### Fixed
+- **#77 leftover:** `omg uninstall --yes` no longer skips legacy global
+  hook removal just because *any* install manifest exists. `remove_global_hook`
+  is deferred only when the owned plan lists `user.grok.hook` (remove or
+  preserve). A skill-only import manifest still unlinks
+  `{GROK_HOME}/hooks/omg-pretool-deny.json`; drifted owned hooks stay
+  preserved. Refs #77.
 - **#73 tools sidecar leftovers:** `StdioLspTransport` answers server
   `workspace/configuration` requests with empty settings (not dropped by
   id mismatch) so hover/definition can complete. `omg tools doctor` emits

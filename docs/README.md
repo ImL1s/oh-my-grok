@@ -19,7 +19,7 @@ User-facing docs for the Grok Build plugin + `omg` CLI.
 | [visual-contract-v1.md](./visual-contract-v1.md) | Visual Contract V1 (pure `compare()` + `omg visual compare\|capture\|verdict\|ralph`; no approved/passes/verified; no pixel decode) |
 | [hooks-lifecycle.md](./hooks-lifecycle.md) | Lifecycle registry (#72): Grok PreToolUse/Stop vs passive hooks; no UserPromptSubmit inject |
 | [tools-sidecar.md](./tools-sidecar.md) | Tools sidecar (#73): `omg tools` LSP/AST-grep/CodeGraph/research; not Grok-native LSP |
-| [install-manifest.md](./install-manifest.md) | Install manifest (#77): `omg setup --runtime/--scope`; file copy is not live verification |
+| [install-manifest.md](./install-manifest.md) | Install manifest (#77): `omg setup --runtime/--scope`; `omg setup import` / `omg setup migrate`; file copy is not live verification |
 | [RELEASE.md](./RELEASE.md) · [RELEASE.zh.md](./RELEASE.zh.md) · [RELEASE.zh-TW.md](./RELEASE.zh-TW.md) | Maintainer release protocol |
 
 ## Skills (quick map)

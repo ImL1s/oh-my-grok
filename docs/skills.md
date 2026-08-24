@@ -146,7 +146,10 @@ Each skill’s **normative** playbook is its `SKILL.md`. Below is the operator s
 ```bash
 omg doctor
 omg setup                 # grok + project (default); also: --runtime grok|antigravity|both --scope project|user
-omg install-hook          # (re)install/repair just the global soft-gate; omg setup --no-global-hook opts out
+omg setup import --from PATH [--dry-run] [--json]
+omg setup migrate --from PATH [--dry-run] [--json]
+omg install-hook          # (re)install/repair just the global soft-gate
+# skip the global hook with setup flag --no-global-hook
 # after session restart:
 # read .omg/state/RESUME.md then:
 omg resume

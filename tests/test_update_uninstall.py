@@ -21,7 +21,8 @@ from omg_cli.guidance import (
     install_global_rules,
     uninstall_global_rules,
 )
-from omg_cli.uninstall_cmd import run_uninstall
+from omg_cli.install_manifest import persist_manifest
+from omg_cli.uninstall_cmd import _owned_plan_has_hook_artifact, run_uninstall
 from omg_cli.update_cmd import run_update
 from omg_cli.setup_cmd import install_package, read_install_receipt
 
@@ -987,3 +988,190 @@ def test_receipt_uninstall_rollback_reinstalls_host_copy_from_stage(
         read_install_receipt(path)["status"] == "uninstalled"
         for path in (grok_home / "omg" / "receipts").glob("*.json")
     )
+
+
+def test_uninstall_yes_preserves_hash_drifted_manifest_owned(tmp_path: Path, monkeypatch):
+    """Manifest-owned unchanged files unlink; drifted hashes are preserved."""
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    matching = tmp_path / ".omg" / "install" / "imported" / "skill" / "ok.md"
+    drifted = tmp_path / ".omg" / "install" / "imported" / "skill" / "edited.md"
+    matching.parent.mkdir(parents=True)
+    match_body = b"still owned\n"
+    matching.write_bytes(match_body)
+    drifted.write_bytes(b"user changed me\n")
+    persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [
+                {
+                    "id": "imported.skill.ok",
+                    "type": "skill",
+                    "target": str(matching),
+                    "ownership": "imported",
+                    "content_hash": hashlib.sha256(match_body).hexdigest(),
+                    "enabled": True,
+                },
+                {
+                    "id": "imported.skill.edited",
+                    "type": "skill",
+                    "target": str(drifted),
+                    "ownership": "OMG-managed",
+                    "content_hash": hashlib.sha256(b"original\n").hexdigest(),
+                    "enabled": True,
+                },
+            ],
+        },
+        project_root=tmp_path,
+        scope="project",
+    )
+    grok_home.mkdir()
+    fake = _fake_runner()
+    assert (
+        run_uninstall(
+            yes=True,
+            runner=fake,
+            home=grok_home,
+            project_root=tmp_path,
+            include_user_manifest=False,
+        )
+        == 0
+    )
+    assert not matching.exists()
+    assert drifted.read_bytes() == b"user changed me\n"
+
+
+def test_owned_plan_has_hook_artifact_requires_hook_id() -> None:
+    """An unrelated manifest (has_manifest, no hook id) must not skip legacy removal."""
+    skill_only = {
+        "has_manifest": True,
+        "remove": [{"id": "imported.skill.ok", "path": "/tmp/ok.md"}],
+        "preserve": [
+            {
+                "id": "imported.skill.edited",
+                "path": "/tmp/edited.md",
+                "reason": "hash-drift",
+            }
+        ],
+    }
+    assert _owned_plan_has_hook_artifact(skill_only) is False
+    drifted_hook = {
+        "has_manifest": True,
+        "remove": [],
+        "preserve": [
+            {
+                "id": "user.grok.hook",
+                "path": "/tmp/hooks/omg-pretool-deny.json",
+                "reason": "hash-drift",
+            }
+        ],
+    }
+    assert _owned_plan_has_hook_artifact(drifted_hook) is True
+    matching_hook = {
+        "has_manifest": True,
+        "remove": [
+            {
+                "id": "user.grok.hook",
+                "path": "/tmp/hooks/omg-pretool-deny.json",
+                "content_hash": "abc",
+            }
+        ],
+        "preserve": [],
+    }
+    assert _owned_plan_has_hook_artifact(matching_hook) is True
+
+
+def test_uninstall_yes_removes_hook_when_manifest_omits_hook(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """Skill-only manifest must not defer legacy hook removal."""
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    matching = tmp_path / ".omg" / "install" / "imported" / "skill" / "ok.md"
+    matching.parent.mkdir(parents=True)
+    match_body = b"still owned\n"
+    matching.write_bytes(match_body)
+    persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [
+                {
+                    "id": "imported.skill.ok",
+                    "type": "skill",
+                    "target": str(matching),
+                    "ownership": "imported",
+                    "content_hash": hashlib.sha256(match_body).hexdigest(),
+                    "enabled": True,
+                }
+            ],
+        },
+        project_root=tmp_path,
+        scope="project",
+    )
+    grok_home.mkdir()
+    hook = grok_home / "hooks" / "omg-pretool-deny.json"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("{}", encoding="utf-8")
+    fake = _fake_runner()
+    assert (
+        run_uninstall(
+            yes=True,
+            runner=fake,
+            home=grok_home,
+            project_root=tmp_path,
+            include_user_manifest=False,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "deferred to manifest-owned plan" not in out
+    assert not hook.exists()
+    assert not matching.exists()
+
+
+def test_uninstall_yes_preserves_drifted_owned_hook_and_skips_legacy(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """Manifest-owned drifted user.grok.hook stays; legacy remove_global_hook is skipped."""
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    grok_home.mkdir()
+    hook = grok_home / "hooks" / "omg-pretool-deny.json"
+    hook.parent.mkdir(parents=True)
+    live = b'{"hook":"user-edited"}\n'
+    hook.write_bytes(live)
+    persist_manifest(
+        {
+            "runtime": "grok",
+            "scope": "project",
+            "artifacts": [
+                {
+                    "id": "user.grok.hook",
+                    "type": "hook",
+                    "target": str(hook),
+                    "ownership": "OMG-managed",
+                    "content_hash": hashlib.sha256(b'{"hook":"original"}\n').hexdigest(),
+                    "enabled": True,
+                }
+            ],
+        },
+        project_root=tmp_path,
+        scope="project",
+    )
+    fake = _fake_runner()
+    assert (
+        run_uninstall(
+            yes=True,
+            runner=fake,
+            home=grok_home,
+            project_root=tmp_path,
+            include_user_manifest=False,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "global hook removal deferred to manifest-owned plan" in out
+    assert hook.is_file()
+    assert hook.read_bytes() == live

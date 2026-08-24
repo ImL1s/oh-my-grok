@@ -223,16 +223,29 @@ def _grok_home(home: Path | None) -> Path:
     return grok_home(home)
 
 
+def _owned_plan_has_hook_artifact(owned_plan: dict) -> bool:
+    """True when the surgical plan lists ``user.grok.hook`` (remove or preserve)."""
+    for bucket in ("remove", "preserve"):
+        for row in owned_plan.get(bucket) or []:
+            if isinstance(row, dict) and row.get("id") == "user.grok.hook":
+                return True
+    return False
+
+
 def run_uninstall(
     *,
     yes: bool = False,
     runner=subprocess.run,
     home: Path | None = None,
+    project_root: Path | None = None,
+    include_user_manifest: bool = False,
 ) -> int:
     """Remove OMG install surfaces. Requires --yes to mutate.
 
-    Never removes project ``.omg/`` state. Never deletes USER:OMG:POLICY blocks
-    (guidance.uninstall_global_rules preserves non-OMG content).
+    Never removes project ``.omg/state``. Never deletes USER:OMG:POLICY blocks
+    (guidance.uninstall_global_rules preserves non-OMG content). When an install
+    manifest exists, only receipt-owned or manifest-owned *unchanged* regular
+    files are unlinked; hash-drifted managed files are preserved.
     """
     gh = _grok_home(home).expanduser().resolve()
     from omg_cli.hook_install import managed_hook_paths
@@ -276,6 +289,14 @@ def run_uninstall(
         )
         return 1
 
+    from omg_cli.install_migrate import apply_owned_uninstall, plan_owned_uninstall
+
+    owned_plan = plan_owned_uninstall(
+        project_root=project_root,
+        include_user_manifest=include_user_manifest,
+        grok_home=gh,
+    )
+
     if not yes:
         print("omg uninstall: dry run (no changes). Would remove:")
         print("  - grok plugin uninstall oh-my-grok --confirm")
@@ -290,7 +311,14 @@ def run_uninstall(
             f"  - ~/.local/bin/omg only if it is a symlink into this checkout "
             f"({checkout})"
         )
-        print("  - project .omg/ state: NOT removed (intentionally left untouched)")
+        print("  - project .omg/state: NOT removed (intentionally left untouched)")
+        if owned_plan.get("has_manifest"):
+            for row in owned_plan.get("remove") or []:
+                print(f"  - manifest-owned unchanged: {row.get('path')}")
+            for row in owned_plan.get("preserve") or []:
+                print(
+                    f"  - preserve ({row.get('reason')}): {row.get('path')}"
+                )
         print("re-run with --yes to actually perform removal")
         return 0
 
@@ -453,34 +481,42 @@ def run_uninstall(
 
     # 2. remove global hook (json FIRST, then standalone .py — never leave an
     #    active json pointing at a missing script). Shared with the installer.
+    #    Skip only when the owned plan actually lists user.grok.hook (remove or
+    #    preserve). A skill-only / unrelated manifest must not leave the hook
+    #    behind. Manifest-owned drifted hooks stay preserved; matching owned
+    #    paths are unlinked surgically later.
+    skip_legacy_hooks = receipt is None and _owned_plan_has_hook_artifact(owned_plan)
     try:
         from omg_cli.hook_install import remove_global_hook
 
-        if receipt is not None:
-            owned = {
-                str(row.get("path")): str(row.get("identity"))
-                for row in receipt.get("owned_inventory", [])
-                if isinstance(row, dict) and row.get("kind") == "global_hook"
-            }
-            import hashlib
-
-            for managed in hook_paths:
-                expected_hook_identity = owned.get(str(managed))
-                if managed.is_file() and (
-                    managed.is_symlink()
-                    or expected_hook_identity is None
-                    or hashlib.sha256(managed.read_bytes()).hexdigest()
-                    != expected_hook_identity
-                ):
-                    return rollback(f"global hook changed concurrently: {managed}")
-        removed = remove_global_hook(home=gh)
-        if receipt is not None and any(os.path.lexists(path) for path in hook_paths):
-            raise OSError("receipt-owned global hook removal was incomplete")
-        if removed:
-            for r in removed:
-                print(f"omg uninstall: removed {r}")
+        if skip_legacy_hooks:
+            print("omg uninstall: global hook removal deferred to manifest-owned plan")
         else:
-            print(f"omg uninstall: global hook absent ({hook})")
+            if receipt is not None:
+                owned = {
+                    str(row.get("path")): str(row.get("identity"))
+                    for row in receipt.get("owned_inventory", [])
+                    if isinstance(row, dict) and row.get("kind") == "global_hook"
+                }
+                import hashlib
+
+                for managed in hook_paths:
+                    expected_hook_identity = owned.get(str(managed))
+                    if managed.is_file() and (
+                        managed.is_symlink()
+                        or expected_hook_identity is None
+                        or hashlib.sha256(managed.read_bytes()).hexdigest()
+                        != expected_hook_identity
+                    ):
+                        return rollback(f"global hook changed concurrently: {managed}")
+            removed = remove_global_hook(home=gh)
+            if receipt is not None and any(os.path.lexists(path) for path in hook_paths):
+                raise OSError("receipt-owned global hook removal was incomplete")
+            if removed:
+                for r in removed:
+                    print(f"omg uninstall: removed {r}")
+            else:
+                print(f"omg uninstall: global hook absent ({hook})")
     except Exception as exc:  # noqa: BLE001 — legacy remains best-effort
         print(f"omg uninstall: could not remove global hook: {exc}", file=sys.stderr)
         if receipt is not None:
@@ -490,6 +526,7 @@ def run_uninstall(
     try:
         from omg_cli.guidance import GuidanceCorruptionError, uninstall_global_rules
 
+        # Always use block-aware removal so merged user text in omg.md is kept.
         path, action = uninstall_global_rules(home=gh)
         if receipt is not None:
             from omg_cli.guidance import rules_status
@@ -635,8 +672,16 @@ def run_uninstall(
             else:
                 print(f"omg uninstall: removed immutable stage {stage}")
 
-    # 6. never touch project .omg/
+    # 6. manifest-owned unchanged regular files (never .omg/state, never drift)
+    if owned_plan.get("has_manifest"):
+        applied = apply_owned_uninstall(owned_plan)
+        for path in applied.get("removed") or []:
+            print(f"omg uninstall: removed manifest-owned {path}")
+        for path in applied.get("preserved") or []:
+            print(f"omg uninstall: preserved {path}")
+
+    # 7. never touch project .omg/state
     print(
-        "omg uninstall: project `.omg/` state was intentionally left untouched"
+        "omg uninstall: project `.omg/state` was intentionally left untouched"
     )
     return 0
