@@ -805,6 +805,7 @@ def _build_pane_record(
 
     rec_inbox: str | None = None
     interactive_nonce: str | None = None
+    tui_ready_overlay = None
     if want_interactive:
         overlay = _overlay_interactive_scale_worker(
             root=root,
@@ -836,6 +837,7 @@ def _build_pane_record(
         prompt_delivery = "interactive-tty"
         rec_inbox = overlay["inbox_relpath"]
         interactive_nonce = str(overlay["interactive_nonce"])
+        tui_ready_overlay = overlay.get("tui_ready_path")
         artifact_paths = [
             Path(overlay["inbox_path"]),
             Path(overlay["exec_script"]),
@@ -898,6 +900,8 @@ def _build_pane_record(
     }
     if interactive_nonce:
         record["interactive_nonce"] = interactive_nonce
+    if want_interactive and tui_ready_overlay is not None:
+        record["tui_ready_path"] = str(tui_ready_overlay)
     from omg_cli.team.io_capability import (
         interactive_pane_io_defaults,
         stamp_io_capability,
@@ -1113,6 +1117,7 @@ def _reuse_prepared_pane_record(
 
     rec_inbox: str | None = None
     interactive_nonce: str | None = None
+    tui_ready_overlay = None
     if want_interactive:
         overlay = _overlay_interactive_scale_worker(
             root=root,
@@ -1144,6 +1149,7 @@ def _reuse_prepared_pane_record(
         prompt_delivery = "interactive-tty"
         rec_inbox = overlay["inbox_relpath"]
         interactive_nonce = str(overlay["interactive_nonce"])
+        tui_ready_overlay = overlay.get("tui_ready_path")
         candidates = [argv_path]
 
     expected_bodies = {
@@ -1231,6 +1237,8 @@ def _reuse_prepared_pane_record(
     }
     if interactive_nonce:
         record["interactive_nonce"] = interactive_nonce
+    if want_interactive and tui_ready_overlay is not None:
+        record["tui_ready_path"] = str(tui_ready_overlay)
     from omg_cli.team.io_capability import (
         interactive_pane_io_defaults,
         stamp_io_capability,
@@ -7001,6 +7009,17 @@ def _relaunch_dead_incomplete_workers_locked(
                 start_command=start_command,
             )
             if adopted is None:
+                from omg_cli.team.interactive import (
+                    InteractiveTeamError,
+                    clear_tui_ready_sidecar,
+                )
+
+                # Only when we will spawn a new wrapper. Adopting an
+                # already-running relaunch pane must keep its sidecar.
+                try:
+                    clear_tui_ready_sidecar(rec.get("tui_ready_path"))
+                except InteractiveTeamError as exc:
+                    raise TeamError(str(exc)) from exc
                 old_pane = rec.get("pane_id")
                 if isinstance(old_pane, str) and old_pane:
                     absent, absent_err = _pane_proven_absent(old_pane)

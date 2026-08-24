@@ -4259,6 +4259,7 @@ def _create_inside_dedicated_window(
 # ---------------------------------------------------------------------------
 
 WORKER_PANE_NONCE_OPTION = "@omg_worker_nonce"
+LAUNCH_NONCE_OPTION = "@omg_launch_nonce"
 
 
 @dataclass(frozen=True)
@@ -4291,7 +4292,13 @@ def bind_worker_pane_owner(
     launch_nonce: str | None = None,
     socket_path: str | None = None,
 ) -> None:
-    """Stamp per-attempt ``@omg_worker_nonce`` and strict-read it back."""
+    """Stamp per-attempt ``@omg_worker_nonce`` (and pane ``@omg_launch_nonce``).
+
+    ``display-message '#{@omg_launch_nonce}'`` can inherit the window/session
+    option. ExactPaneProof / ``team status`` use pane-scoped
+    ``show-options -p`` with no fallback, so same-window scale must stamp
+    the pane option or scaled workers stay ``STATUS_UNKNOWN`` forever.
+    """
     if _TMUX_PANE_ID.fullmatch(pane_id) is None:
         raise TmuxTeamError(f"bind_worker_pane_owner: invalid pane id {pane_id!r}")
     if not isinstance(pane_owner_nonce, str) or not pane_owner_nonce:
@@ -4326,6 +4333,38 @@ def bind_worker_pane_owner(
     )
     if show.returncode != 0 or (show.stdout or "").strip() != pane_owner_nonce:
         raise TmuxTeamError("worker pane owner nonce readback failed")
+    if launch_nonce is not None:
+        if not isinstance(launch_nonce, str) or not launch_nonce or "\0" in launch_nonce:
+            raise TmuxTeamError("bind_worker_pane_owner: launch_nonce required when provided")
+        launch_set = [
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            LAUNCH_NONCE_OPTION,
+            launch_nonce,
+        ]
+        launch_r = _tmux_run_if_identity(
+            launch_set,
+            target=pane_id,
+            expected_server=server,
+            socket_path=sock,
+            window_id=expected_window_id,
+            expected_session_id=expected_session_id,
+            pane_id=pane_id,
+        )
+        if launch_r.returncode != 0:
+            err = (launch_r.stderr or launch_r.stdout or "").strip()[:400]
+            raise TmuxTeamError(f"failed to stamp worker pane launch nonce: {err}")
+        launch_show = _tmux_run(
+            ["show-options", "-p", "-v", "-t", pane_id, LAUNCH_NONCE_OPTION],
+            socket_path=sock,
+        )
+        if (
+            launch_show.returncode != 0
+            or (launch_show.stdout or "").strip() != launch_nonce
+        ):
+            raise TmuxTeamError("worker pane launch nonce readback failed")
     probe = _tmux_run(
         [
             "display-message",
@@ -4335,7 +4374,7 @@ def bind_worker_pane_owner(
             "#{pane_id}\t#{window_id}\t#{session_id}\t"
             f"#{{{WORKER_PANE_NONCE_OPTION}}}"
             + (
-                "\t#{@omg_launch_nonce}"
+                f"\t#{{{LAUNCH_NONCE_OPTION}}}"
                 if launch_nonce is not None
                 else ""
             ),

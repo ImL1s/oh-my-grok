@@ -45,6 +45,7 @@ QUALIFIED_INTERACTIVE_PROVIDERS: Final[frozenset[str]] = frozenset({"grok", "fix
 
 INTERACTIVE_FIXTURE_RELATIVE: Final = "tests/fixtures/providers/interactive_tty.py"
 INTERACTIVE_NONCE_ENV: Final = "OMG_TEAM_INTERACTIVE_NONCE"
+TUI_READY_FILE_ENV: Final = "OMG_TEAM_TUI_READY_FILE"
 TUI_READY_PREFIX: Final = "TUI_READY:"
 INTERACTIVE_GATE_PHASE: Final = "tui_ready"
 INTERACTIVE_WRAPPER_MODULE: Final = "omg_cli.team.interactive_wrapper"
@@ -333,10 +334,16 @@ def write_interactive_exec_script(
     _refuse_symlink_artifact(dest)
     exports: list[str] = []
     for key, val in sorted((extra_env or {}).items()):
-        if key != INTERACTIVE_NONCE_ENV:
+        if key not in {INTERACTIVE_NONCE_ENV, TUI_READY_FILE_ENV}:
             raise InteractiveTeamError(f"refused interactive exec env {key!r}")
         if not isinstance(val, str) or not val or "\x00" in val or "\n" in val:
-            raise InteractiveTeamError("interactive nonce env is invalid")
+            raise InteractiveTeamError(f"interactive exec env {key!r} is invalid")
+        if key == TUI_READY_FILE_ENV:
+            ready = Path(val)
+            if not ready.is_absolute() or ready.suffix != ".tui-ready":
+                raise InteractiveTeamError("interactive tui-ready path is invalid")
+            if any(part == ".." for part in ready.parts):
+                raise InteractiveTeamError("interactive tui-ready path is invalid")
         exports.append(f"export {shlex.quote(key)}={shlex.quote(val)}")
     if pythonpath:
         pp = str(pythonpath)
@@ -544,11 +551,16 @@ def overlay_interactive_launch(
         token = parse_interactive_nonce_from_exec_script(exec_script)
     if token is None:
         token = make_interactive_nonce()
+    ready_path = tdir / f"{tid}.a{att}.tui-ready"
+    clear_tui_ready_sidecar(ready_path)
+    extra_env = {INTERACTIVE_NONCE_ENV: token}
+    if wrap_module:
+        extra_env[TUI_READY_FILE_ENV] = str(ready_path.resolve())
     write_interactive_exec_script(
         dest=exec_script,
         argv=argv,
         worktree=worktree,
-        extra_env={INTERACTIVE_NONCE_ENV: token},
+        extra_env=extra_env,
         wrap_module=wrap_module,
         python_executable=python_executable,
         pythonpath=resolved_pythonpath if wrap_module else None,
@@ -561,6 +573,7 @@ def overlay_interactive_launch(
         "inbox_path": inbox_path,
         "exec_script": exec_script,
         "interactive_nonce": token,
+        "tui_ready_path": ready_path if wrap_module else None,
         "attempt": att,
         "provider": provider,
         "needs_pty": True,
@@ -673,6 +686,65 @@ def capture_contains_tui_ready(text: str, nonce: str) -> bool:
     return False
 
 
+def clear_tui_ready_sidecar(path: str | Path | None) -> None:
+    """Remove a stale TUI_READY sidecar before spawn/relaunch.
+
+    Fail closed if the file remains: a leftover valid marker would promote a
+    replacement pane as soon as ExactPaneProof matches, before the new
+    wrapper emits TUI_READY.
+    """
+    if path is None:
+        return
+    try:
+        dest = Path(path)
+    except (TypeError, ValueError):
+        return
+    if dest.suffix != ".tui-ready" or any(part == ".." for part in dest.parts):
+        return
+    try:
+        dest.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        still = False
+        try:
+            still = dest.is_file() and not dest.is_symlink()
+        except OSError:
+            still = True
+        if still:
+            raise InteractiveTeamError(
+                f"failed to unlink TUI_READY sidecar {dest}: {exc}"
+            ) from exc
+        return
+    try:
+        leftover = dest.is_file() and not dest.is_symlink()
+    except OSError as exc:
+        raise InteractiveTeamError(
+            f"failed to confirm TUI_READY sidecar unlinked {dest}: {exc}"
+        ) from exc
+    if leftover:
+        raise InteractiveTeamError(
+            f"TUI_READY sidecar still present after unlink {dest}"
+        )
+
+
+def file_contains_tui_ready(path: str | Path, nonce: str) -> bool:
+    """True when the durable sidecar contains the exact ``TUI_READY:<nonce>`` line."""
+    try:
+        dest = Path(path)
+    except (TypeError, ValueError):
+        return False
+    if dest.suffix != ".tui-ready" or any(part == ".." for part in dest.parts):
+        return False
+    try:
+        if dest.is_symlink() or not dest.is_file():
+            return False
+        text = dest.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return capture_contains_tui_ready(text, nonce)
+
+
 def capture_contains_provider_echo(text: str, payload: str) -> bool:
     """True when a capture line is ``PROVIDER_ECHO:`` + optional space + *payload*.
 
@@ -760,7 +832,14 @@ def wait_for_interactive_tui_ready(
                 text = capture_fn(pane_id)
             except Exception:
                 text = ""
-            if not capture_contains_tui_ready(text if isinstance(text, str) else "", nonce):
+            marked = capture_contains_tui_ready(
+                text if isinstance(text, str) else "", nonce
+            )
+            if not marked:
+                ready_file = current.get("tui_ready_path") or raw.get("tui_ready_path")
+                if isinstance(ready_file, str) and ready_file.strip():
+                    marked = file_contains_tui_ready(ready_file, nonce)
+            if not marked:
                 continue
             pid_raw = current.get("pid")
             provider_pid = (

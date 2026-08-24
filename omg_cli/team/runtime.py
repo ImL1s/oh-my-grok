@@ -1270,7 +1270,18 @@ def _interactive_startup_payload(
         return rows[0] if rows else None
 
     def _prove(row: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
-        return evidence_matches_worker_identity(ev, row)
+        if not evidence_matches_worker_identity(ev, row):
+            return False
+        # Keep polling until ExactPaneProof passes. Accepting too early
+        # (pid still unset) then filtering once after the wait drops the
+        # sidecar TUI_READY evidence with no retry — scale-up grok panes
+        # stay input_ready=false after the wrapper already wrote the marker.
+        if _row_has_live_pid(row):
+            tid = str(row.get("task_id") or "").strip()
+            if not tid:
+                return False
+            return _exact_pane_proof_matches(root, run_id, tid, ev)
+        return True
 
     persisted = _persisted_ready_evidence_for_unchanged_identity(
         root, run_id, expected

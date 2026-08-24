@@ -30,7 +30,11 @@ import time
 from pathlib import Path
 from typing import Final
 
-from omg_cli.team.interactive import INTERACTIVE_NONCE_ENV, TUI_READY_PREFIX
+from omg_cli.team.interactive import (
+    INTERACTIVE_NONCE_ENV,
+    TUI_READY_FILE_ENV,
+    TUI_READY_PREFIX,
+)
 
 # Linux x86_64 syscall numbers that mean "waiting for I/O".
 _X86_64_READ: Final = 0
@@ -256,6 +260,18 @@ def _emit_tui_ready(nonce: str) -> None:
     # Exact line; capture_contains_tui_ready requires strip() equality.
     sys.stdout.write(marker + "\n")
     sys.stdout.flush()
+    raw = str(os.environ.get(TUI_READY_FILE_ENV) or "").strip()
+    if not raw:
+        return
+    dest = Path(raw)
+    if dest.suffix != ".tui-ready" or any(part == ".." for part in dest.parts):
+        return
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(marker + "\n", encoding="utf-8")
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
 
 
 def _child_alive(pid: int) -> bool:

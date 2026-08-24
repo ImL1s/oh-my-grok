@@ -40,6 +40,24 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#147 leftover live grok scale TUI_READY splash wipe:** interactive
+  grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar
+  (`{task_id}.a{attempt}.tui-ready`) as well as stdout. Leader ready wait
+  accepts the sidecar when grok's TUI splash has already replaced the
+  pane scrollback. Live ExactPaneProof is applied *inside* the wait loop
+  so a pid-bind that lands after the marker is not a one-shot drop
+  (scale-up was `input_ready=false` / degraded 1/2 with the sidecar
+  already written). Overlay, replace-worker, and resume relaunch unlink
+  the sidecar before spawn so a previous attempt's marker cannot promote
+  a replacement pane. Resume relaunch unlinks only when spawning a new
+  wrapper (`adopted is None`); adopting an already-running relaunch pane
+  keeps its sidecar. Unlink of a still-present sidecar fails closed
+  (replacement clears it in the fenced pre-launch phase). Same-window
+  scale also stamps pane-scoped `@omg_launch_nonce` (`show-options -p`
+  readback) — `display-message` can inherit the window option, which
+  left scaled grok panes ExactPaneProof `UNKNOWN` after TUI_READY.
+  Fixture panes still emit TUI_READY on stdout. Does **not** mint
+  `LIVE_*` from fixtures. Refs #147 (does not close).
 - **#147 leftover interactive echo-probe inbox collision:**
   `OMG_TEAM_INTERACTIVE_ECHO_PROBE=1` still attaches grok `--rules` for
   `PROVIDER_ECHO:` but no longer auto-submits

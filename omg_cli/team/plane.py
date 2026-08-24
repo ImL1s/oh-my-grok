@@ -3693,6 +3693,7 @@ def start_team(
                     pane_cmd = str(overlay["pane_command"])
                     inbox_path = Path(overlay["inbox_path"])
                     interactive_nonce = str(overlay["interactive_nonce"])
+                    tui_ready_overlay = overlay.get("tui_ready_path")
                     provider = str(overlay.get("provider") or provider)
                     assert_not_supervisor_pane_command(pane_cmd)
                     needs_pty = True
@@ -3703,6 +3704,7 @@ def start_team(
                 else:
                     rec_inbox = None
                     interactive_nonce = None
+                    tui_ready_overlay = None
 
                 # Job-backed workers may take an explicit jobs-admitted provider
                 # from the task dict (fake|antigravity|grok) when not using fixture.
@@ -3769,6 +3771,8 @@ def start_team(
                     rec["_env_pairs"] = sorted(
                         merged_env.items(), key=lambda kv: kv[0]
                     )
+                if want_interactive and tui_ready_overlay is not None:
+                    rec["tui_ready_path"] = str(tui_ready_overlay)
                 # #147 PR1: CLI-authoritative I/O capability on new task rows.
                 # Independent of needs_pty / provider name / startup status.
                 from omg_cli.team.io_capability import (

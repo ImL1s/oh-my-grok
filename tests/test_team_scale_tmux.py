@@ -86,6 +86,7 @@ def test_same_window_spawn_keeps_single_window_and_binds_nonce(
     worktree.mkdir()
     nonce = secrets.token_hex(16)
 
+    launch_nonce = secrets.token_hex(16)
     spawned = tmux_mod.spawn_worker_same_window(
         target_pane_id=leader_pane,
         team_window_id=window_id,
@@ -96,12 +97,24 @@ def test_same_window_spawn_keeps_single_window_and_binds_nonce(
         expected_server=probe,
         expected_session_id=session_id,
         pane_owner_nonce=nonce,
+        launch_nonce=launch_nonce,
         leader_pane_id=leader_pane,
         socket_path=sock,
     )
     assert spawned.window_id == window_id
     assert spawned.pane_id != leader_pane
     assert spawned.pane_owner_nonce == nonce
+    pane_launch = _tmux(
+        sock,
+        "show-options",
+        "-p",
+        "-v",
+        "-t",
+        spawned.pane_id,
+        "@omg_launch_nonce",
+    )
+    assert pane_launch.returncode == 0
+    assert pane_launch.stdout.strip() == launch_nonce
 
     windows = _tmux(sock, "list-windows", "-t", session, "-F", "#{window_id}")
     assert windows.returncode == 0
