@@ -632,25 +632,42 @@ def _cancel_simplify_job(
         ) from exc
 
 
-def _assert_no_authority_stamps(
-    root: Path,
-    *,
-    assignment: dict[str, Any],
-    job_id: str | None,
-) -> None:
-    """Fail closed if ``.omg/state`` gained verified/passes stamps."""
+_AUTHORITY_NEEDLES: Final[tuple[str, ...]] = (
+    '"verified": true',
+    '"verified":true',
+    '"passes": true',
+    '"passes":true',
+)
+
+
+def _authority_stamp_map(root: Path) -> dict[str, bool]:
+    """Map of ``.omg/state`` relative paths that currently contain authority stamps."""
     state = Path(root) / ".omg" / "state"
+    out: dict[str, bool] = {}
     if not state.is_dir():
-        return
-    needles = ('"verified": true', '"verified":true', '"passes": true', '"passes":true')
+        return out
     for path in state.rglob("*"):
         try:
             if not path.is_file() or path.is_symlink():
                 continue
+            rel = path.relative_to(state).as_posix()
             text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except (OSError, ValueError):
             continue
-        if any(needle in text for needle in needles):
+        out[rel] = any(needle in text for needle in _AUTHORITY_NEEDLES)
+    return out
+
+
+def _assert_no_new_authority_stamps(
+    before: Mapping[str, bool],
+    after: Mapping[str, bool],
+    *,
+    assignment: dict[str, Any],
+    job_id: str | None,
+) -> None:
+    """Fail closed if ``.omg/state`` gained verified/passes stamps during the job."""
+    for rel, stamped in after.items():
+        if stamped and not before.get(rel):
             raise SimplifyProviderError(
                 "omg state gained verified/passes during grok proposal; originals were not overwritten",
                 assignment,
@@ -769,6 +786,7 @@ def _propose_with_grok(
     snapshots = _snapshot_targets(root, kept, cfg)
     porcelain_before = _git_porcelain(root)
     fingerprint_before = _workspace_content_fingerprint(root)
+    authority_before = _authority_stamp_map(root)
     prompt = _build_grok_simplify_prompt(
         kept=kept,
         skipped=skipped,
@@ -910,8 +928,11 @@ def _propose_with_grok(
                 assignment=assignment,
                 job_id=job_id,
             )
-            _assert_no_authority_stamps(
-                root, assignment=assignment, job_id=job_id
+            _assert_no_new_authority_stamps(
+                authority_before,
+                _authority_stamp_map(root),
+                assignment=assignment,
+                job_id=job_id,
             )
             porcelain_after = _git_porcelain(root)
             extra_skip = (
