@@ -423,6 +423,25 @@ def test_prove_does_not_replace_trusted_extra_with_forged_record(root: Path) -> 
             proc.wait(timeout=3)
 
 
+def test_wait_adopted_children_raises_when_liveness_unproven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+    from omg_cli.jobs import runner as runner_mod
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime="lstart:x")
+    monkeypatch.setattr(runner_mod, "child_identities", lambda _pid: (ident,))
+    monkeypatch.setattr(runner_mod, "refresh_identity", lambda _ident: None)
+    monkeypatch.setattr(
+        runner_mod,
+        "probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.UNPROVEN,
+    )
+    monkeypatch.setattr(runner_mod, "reap_child", lambda _pid: None)
+    with pytest.raises(RuntimeError, match="liveness unproven"):
+        runner_mod._wait_adopted_children(timeout_s=0.05)
+
+
 def test_wait_adopted_children_signals_leftover_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

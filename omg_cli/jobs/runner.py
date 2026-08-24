@@ -331,17 +331,21 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         for ident in kids:
             reap_child(ident.pid)
         time.sleep(0.05)
-    def _live(ident: object) -> object | None:
+    def _live_or_raise(ident: object) -> object | None:
         refreshed = refresh_identity(ident)  # type: ignore[arg-type]
         if refreshed is not None:
             ident = refreshed
-        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:  # type: ignore[arg-type]
+        outcome = probe_identity_liveness(ident)  # type: ignore[arg-type]
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            pid = getattr(ident, "pid", "?")
+            raise RuntimeError(f"adopted child pid={pid} liveness unproven")
+        if outcome is IdentityProbeOutcome.LIVE:
             return ident
         return None
 
     kids = child_identities(me)
     for ident in kids:
-        live = _live(ident)
+        live = _live_or_raise(ident)
         if live is not None:
             kill_pgid(live.pgid, signal.SIGTERM)  # type: ignore[attr-defined]
     deadline = time.monotonic() + 2.0
@@ -354,12 +358,12 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         time.sleep(0.05)
     leftover: list = []
     for ident in child_identities(me):
-        live = _live(ident)
+        live = _live_or_raise(ident)
         if live is None:
             continue
         kill_pgid(live.pgid, signal.SIGKILL)  # type: ignore[attr-defined]
         gone = wait_until_gone(live.pid, timeout_s=2.0)  # type: ignore[attr-defined]
-        still = _live(live)
+        still = _live_or_raise(live)
         if not gone and still is not None:
             leftover.append(still)
     if leftover:
