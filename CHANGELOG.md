@@ -56,7 +56,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   under that pgid) keep the command fail-closed. Reap requires GONE/REUSED
   after SIGKILL (unproven/still-live raises). Linux job runners set
   PR_SET_CHILD_SUBREAPER so a setsid grandchild is reparented to the
-  runner instead of init. A later ``setsid()`` on a captured pid with
+  runner instead of init. A later setsid() on a captured pid with
   the same start-time fingerprint refreshes PGID instead of treating
   the mismatch as reuse. Terminal job.json never overwrites captured
   extras. PGID scans run only while that identity is live. The job
