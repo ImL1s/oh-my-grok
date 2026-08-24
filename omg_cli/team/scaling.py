@@ -4833,9 +4833,13 @@ def _scale_up(
     # Deprecated window_indices: prefer live window_index when legacy path
     # rewrote it (adopted tmux index); otherwise the logical alias.
     window_indices_out = [int(r.get("window_index", -1)) for r in new_records]
+    readiness: dict[str, Any] | None = None
     if want_interactive and not effective_dry:
         from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
-        from omg_cli.team.runtime import apply_interactive_worker_readiness
+        from omg_cli.team.runtime import (
+            apply_interactive_worker_readiness,
+            persist_startup_annotations,
+        )
 
         try:
             updated = load_team_meta(root, run_id)
@@ -4847,13 +4851,54 @@ def _scale_up(
             if isinstance(task, dict)
             and str(task.get("io_mode") or "") == IO_MODE_INTERACTIVE_TTY
         ]
-        apply_interactive_worker_readiness(
+        readiness = apply_interactive_worker_readiness(
             root,
             run_id,
             interactive_ids or [str(r["task_id"]) for r in new_records],
             env=env,
         )
-    return {
+        persist_keys = (
+            "startup_acks",
+            "startup_ack_workers",
+            "startup_process_ready",
+            "startup_process_ready_workers",
+            "startup_ready_workers",
+            "startup_missing_workers",
+            "startup_blocked_workers",
+            "startup_workers",
+            "startup_status",
+            "startup_expected",
+            "startup_gate_phase",
+            "ready_timeout_ms",
+            "startup_note",
+        )
+        payload = {key: readiness[key] for key in persist_keys if key in readiness}
+        if payload:
+            updated = persist_startup_annotations(root, run_id, payload)
+        by_id = {
+            str(task.get("task_id") or ""): task
+            for task in (updated.get("tasks") or [])
+            if isinstance(task, dict)
+        }
+        new_records = [
+            by_id.get(str(row["task_id"]), row) if str(row.get("task_id") or "") in by_id else row
+            for row in new_records
+        ]
+    note = (
+        "scale-up appends panes; dry_run pid=None; "
+        "never sets verified; bounded by max_workers_cap"
+    )
+    if readiness and readiness.get("startup_status") in {
+        "failed_start",
+        "degraded",
+        "blocked_start",
+    }:
+        note = (
+            f"scale-up appended panes but interactive readiness "
+            f"{readiness.get('startup_status')}; "
+            f"missing={readiness.get('startup_missing_workers')}"
+        )
+    result = {
         "writer": CLI_WRITER,
         "run_id": run_id,
         "op": "add",
@@ -4872,12 +4917,22 @@ def _scale_up(
         "dry_run": effective_dry,
         "cap": cap,
         "verified": False,
-        "note": (
-            "scale-up appends panes; dry_run pid=None; "
-            "never sets verified; bounded by max_workers_cap"
-        ),
+        "note": note,
         "tasks_added": new_records,
     }
+    if readiness:
+        for key in (
+            "startup_status",
+            "startup_ready_workers",
+            "startup_missing_workers",
+            "startup_note",
+            "startup_expected",
+            "startup_gate_phase",
+            "ready_timeout_ms",
+        ):
+            if key in readiness:
+                result[key] = readiness[key]
+    return result
 
 
 def _scale_down(

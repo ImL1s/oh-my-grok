@@ -618,6 +618,9 @@ def cmd_team(args: argparse.Namespace) -> int:
                     "retry omg team resume to repair projection",
                     file=sys.stderr,
                 )
+            code = _emit_startup_human(result, command="scale")
+            if code is not None:
+                return code
             return 0
         if action == "resume":
             from omg_cli.cli_envelope import wants_json

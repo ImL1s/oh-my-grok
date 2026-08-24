@@ -1885,6 +1885,20 @@ def test_scale_up_refreshes_readiness_for_all_interactive_workers() -> None:
     assert "apply_interactive_worker_readiness" in src
     assert "updated.get(\"tasks\")" in src or "updated.get('tasks')" in src
     assert "IO_MODE_INTERACTIVE_TTY" in src
+    assert "persist_startup_annotations" in src
+    assert "startup_status" in src
+
+
+def test_scale_command_uses_startup_exit_gate() -> None:
+    import inspect
+
+    from omg_cli.commands.team import cmd_team
+
+    src = inspect.getsource(cmd_team)
+    scale_at = src.index('if action == "scale"')
+    emit_at = src.index("_emit_startup_human", scale_at)
+    resume_at = src.index('if action == "resume"', scale_at)
+    assert scale_at < emit_at < resume_at
 
 
 @pytest.mark.skipif(os.name != "posix" or sys.platform == "win32", reason="POSIX PTY only")
