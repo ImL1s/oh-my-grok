@@ -196,54 +196,65 @@ def cleanup_team_artifacts(
             details={"missing": missing_acks},
         )
 
+    from omg_cli.state import _run_dir
+
     live: list[str] = []
-    dry_run = bool(meta.get("dry_run"))
-    for raw in meta.get("tasks") or []:
-        if not isinstance(raw, Mapping):
-            continue
-        tid = str(raw.get("task_id") or "")
-        status = str(raw.get("status") or "")
-        pid = raw.get("pid")
-        pgid = raw.get("pgid")
-        try:
-            pid_i = int(pid) if pid is not None else 0
-        except (TypeError, ValueError):
-            pid_i = 0
-        try:
-            pgid_i = int(pgid) if pgid is not None else 0
-        except (TypeError, ValueError):
-            pgid_i = 0
-        if _pid_alive(pid_i) or _pgid_alive(pgid_i):
-            live.append(tid or "unknown")
-            continue
-        if not dry_run and status in RUNNING_STATUSES:
-            live.append(tid or "unknown")
-    if live:
-        raise CleanupError(
-            "cleanup refused: team still running",
-            code="E_TEAM_CLEANUP_RUNNING",
-            details={"live_task_ids": live},
-        )
-
-    unexpired: list[str] = []
-    for task in tasks:
-        if not isinstance(task, Mapping):
-            continue
-        claim = task.get("claim")
-        if _claim_unexpired(claim if isinstance(claim, Mapping) else None, now=current):
-            unexpired.append(str(task.get("id") or ""))
-    if unexpired:
-        raise CleanupError(
-            "cleanup refused: unexpired task claims remain",
-            code="E_TEAM_CLEANUP_CLAIMS",
-            details={"task_ids": unexpired},
-        )
-
+    meta_path = _run_dir(root_path, run_id) / "team.json"
     store = team_api_store_dir(root_path, run_id, team_id)
-    removed: list[str] = []
-    lock = store.with_suffix(".cleanup.lock")
-    ensure_managed_dir(store if store.exists() else store.parent)
+    lock = meta_path.with_suffix(".lock")
     with exclusive_lock(lock):
+        from omg_cli.team.plane import load_team_meta
+
+        try:
+            live_meta = load_team_meta(root_path, run_id)
+        except Exception:
+            live_meta = dict(meta)
+        live_tasks = list(tasks)
+        dry_run = bool(live_meta.get("dry_run"))
+        live = []
+        for raw in live_meta.get("tasks") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            tid = str(raw.get("task_id") or "")
+            status = str(raw.get("status") or "")
+            pid = raw.get("pid")
+            pgid = raw.get("pgid")
+            try:
+                pid_i = int(pid) if pid is not None else 0
+            except (TypeError, ValueError):
+                pid_i = 0
+            try:
+                pgid_i = int(pgid) if pgid is not None else 0
+            except (TypeError, ValueError):
+                pgid_i = 0
+            if _pid_alive(pid_i) or _pgid_alive(pgid_i):
+                live.append(tid or "unknown")
+                continue
+            if not dry_run and status in RUNNING_STATUSES:
+                live.append(tid or "unknown")
+        if live:
+            raise CleanupError(
+                "cleanup refused: team still running",
+                code="E_TEAM_CLEANUP_RUNNING",
+                details={"live_task_ids": live},
+            )
+
+        unexpired: list[str] = []
+        for task in live_tasks:
+            if not isinstance(task, Mapping):
+                continue
+            claim = task.get("claim")
+            if _claim_unexpired(claim if isinstance(claim, Mapping) else None, now=current):
+                unexpired.append(str(task.get("id") or ""))
+        if unexpired:
+            raise CleanupError(
+                "cleanup refused: unexpired task claims remain",
+                code="E_TEAM_CLEANUP_CLAIMS",
+                details={"task_ids": unexpired},
+            )
+
+        removed: list[str] = []
+        ensure_managed_dir(store if store.exists() else store.parent)
         if store.exists():
             if store.is_symlink() or not store.is_dir():
                 raise CleanupError(
