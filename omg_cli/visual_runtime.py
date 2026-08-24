@@ -568,7 +568,7 @@ def diagnose_capture_source(
     if source == "none" or not command:
         path_bin = discover_path_screencapture(environ)
         if path_bin:
-            command = list(PATH_SCREENCAPTURE_ARGV)
+            command = [path_bin, *PATH_SCREENCAPTURE_ARGV[1:]]
             source = "path"
         else:
             return {

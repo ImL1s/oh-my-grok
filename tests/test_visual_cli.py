@@ -1252,6 +1252,20 @@ def test_execute_capture_command_substitutes_output_placeholders(
     assert result["status"] == "captured"
 
 
+def test_diagnose_path_screencapture_keeps_absolute_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.visual_runtime import diagnose_capture_source
+
+    monkeypatch.setattr(
+        "omg_cli.visual_runtime.discover_path_screencapture",
+        lambda environ=None: "/usr/sbin/screencapture",
+    )
+    diagnosis = diagnose_capture_source({}, env={})
+    assert diagnosis["source"] == "path"
+    assert diagnosis["command"] == ["/usr/sbin/screencapture", "-x"]
+
+
 def test_diagnose_path_screencapture_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1261,7 +1275,7 @@ def test_diagnose_path_screencapture_source(
     diagnosis = diagnose_capture_source({}, env={})
     assert diagnosis["source"] == "path"
     assert diagnosis["status"] == "ready"
-    assert diagnosis["command"] == ["screencapture", "-x"]
+    assert diagnosis["command"] == [str(fake), "-x"]
     assert diagnosis["playwright_required"] is False
     assert diagnosis["block_code"] is None
     assert Path(fake).name == "screencapture"
@@ -1273,10 +1287,10 @@ def test_capture_path_screencapture_writes_via_output_argv(
     from omg_cli.visual_runtime import diagnose_capture_source
 
     _seed(tmp_path)
-    _install_fake_path_screencapture(tmp_path, monkeypatch)
+    fake = _install_fake_path_screencapture(tmp_path, monkeypatch)
     diagnosis = diagnose_capture_source({}, env={})
     assert diagnosis["source"] == "path"
-    assert diagnosis["command"] == ["screencapture", "-x"]
+    assert diagnosis["command"] == [str(fake), "-x"]
     cfg = _write_config(tmp_path, _compat_cfg())
     rc = main(
         _argv(tmp_path, "visual", "capture", "--config", str(cfg), "--run-id", "pathcap")
@@ -1288,6 +1302,7 @@ def test_capture_path_screencapture_writes_via_output_argv(
     assert payload["command"] == "visual.capture"
     assert result["status"] == "captured"
     assert result["source"] == "path"
+    assert result["command"][0] == str(fake)
     assert result["playwright_required"] is False
     current = tmp_path / ".omg" / "artifacts" / "visual" / "pathcap" / "current.png"
     assert current.is_file()
