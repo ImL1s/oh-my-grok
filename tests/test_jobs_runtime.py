@@ -423,6 +423,30 @@ def test_prove_does_not_replace_trusted_extra_with_forged_record(root: Path) -> 
             proc.wait(timeout=3)
 
 
+def test_wait_adopted_children_signals_leftover_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from omg_cli.jobs.ownership import capture_identity, pid_alive
+    from omg_cli.jobs import runner as runner_mod
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+
+    def _kids(_pid: int):
+        return (ident,) if pid_alive(proc.pid) else ()
+
+    monkeypatch.setattr(runner_mod, "child_identities", _kids)
+    try:
+        runner_mod._wait_adopted_children(timeout_s=0.05)
+        assert not pid_alive(proc.pid)
+    finally:
+        if pid_alive(proc.pid):
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def test_refresh_identity_refuses_missing_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

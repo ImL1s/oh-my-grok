@@ -28,10 +28,14 @@ from omg_cli.contracts.path_keys import DATA_FILE_MODE, atomic_write_bytes, ensu
 from omg_cli.jobs.lease import DEFAULT_JOB_HEARTBEAT_INTERVAL_S
 from omg_cli.jobs.models import TERMINAL_STATES, JobRecord, JobState, JobStoreError
 from omg_cli.jobs.ownership import (
+    IdentityProbeOutcome,
     become_child_subreaper,
     capture_identity,
     child_identities,
+    kill_pgid,
+    probe_identity_liveness,
     reap_child,
+    wait_until_gone,
 )
 from omg_cli.jobs.providers import resolve_job_provider
 from omg_cli.jobs.store import (
@@ -310,9 +314,15 @@ def _stamp_running_terminal(
 
 
 def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
-    """Stay alive as subreaper until direct children exit or *timeout_s*."""
-    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    """Stay alive as subreaper until adopted children exit; then reap leftovers.
+
+    A provider can fork a detached helper after the last poll. Subreaper
+    adoption is useless if this process then exits on a fixed deadline and
+    reparents the helper to init. After the grace wait, signal remaining
+    direct children (exact captured identities) before returning.
+    """
     me = os.getpid()
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
     while time.monotonic() < deadline:
         kids = child_identities(me)
         if not kids:
@@ -320,6 +330,22 @@ def _wait_adopted_children(*, timeout_s: float = 2.0) -> None:
         for ident in kids:
             reap_child(ident.pid)
         time.sleep(0.05)
+    kids = child_identities(me)
+    for ident in kids:
+        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+            kill_pgid(ident.pgid, signal.SIGTERM)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        kids = child_identities(me)
+        if not kids:
+            return
+        for ident in kids:
+            reap_child(ident.pid)
+        time.sleep(0.05)
+    for ident in child_identities(me):
+        if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+            kill_pgid(ident.pgid, signal.SIGKILL)
+            wait_until_gone(ident.pid, timeout_s=1.0)
 
 
 def run_job(project_root: Path, job_id: str) -> int:
