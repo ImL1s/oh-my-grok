@@ -997,7 +997,10 @@ def _persisted_ready_evidence_for_unchanged_identity(
             pid = raw.get("pid")
         pid_start = ev_raw.get("pid_start")
         if not isinstance(pid_start, str) or not pid_start:
-            pid_start = raw.get("pid_start")
+            # Missing historical pid_start cannot be filled from the live
+            # row — a recycled PID in the same pane would otherwise rebind
+            # the old TUI_READY marker onto the replacement process.
+            continue
         attempt = ev_raw.get("attempt")
         if not isinstance(attempt, int) or isinstance(attempt, bool):
             attempt = raw.get("attempt")
@@ -1093,6 +1096,13 @@ def _promote_interactive_input_ready(
                     else None,
                     attempt=ev.get("attempt") if isinstance(ev.get("attempt"), int) else None,
                     generation=locked["generation"],
+                    pid_start=ev.get("pid_start")
+                    if isinstance(ev.get("pid_start"), str)
+                    else (
+                        locked.get("pid_start")
+                        if isinstance(locked.get("pid_start"), str)
+                        else None
+                    ),
                 ),
             )
             stamped.append(tid)

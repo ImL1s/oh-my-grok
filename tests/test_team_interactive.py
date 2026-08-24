@@ -829,6 +829,42 @@ def test_overlay_reuses_nonce_and_attempt_inbox(tmp_path: Path) -> None:
     assert "attempt=2" in (tmp_path / "t1.a2.inbox.txt").read_text(encoding="utf-8")
 
 
+def test_overlay_inbox_includes_task_assignment(tmp_path: Path) -> None:
+    from omg_cli.team.interactive import overlay_interactive_launch
+
+    if os.name != "posix":
+        pytest.skip("managed inbox write requires POSIX")
+    overlay_interactive_launch(
+        team_dir=tmp_path,
+        task_id="t1",
+        attempt=1,
+        worktree=tmp_path / "wt-t1",
+        goal="shared team goal",
+        use_fixture=True,
+        owned_files=["src/a.py", "README.md"],
+        role="executor",
+        subject="implement slice A",
+        depends_on=["t0"],
+        run_id="run-1",
+        team_id="team",
+        api_task_id="42",
+    )
+    text = (tmp_path / "t1.a1.inbox.txt").read_text(encoding="utf-8")
+    assert "task_id=t1" in text
+    assert "attempt=1" in text
+    assert "role=executor" in text
+    assert "board_task_id=42" in text
+    assert "## Assignment" in text
+    assert "implement slice A" in text
+    assert "- `src/a.py`" in text
+    assert "- `README.md`" in text
+    assert "## Depends on" in text
+    assert "- `t0`" in text
+    assert "shared team goal" in text
+    assert "omg team api" in text
+    assert "claim-task" in text or "Claim board task" in text
+
+
 def test_inbox_basenames_include_task_id_and_attempt() -> None:
     assert interactive_inbox_basename("t1", 1) == "t1.a1.inbox.txt"
     assert interactive_inbox_basename("t1", 2) == "t1.a2.inbox.txt"
@@ -1350,6 +1386,7 @@ def test_readiness_rebinds_generation_when_tui_ready_left_scrollback(
                 provider_pid=111,
                 attempt=1,
                 generation=0,
+                pid_start="start-a",
             ),
         )
         return current
@@ -1387,6 +1424,74 @@ def test_readiness_rebinds_generation_when_tui_ready_left_scrollback(
         disk["tasks"][0], attempt=1, generation=1
     )
     assert cap.input_ready is True
+    assert (disk["tasks"][0].get("interaction_evidence") or {}).get("pid_start") == "start-a"
+
+
+@_POSIX
+def test_readiness_does_not_rebind_without_persisted_pid_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 1
+        row = current["tasks"][0]
+        row["pane_id"] = "%7"
+        row["pid"] = 111
+        row["pid_start"] = "start-a"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+            ),
+        )
+        ev = row.get("interaction_evidence") or {}
+        ev.pop("pid_start", None)
+        row["interaction_evidence"] = ev
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: "noise line\n" * 250,
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 0
 
 
 @_POSIX

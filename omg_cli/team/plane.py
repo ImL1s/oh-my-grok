@@ -3674,6 +3674,18 @@ def start_team(
                                 if use_fixture_executor
                                 else str(Path(__file__).resolve().parents[2])
                             ),
+                            owned_files=owned,
+                            role=role,
+                            subject=str(
+                                src_task.get("subject")
+                                or src_task.get("title")
+                                or src_task.get("description")
+                                or ""
+                            ),
+                            depends_on=list(src_task.get("depends_on") or []),
+                            run_id=rid,
+                            team_id=tid_plane,
+                            api_task_id=board_task_id,
                         )
                     except InteractiveTeamError as exc:
                         raise TeamError(str(exc)) from exc
@@ -3724,6 +3736,16 @@ def start_team(
                     "needs_pty": needs_pty,
                     "prompt_delivery": prompt_delivery,
                     "inbox_path": rec_inbox,
+                    "owned_files": list(owned),
+                    "subject": str(
+                        src_task.get("subject")
+                        or src_task.get("title")
+                        or src_task.get("description")
+                        or ""
+                    )
+                    or None,
+                    "depends_on": list(src_task.get("depends_on") or []),
+                    "api_task_id": board_task_id,
                     "attempt": 1,
                     "pid": None,
                     "pgid": None,

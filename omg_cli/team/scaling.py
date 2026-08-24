@@ -344,6 +344,12 @@ def _overlay_interactive_scale_worker(
     yolo: bool,
     safe: bool,
     model: str | None,
+    owned_files: Sequence[str] | None = None,
+    role: str | None = None,
+    subject: str | None = None,
+    depends_on: Sequence[str] | None = None,
+    team_id: str | None = None,
+    api_task_id: str | None = None,
 ) -> dict[str, Any]:
     """Materialize interactive exec/inbox for a scale-up worker (never supervisor)."""
     from omg_cli.team.interactive import (
@@ -382,6 +388,13 @@ def _overlay_interactive_scale_worker(
             pythonpath=(
                 None if use_fixture else str(Path(__file__).resolve().parents[2])
             ),
+            owned_files=owned_files,
+            role=role,
+            subject=subject,
+            depends_on=depends_on,
+            run_id=run_id,
+            team_id=team_id,
+            api_task_id=api_task_id,
         )
     except InteractiveTeamError as exc:
         raise TeamError(str(exc)) from exc
@@ -788,6 +801,14 @@ def _build_pane_record(
                 if multi_cli and resolved is not None
                 else None
             ),
+            owned_files=owned,
+            role=role,
+            subject=str(
+                task.get("subject") or task.get("title") or task.get("description") or ""
+            ),
+            depends_on=list(task.get("depends_on") or []),
+            team_id=str(team_id or "team"),
+            api_task_id=str(task.get("api_task_id") or "").strip() or None,
         )
         argv = list(overlay["argv"])
         pane_cmd = str(overlay["pane_command"])
@@ -841,6 +862,13 @@ def _build_pane_record(
         "needs_pty": needs_pty,
         "prompt_delivery": prompt_delivery,
         "inbox_path": rec_inbox,
+        "owned_files": list(owned),
+        "subject": str(
+            task.get("subject") or task.get("title") or task.get("description") or ""
+        )
+        or None,
+        "depends_on": list(task.get("depends_on") or []),
+        "api_task_id": str(task.get("api_task_id") or "").strip() or None,
         "attempt": int(authority_attempt) if isinstance(authority_attempt, int) else 1,
         "pid": None,
         "pgid": None,
@@ -1083,6 +1111,14 @@ def _reuse_prepared_pane_record(
                 if multi_cli and resolved is not None
                 else None
             ),
+            owned_files=owned,
+            role=role,
+            subject=str(
+                task.get("subject") or task.get("title") or task.get("description") or ""
+            ),
+            depends_on=list(task.get("depends_on") or []),
+            team_id=str(team_id or "team"),
+            api_task_id=board_id,
         )
         expected_argv = list(overlay["argv"])
         pane_cmd = str(overlay["pane_command"])
@@ -1161,6 +1197,13 @@ def _reuse_prepared_pane_record(
         "needs_pty": needs_pty,
         "prompt_delivery": prompt_delivery,
         "inbox_path": rec_inbox,
+        "owned_files": list(owned),
+        "subject": str(
+            task.get("subject") or task.get("title") or task.get("description") or ""
+        )
+        or None,
+        "depends_on": list(task.get("depends_on") or []),
+        "api_task_id": str(task.get("api_task_id") or "").strip() or None,
         "attempt": int(authority_attempt) if isinstance(authority_attempt, int) else 1,
         "pid": None,
         "pgid": None,
@@ -6937,6 +6980,7 @@ def _relaunch_dead_incomplete_workers_locked(
             from omg_cli.team.io_capability import IO_MODE_INTERACTIVE_TTY
             from omg_cli.team.interactive import (
                 InteractiveTeamError,
+                build_interactive_inbox_body,
                 interactive_inbox_basename,
                 write_worker_inbox,
             )
@@ -6947,9 +6991,24 @@ def _relaunch_dead_incomplete_workers_locked(
                 try:
                     write_worker_inbox(
                         dest=inbox,
-                        body=(
-                            f"task_id={tid}\nattempt={int(rec['attempt'])}\n"
-                            f"{meta.get('goal') or ''}\n"
+                        body=build_interactive_inbox_body(
+                            task_id=tid,
+                            attempt=int(rec["attempt"]),
+                            goal=str(meta.get("goal") or ""),
+                            owned_files=list(rec.get("owned_files") or []),
+                            role=str(rec.get("role") or "") or None,
+                            subject=str(
+                                rec.get("subject")
+                                or rec.get("title")
+                                or rec.get("description")
+                                or ""
+                            ),
+                            depends_on=list(rec.get("depends_on") or []),
+                            run_id=rid,
+                            team_id=str(meta.get("team_id") or "team"),
+                            api_task_id=str(rec.get("api_task_id") or "").strip()
+                            or None,
+                            worktree=rec.get("worktree"),
                         ),
                     )
                 except InteractiveTeamError as exc:

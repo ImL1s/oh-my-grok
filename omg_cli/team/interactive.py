@@ -400,6 +400,77 @@ def parse_interactive_nonce_from_exec_script(script: Path | str) -> str | None:
     return None
 
 
+def build_interactive_inbox_body(
+    *,
+    task_id: str,
+    attempt: int,
+    goal: str,
+    owned_files: Sequence[str] | None = None,
+    role: str | None = None,
+    subject: str | None = None,
+    depends_on: Sequence[str] | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    api_task_id: str | None = None,
+    worktree: Path | str | None = None,
+) -> str:
+    """Task-scoped inbox for interactive panes (not the shared team goal only)."""
+    tid = str(task_id or "").strip()
+    att = coerce_attempt(attempt)
+    lines = [f"task_id={tid}", f"attempt={att}"]
+    role_s = str(role or "").strip()
+    if role_s:
+        lines.append(f"role={role_s}")
+    board = str(api_task_id or "").strip()
+    if board:
+        lines.append(f"board_task_id={board}")
+    rid = str(run_id or "").strip()
+    if rid:
+        lines.append(f"run_id={rid}")
+    team = str(team_id or "").strip()
+    if team:
+        lines.append(f"team_id={team}")
+    wt = str(worktree or "").strip()
+    if wt:
+        lines.append(f"worktree={wt}")
+    subj = str(subject or "").strip()
+    if subj:
+        lines.extend(["", "## Assignment", subj])
+    owned = [str(item).strip() for item in (owned_files or []) if str(item).strip()]
+    lines.extend(["", "## Owned files"])
+    if owned:
+        lines.extend(f"- `{item}`" for item in owned)
+    else:
+        lines.append("- (none listed)")
+    deps = [str(item).strip() for item in (depends_on or []) if str(item).strip()]
+    if deps:
+        lines.extend(["", "## Depends on"])
+        lines.extend(f"- `{item}`" for item in deps)
+    lines.extend(
+        [
+            "",
+            "## Goal (shared)",
+            str(goal or "").strip() or "(no goal provided)",
+        ]
+    )
+    if rid and team and tid:
+        from omg_cli.team.worker_protocol import team_worker_protocol_lines
+
+        lines.extend(
+            [
+                "",
+                *team_worker_protocol_lines(
+                    run_id=rid,
+                    team_id=team,
+                    worker_id=tid,
+                    api_task_id=board or None,
+                ),
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def overlay_interactive_launch(
     *,
     team_dir: Path | str,
@@ -416,6 +487,13 @@ def overlay_interactive_launch(
     nonce: str | None = None,
     python_executable: str | None = None,
     pythonpath: str | None = None,
+    owned_files: Sequence[str] | None = None,
+    role: str | None = None,
+    subject: str | None = None,
+    depends_on: Sequence[str] | None = None,
+    run_id: str | None = None,
+    team_id: str | None = None,
+    api_task_id: str | None = None,
 ) -> dict[str, Any]:
     """Write attempt-scoped inbox + exec wrapper. Never a supervisor pane_command."""
     tid = str(task_id or "").strip()
@@ -447,7 +525,19 @@ def overlay_interactive_launch(
         if not resolved_pythonpath:
             resolved_pythonpath = str(Path(__file__).resolve().parents[2])
         provider = "grok"
-    body = f"task_id={tid}\nattempt={att}\n{goal}\n"
+    body = build_interactive_inbox_body(
+        task_id=tid,
+        attempt=att,
+        goal=goal,
+        owned_files=owned_files,
+        role=role,
+        subject=subject,
+        depends_on=depends_on,
+        run_id=run_id,
+        team_id=team_id,
+        api_task_id=api_task_id,
+        worktree=worktree,
+    )
     write_worker_inbox(dest=inbox_path, body=body)
     token = nonce if isinstance(nonce, str) and nonce.strip() else None
     if token is None:

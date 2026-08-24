@@ -25,7 +25,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   own TUI_READY+TOCTOU proof. After a scale/relaunch generation bump,
   unchanged exact identities rebind persisted TUI_READY evidence
   instead of requiring the one-shot marker still in bounded
-  scrollback. Mixed interactive/headless active sets
+  scrollback (missing historical `pid_start` refuses rebind).
+  Interactive inboxes carry the worker's assignment (owned files,
+  subject, depends-on, board task id, worker protocol), not only
+  the shared team goal. Mixed interactive/headless active sets
   fail closed. Fixture `interactive_tty.py` prints `WINCH:` on
   SIGWINCH and `INT:` on SIGINT without killing the leader.
   Default/`auto` stay headless. No `LIVE_TEAM_INTERACTIVE_TTY_OK`

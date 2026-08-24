@@ -111,6 +111,7 @@ def interactive_pane_io_ready(
     attempt: int | None = None,
     generation: int | None = None,
     proven_at: str | None = None,
+    pid_start: str | None = None,
 ) -> WorkerIoCapability:
     """Leader-only ready stamp after proven ``TUI_READY:<nonce>`` evidence.
 
@@ -135,6 +136,7 @@ def interactive_pane_io_ready(
         pid = None
     pane = pane_id if isinstance(pane_id, str) and pane_id.startswith("%") else None
     when = proven_at if isinstance(proven_at, str) and proven_at else _utc_now_iso()
+    start = pid_start if isinstance(pid_start, str) and pid_start else None
     evidence = {
         "schema": INTERACTION_EVIDENCE_SCHEMA,
         "attempt": ev_attempt,
@@ -143,6 +145,7 @@ def interactive_pane_io_ready(
         "proven_at": when,
         "pane_id": pane,
         "provider_pid": pid,
+        "pid_start": start,
     }
     return WorkerIoCapability(
         io_mode=IO_MODE_INTERACTIVE_TTY,
@@ -316,6 +319,9 @@ def _normalize_interaction_evidence(
         out["provider_pid"] = provider_pid
     else:
         out["provider_pid"] = None
+    pid_start = raw.get("pid_start")
+    if pid_start is None or isinstance(pid_start, str):
+        out["pid_start"] = pid_start
     return out
 
 
