@@ -46,7 +46,7 @@ from omg_cli.hash_edit import (
 )
 from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.runtime import cancel_job, collect_job, start_job, wait_job
-from omg_cli.jobs.store import job_dir
+from omg_cli.jobs.store import job_dir, make_job_id
 
 SIMPLIFIER_ROLE: Final[str] = "omg-code-simplifier"
 REVIEWER_ROLE: Final[str] = "omg-code-reviewer"
@@ -518,31 +518,40 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-_FINGERPRINT_SKIP_DIRS: Final[frozenset[str]] = frozenset(
-    {".git", ".omg/artifacts", ".omg/jobs"}
+_FINGERPRINT_SKIP_PREFIXES: Final[tuple[str, ...]] = (
+    ".git/",
+    ".omg/artifacts/simplify-sandbox/",
+    ".omg/state/events/",
+    ".omg/state/event-cursors/",
 )
 
 
-def _skip_fingerprint_rel(rel: str) -> bool:
+def _skip_fingerprint_rel(rel: str, extra: Sequence[str] = ()) -> bool:
     posix = rel.replace("\\", "/")
     while posix.startswith("./"):
         posix = posix[2:]
-    if posix in _FINGERPRINT_SKIP_DIRS:
+    if posix == ".git":
         return True
-    return (
-        posix.startswith(".git/")
-        or posix.startswith(".omg/artifacts/")
-        or posix.startswith(".omg/jobs/")
-    )
+    prefixes = _FINGERPRINT_SKIP_PREFIXES + tuple(extra)
+    for prefix in prefixes:
+        base = prefix.rstrip("/")
+        if posix == base or posix.startswith(prefix):
+            return True
+    return False
 
 
-def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
-    """SHA-256 of regular files except git metadata and expected job/artifact output.
+def _workspace_content_fingerprint(
+    root: Path, extra_skip: Sequence[str] = ()
+) -> dict[str, str]:
+    """SHA-256 of regular files except git metadata and expected CLI outputs.
 
-    Includes ``.omg/state`` so forged ``passes``/``verified`` cannot hide.
+    Includes ``.omg/state`` (except the wrapper event journal) so forged
+    ``passes``/``verified`` cannot hide. Skips only the current simplify
+    sandbox, current job dir (via *extra_skip*), and CLI event journals.
     Jobs is not an OS sandbox; this is comprehensive mutation detection.
     """
     root_path = Path(root).resolve()
+    extra = tuple(extra_skip)
     out: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
         try:
@@ -555,13 +564,13 @@ def _workspace_content_fingerprint(root: Path) -> dict[str, str]:
         keep: list[str] = []
         for name in dirnames:
             child = f"{rel_dir}/{name}" if rel_dir else name
-            if name == ".git" or _skip_fingerprint_rel(child):
+            if name == ".git" or _skip_fingerprint_rel(child, extra):
                 continue
             keep.append(name)
         dirnames[:] = keep
         for name in filenames:
             rel = f"{rel_dir}/{name}" if rel_dir else name
-            if _skip_fingerprint_rel(rel):
+            if _skip_fingerprint_rel(rel, extra):
                 continue
             path = Path(dirpath) / name
             if path.is_symlink() or not path.is_file():
@@ -709,7 +718,7 @@ def _propose_with_grok(
         stage_id=stage_id,
     )
     sandbox = _write_proposal_sandbox(root, snapshots, stage_id)
-    job_id: str | None = None
+    job_id: str | None = make_job_id()
     pending: SimplifyProviderError | None = None
     descriptors: list[Any] | None = None
     job_succeeded = False
@@ -725,9 +734,12 @@ def _propose_with_grok(
                 run_id=run_id,
                 provider_timeout_s=float(timeout_s),
                 cwd=sandbox,
+                job_id=job_id,
             )
             record = getattr(started, "record", None)
-            job_id = str(getattr(record, "job_id", "") or "").strip() or None
+            started_id = str(getattr(record, "job_id", "") or "").strip() or None
+            if started_id:
+                job_id = started_id
             if not job_id:
                 raise SimplifyProviderError(
                     "grok job start did not return a job_id",
@@ -841,7 +853,10 @@ def _propose_with_grok(
                 job_id=job_id,
             )
             porcelain_after = _git_porcelain(root)
-            fingerprint_after = _workspace_content_fingerprint(root)
+            extra_skip = (f".omg/jobs/{job_id}/",) if job_id else ()
+            fingerprint_after = _workspace_content_fingerprint(
+                root, extra_skip=extra_skip
+            )
             if (
                 porcelain_after != porcelain_before
                 or fingerprint_after != fingerprint_before

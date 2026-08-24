@@ -618,6 +618,89 @@ def test_simplify_provider_detects_omg_state_and_gitignored_mutation(
     assert forged.read_text(encoding="utf-8") == '{"verified": true, "passes": true}\n'
 
 
+def test_simplify_provider_ignores_cli_event_journal(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+    events = project / ".omg" / "state" / "events"
+    cursors = project / ".omg" / "state" / "event-cursors"
+
+    def _wait_and_journal(project_root: Path, job_id: str, **kwargs: object):
+        events.mkdir(parents=True, exist_ok=True)
+        cursors.mkdir(parents=True, exist_ok=True)
+        (events / "cli.jsonl").write_text('{"event":"job.terminal"}\n', encoding="utf-8")
+        (cursors / "cli.json").write_text("{}\n", encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_journal  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 0
+    payload = _out(capsys)
+    assert payload["ok"] is True
+    assert payload["verified"] is False
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
+def test_simplify_provider_detects_unrelated_artifact_mutation(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "x = 1\n"
+    (project / "app.py").write_text(current, encoding="utf-8")
+    other = project / ".omg" / "artifacts" / "prior.json"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("{}\n", encoding="utf-8")
+    descriptor = _descriptor("app.py", current, old_text="x = 1", replacement="x = 2")
+    fake = _FakeGrokJob(
+        "```json\n" + json.dumps({"descriptors": [descriptor]}) + "\n```\n"
+    )
+    real_wait = fake.wait
+
+    def _wait_and_edit(project_root: Path, job_id: str, **kwargs: object):
+        other.write_text('{"tampered": true}\n', encoding="utf-8")
+        return real_wait(project_root, job_id, **kwargs)
+
+    fake.wait = _wait_and_edit  # type: ignore[method-assign]
+    _install_fake(monkeypatch, fake)
+    rc = main(
+        [
+            "--json",
+            "edit",
+            "simplify",
+            "--paths",
+            "app.py",
+            "--enable",
+            "--provider",
+            "grok",
+        ]
+    )
+    assert rc == 1
+    payload = _out(capsys)
+    assert _code(payload) == "E_SIMPLIFY_PROVIDER"
+    assert (project / "app.py").read_text(encoding="utf-8") == current
+
+
 def test_simplify_provider_rejects_wrong_producer(
     project: Path,
     capsys: pytest.CaptureFixture[str],
