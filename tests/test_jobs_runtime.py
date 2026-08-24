@@ -423,6 +423,20 @@ def test_prove_does_not_replace_trusted_extra_with_forged_record(root: Path) -> 
             proc.wait(timeout=3)
 
 
+def test_refresh_identity_refuses_missing_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.ownership import ProcessIdentity, refresh_identity
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime=None)
+    monkeypatch.setattr("omg_cli.jobs.ownership.pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.probe_pid_starttime", lambda _pid: "lstart:new"
+    )
+    monkeypatch.setattr("omg_cli.jobs.ownership.os.getpgid", lambda _pid: 99)
+    assert refresh_identity(ident) is None
+
+
 def test_merge_identity_refreshes_pgid_when_starttime_matches() -> None:
     from omg_cli.jobs.ownership import ProcessIdentity, merge_identity
 

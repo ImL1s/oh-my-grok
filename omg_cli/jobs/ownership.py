@@ -466,9 +466,10 @@ def refresh_identity(ident: ProcessIdentity) -> ProcessIdentity | None:
         return None
     live_start = probe_pid_starttime(ident.pid)
     expected = ident.pid_starttime
-    if isinstance(expected, str) and expected != "":
-        if live_start is None or live_start != expected:
-            return None
+    if not isinstance(expected, str) or expected == "":
+        return None
+    if live_start is None or live_start != expected:
+        return None
     try:
         live_pgid = int(os.getpgid(ident.pid))
     except (ProcessLookupError, OSError):
