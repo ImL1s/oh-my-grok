@@ -897,6 +897,7 @@ def _propose_with_grok(
             # kill the runner. Linux only; Darwin has no PR_SET_CHILD_SUBREAPER.
             become_child_subreaper()
             supervisor_pid = os.getpid()
+            preexisting_children = {child.pid for child in child_identities(supervisor_pid)}
             started = start_job(
                 root,
                 provider=GROK_PROVIDER,
@@ -925,12 +926,19 @@ def _propose_with_grok(
             runner_pids = set(captured)
             _absorb_runner_children(captured, runner_pids)
 
+            def _absorb_supervisor_children() -> None:
+                if not runner_pids:
+                    return
+                for child in child_identities(supervisor_pid):
+                    if child.pid in preexisting_children:
+                        continue
+                    merge_identity(captured, child)
+
             def _on_poll(_wait_record: object) -> None:
                 _absorb_runner_children(captured, runner_pids)
-                if runner_pids:
-                    for child in child_identities(supervisor_pid):
-                        merge_identity(captured, child)
+                _absorb_supervisor_children()
 
+            _absorb_supervisor_children()
             waited, timed_out = wait_job(
                 root,
                 job_id,
@@ -940,9 +948,7 @@ def _propose_with_grok(
                 on_poll=_on_poll,
             )
             _absorb_runner_children(captured, runner_pids)
-            if runner_pids:
-                for child in child_identities(supervisor_pid):
-                    merge_identity(captured, child)
+            _absorb_supervisor_children()
             start_identities = tuple(captured.values())
             if timed_out:
                 _cancel_simplify_job(
