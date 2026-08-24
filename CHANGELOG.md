@@ -61,7 +61,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   the mismatch as reuse. Terminal job.json never overwrites captured
   extras. PGID scans run only while that identity is live. The job
   runner waits for adopted children before exit so a Linux subreaper
-  is not dropped immediately after the provider returns.
+  is not dropped immediately after the provider returns. Simplify itself
+  also becomes the Linux subreaper before start_job so grok cannot
+  escape by killing the job runner.
   Refs #76 (does not close).
 - **#147 leftover live grok scale TUI_READY splash wipe:** interactive
   grok wrapper writes `TUI_READY:<nonce>` to an attempt-scoped sidecar

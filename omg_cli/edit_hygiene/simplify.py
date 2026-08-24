@@ -49,6 +49,7 @@ from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.ownership import (
     IdentityProbeOutcome,
     ProcessIdentity,
+    become_child_subreaper,
     child_identities,
     merge_identity,
     pgid_member_identities,
@@ -892,6 +893,10 @@ def _propose_with_grok(
     start_identities: tuple[Any, ...] = ()
     try:
         try:
+            # Subreaper must be this supervisor, not the job runner: grok can
+            # kill the runner. Linux only; Darwin has no PR_SET_CHILD_SUBREAPER.
+            become_child_subreaper()
+            supervisor_pid = os.getpid()
             started = start_job(
                 root,
                 provider=GROK_PROVIDER,
@@ -922,6 +927,9 @@ def _propose_with_grok(
 
             def _on_poll(_wait_record: object) -> None:
                 _absorb_runner_children(captured, runner_pids)
+                if runner_pids:
+                    for child in child_identities(supervisor_pid):
+                        merge_identity(captured, child)
 
             waited, timed_out = wait_job(
                 root,
@@ -932,6 +940,9 @@ def _propose_with_grok(
                 on_poll=_on_poll,
             )
             _absorb_runner_children(captured, runner_pids)
+            if runner_pids:
+                for child in child_identities(supervisor_pid):
+                    merge_identity(captured, child)
             start_identities = tuple(captured.values())
             if timed_out:
                 _cancel_simplify_job(
