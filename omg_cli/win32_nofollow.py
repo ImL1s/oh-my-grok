@@ -327,7 +327,7 @@ def write_relative_regular(
             parent,
             name,
             access=GENERIC_READ | DELETE | SYNCHRONIZE,
-            share=FILE_SHARE_DELETE,
+            share=0,
             disposition=FILE_OPEN,
             options=(
                 FILE_NON_DIRECTORY_FILE
@@ -370,13 +370,13 @@ def write_relative_regular(
         while written < len(payload):
             written += api.write(tmp, payload[written:])
         api.flush(tmp)
-        # Dest stays open (FILE_SHARE_DELETE) so another writer cannot
-        # splice the leaf while the temp is published.
         _reject_reparse(api, leaf, label=name, directory=False)
-        api.rename_replace(tmp, name, root_handle=parent)
-        tmp = None
+        # Exclusive dest must drop before ReplaceIfExists; tmp stays
+        # pinned through the rename via SetFileInformationByHandle.
         _close(api, leaf)
         leaf = None
+        api.rename_replace(tmp, name, root_handle=parent)
+        tmp = None
         published, _published_mode = read_relative_regular(
             root, parts, max_bytes=max_bytes
         )
@@ -533,6 +533,13 @@ class CtypesWin32API:
         kernel32.WriteFile.restype = wintypes.BOOL
         kernel32.FlushFileBuffers.argtypes = [self._HANDLE]
         kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        kernel32.SetFileInformationByHandle.argtypes = [
+            self._HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
         kernel32.GetFileInformationByHandle.argtypes = [self._HANDLE, ctypes.c_void_p]
         kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
         kernel32.DeviceIoControl.argtypes = [
@@ -817,15 +824,27 @@ class CtypesWin32API:
         return buf.value
 
     def rename_replace(self, handle: int, dest_name: str, *, root_handle: int) -> None:
-        parent = self._final_path(root_handle)
-        src = self._final_path(handle)
-        dest = parent + ("\\" if not parent.endswith("\\") else "") + dest_name
-        MOVEFILE_REPLACE_EXISTING = 0x1
-        MOVEFILE_WRITE_THROUGH = 0x8
-        # Close is required on some Windows versions before MoveFileEx replace.
-        self.close(handle)
-        ok = self._kernel32.MoveFileExW(
-            src, dest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+        ctypes = self._ctypes
+        encoded = dest_name.encode("utf-16-le") + b"\x00\x00"
+        class _FILE_RENAME_INFO(ctypes.Structure):
+            _fields_ = [
+                ("ReplaceIfExists", self._wintypes.BOOLEAN),
+                ("RootDirectory", self._HANDLE),
+                ("FileNameLength", self._wintypes.DWORD),
+                ("FileName", ctypes.c_char * len(encoded)),
+            ]
+
+        info = _FILE_RENAME_INFO()
+        info.ReplaceIfExists = True
+        info.RootDirectory = self._HANDLE(root_handle)
+        info.FileNameLength = len(encoded) - 2
+        info.FileName[: len(encoded)] = encoded
+        FileRenameInfo = 3
+        ok = self._kernel32.SetFileInformationByHandle(
+            self._HANDLE(handle),
+            FileRenameInfo,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
         )
         if not ok:
             self._raise_last("write", f"cannot replace {dest_name}")
