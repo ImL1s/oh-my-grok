@@ -22,7 +22,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   file; catalog `inbox.md` remains an alias. `omg team scale --add`
   on an interactive TTY team uses the interactive argv/wrapper (never
   supervisor panes); new workers stay `input_ready=false` until their
-  own TUI_READY+TOCTOU proof. Mixed interactive/headless active sets
+  own TUI_READY+TOCTOU proof. After a scale/relaunch generation bump,
+  unchanged exact identities rebind persisted TUI_READY evidence
+  instead of requiring the one-shot marker still in bounded
+  scrollback. Mixed interactive/headless active sets
   fail closed. Fixture `interactive_tty.py` prints `WINCH:` on
   SIGWINCH and `INT:` on SIGINT without killing the leader.
   Default/`auto` stay headless. No `LIVE_TEAM_INTERACTIVE_TTY_OK`

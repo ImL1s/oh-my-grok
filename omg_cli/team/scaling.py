@@ -4119,6 +4119,7 @@ def scale_team(
                 safe=safe,
                 extra=extra,
                 tasks_json=tasks_json,
+                env=env,
             )
         _assert_no_uncommitted_scale_wal(
             root_path,
@@ -4150,6 +4151,7 @@ def _scale_up(
     safe: bool,
     extra: Sequence[str] | None,
     tasks_json: str | Sequence[Mapping[str, Any]] | None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     tasks_all = list(meta.get("tasks") or [])
     want_interactive = _team_wants_interactive_scale(tasks_all)
@@ -4806,6 +4808,7 @@ def _scale_up(
             root,
             run_id,
             interactive_ids or [str(r["task_id"]) for r in new_records],
+            env=env,
         )
     return {
         "writer": CLI_WRITER,

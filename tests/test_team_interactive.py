@@ -1308,6 +1308,153 @@ def test_promote_restamps_generation_to_current_team_identity(
 
 
 @_POSIX
+def test_readiness_rebinds_generation_when_tui_ready_left_scrollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        normalize_worker_io_capability,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 0
+        row = current["tasks"][0]
+        row["pane_id"] = "%7"
+        row["pid"] = 111
+        row["pid_start"] = "start-a"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+            ),
+        )
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+
+    def _bump(current: dict) -> dict:
+        current["identity_generation"] = 1
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _bump)
+    capture_calls: list[str] = []
+
+    def _scrolled_out(pane_id: str, socket_path: str | None = None) -> str:
+        capture_calls.append(pane_id)
+        return ("noise line\n" * 250) + "still no marker\n"
+
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane", _scrolled_out
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert capture_calls == []
+    assert "t1" in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    assert disk["tasks"][0]["input_ready"] is True
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 1
+    cap = normalize_worker_io_capability(
+        disk["tasks"][0], attempt=1, generation=1
+    )
+    assert cap.input_ready is True
+
+
+@_POSIX
+def test_readiness_does_not_rebind_when_pane_identity_changed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import omg_cli.team.runtime as runtime_mod
+    from omg_cli.team.io_capability import (
+        interactive_pane_io_ready,
+        stamp_io_capability,
+    )
+    from omg_cli.team.plane import load_team_meta, mutate_team_meta
+
+    _enable(monkeypatch)
+    _git_init(tmp_path)
+    meta = start_team(
+        "interactive fixture",
+        TASKS,
+        root=tmp_path,
+        dry_run=True,
+        check_binary=False,
+        executor="fixture",
+        io_mode="interactive",
+        env={EXPERIMENTAL_ENV: "1"},
+    )
+    nonce = str(meta["tasks"][0]["interactive_nonce"])
+    run_id = str(meta["run_id"])
+
+    def _seed(current: dict) -> dict:
+        current["identity_generation"] = 1
+        row = current["tasks"][0]
+        row["pane_id"] = "%99"
+        row["pid"] = 999
+        row["pid_start"] = "flipped"
+        row["generation"] = 0
+        row["attempt"] = 1
+        stamp_io_capability(
+            row,
+            interactive_pane_io_ready(
+                ready_marker=f"TUI_READY:{nonce}",
+                pane_id="%7",
+                provider_pid=111,
+                attempt=1,
+                generation=0,
+            ),
+        )
+        return current
+
+    mutate_team_meta(tmp_path, run_id, _seed)
+    monkeypatch.setattr(
+        "omg_cli.team.runtime._capture_interactive_pane",
+        lambda pane_id, socket_path=None: "noise line\n" * 250,
+    )
+    out = runtime_mod.apply_interactive_worker_readiness(
+        tmp_path,
+        run_id,
+        ["t1"],
+        timeout_ms=200,
+        env={EXPERIMENTAL_ENV: "1", "OMG_TEAM_READY_TIMEOUT_MS": "200"},
+    )
+    assert "t1" not in (out.get("startup_ready_workers") or [])
+    disk = load_team_meta(tmp_path, run_id)
+    ev = disk["tasks"][0].get("interaction_evidence") or {}
+    assert ev.get("generation") == 0
+    assert ev.get("pane_id") == "%7"
+
+
+@_POSIX
 def test_inbox_instruction_skips_same_inbox_and_attempt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

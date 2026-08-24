@@ -942,6 +942,91 @@ def _filter_interactive_ready_evidence(
     return filtered
 
 
+def _persisted_ready_evidence_for_unchanged_identity(
+    root: Path | str,
+    run_id: str,
+    task_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Reuse prior TUI-ready evidence when pane identity is unchanged.
+
+    Scale/relaunch bumps ``identity_generation``. Recapturing the one-shot
+    ``TUI_READY:<nonce>`` marker can fail once it leaves bounded scrollback.
+    Unchanged exact identities keep their marker; callers restamp generation.
+    Identity flips (pane/pid/start/attempt) are not rebound.
+    """
+    from omg_cli.team.interactive import evidence_matches_worker_identity
+    from omg_cli.team.io_capability import (
+        IO_MODE_INTERACTIVE_TTY,
+        normalize_worker_io_capability,
+    )
+
+    wanted = {str(t).strip() for t in task_ids if str(t).strip()}
+    if not wanted:
+        return {}
+    try:
+        meta = load_team_meta(root, run_id)
+    except TeamError:
+        return {}
+    gen = meta.get("identity_generation", 0)
+    team_gen = (
+        gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 0 else 0
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for raw in meta.get("tasks") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tid = str(raw.get("task_id") or "").strip()
+        if tid not in wanted:
+            continue
+        cap = normalize_worker_io_capability(raw)
+        if cap.io_mode != IO_MODE_INTERACTIVE_TTY or not cap.input_ready:
+            continue
+        ev_raw = raw.get("interaction_evidence")
+        if not isinstance(ev_raw, Mapping):
+            continue
+        marker = ev_raw.get("ready_marker")
+        if not isinstance(marker, str) or not marker.startswith("TUI_READY:"):
+            continue
+        pane = ev_raw.get("pane_id")
+        if not isinstance(pane, str) or not pane.startswith("%"):
+            pane = raw.get("pane_id")
+        if not isinstance(pane, str) or not pane.startswith("%"):
+            continue
+        pid = ev_raw.get("provider_pid")
+        if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0):
+            pid = raw.get("pid")
+        pid_start = ev_raw.get("pid_start")
+        if not isinstance(pid_start, str) or not pid_start:
+            pid_start = raw.get("pid_start")
+        attempt = ev_raw.get("attempt")
+        if not isinstance(attempt, int) or isinstance(attempt, bool):
+            attempt = raw.get("attempt")
+        provider_pid = (
+            pid
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+            else None
+        )
+        candidate = {
+            "task_id": tid,
+            "ready_marker": marker,
+            "pane_id": pane,
+            "provider_pid": provider_pid,
+            "pid_start": pid_start if isinstance(pid_start, str) and pid_start else None,
+            "attempt": (
+                attempt
+                if isinstance(attempt, int) and not isinstance(attempt, bool)
+                else 1
+            ),
+            "generation": team_gen,
+        }
+        row = dict(raw)
+        row["generation"] = team_gen
+        if not evidence_matches_worker_identity(candidate, row):
+            continue
+        out[tid] = candidate
+    return out
+
+
 def _promote_interactive_input_ready(
     root: Path | str,
     run_id: str,
@@ -1174,17 +1259,38 @@ def _interactive_startup_payload(
     def _prove(row: Mapping[str, Any], ev: Mapping[str, Any]) -> bool:
         return evidence_matches_worker_identity(ev, row)
 
-    waited = wait_for_interactive_tui_ready(
-        workers,
-        timeout_ms=ms,
-        poll_s=poll_s,
-        capture_fn=lambda pane_id: _capture_interactive_pane(
-            pane_id, socket_path=socket
-        ),
-        refresh_fn=_refresh,
-        prove_fn=_prove,
+    persisted = _persisted_ready_evidence_for_unchanged_identity(
+        root, run_id, expected
     )
-    raw_evidence = waited.get("evidence") if isinstance(waited.get("evidence"), Mapping) else {}
+    kept = _filter_interactive_ready_evidence(root, run_id, persisted)
+    remaining = [
+        row
+        for row in workers
+        if isinstance(row, Mapping)
+        and str(row.get("task_id") or "").strip()
+        and str(row.get("task_id") or "").strip() not in kept
+    ]
+    raw_evidence: dict[str, Any] = dict(kept)
+    if remaining:
+        waited = wait_for_interactive_tui_ready(
+            remaining,
+            timeout_ms=ms,
+            poll_s=poll_s,
+            capture_fn=lambda pane_id: _capture_interactive_pane(
+                pane_id, socket_path=socket
+            ),
+            refresh_fn=_refresh,
+            prove_fn=_prove,
+        )
+        waited_ev = (
+            waited.get("evidence")
+            if isinstance(waited.get("evidence"), Mapping)
+            else {}
+        )
+        if isinstance(waited_ev, Mapping):
+            for tid, ev in waited_ev.items():
+                if isinstance(tid, str) and tid and tid not in raw_evidence:
+                    raw_evidence[tid] = ev
     evidence = _filter_interactive_ready_evidence(
         root, run_id, raw_evidence if isinstance(raw_evidence, Mapping) else {}
     )
