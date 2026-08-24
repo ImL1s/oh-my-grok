@@ -1358,7 +1358,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                         execution = result.get("execution") or {}
                         print(
                             f"hyperplan execute {tag} "
-                            f"executor=fixture "
+                            f"executor={execution.get('executor') or executor} "
                             f"lanes={len(execution.get('worker_evidence') or [])} "
                             f"execution_supported={result.get('execution_supported')} "
                             f"manifest_execution_supported="
@@ -1651,7 +1651,7 @@ def cmd_team(args: argparse.Namespace) -> int:
                         execution = result.get("execution") or {}
                         print(
                             f"security-research execute {tag} "
-                            f"executor=fixture "
+                            f"executor={execution.get('executor') or executor} "
                             f"lanes={len(execution.get('worker_evidence') or [])} "
                             f"execution_supported={result.get('execution_supported')} "
                             f"manifest_execution_supported="
@@ -3184,9 +3184,9 @@ def register_team_parsers(
         "execute",
         parents=[common],
         help=(
-            "fixture-only auto-workers: claim-lane/submit-lane-result then "
-            "collect-tasks; stamps omg.team.composition_execution_v1 "
-            "(compile execution_supported stays false)"
+            "auto-workers: claim-lane/submit-lane-result then collect-tasks; "
+            "stamps omg.team.composition_execution_v1 "
+            "(executor fixture|grok; compile execution_supported stays false)"
         ),
     )
     p_hp_exec.add_argument(
@@ -3199,19 +3199,22 @@ def register_team_parsers(
         "--team-id",
         dest="team_id",
         required=True,
-        help="Team API team_id for fixture worker execution",
+        help="Team API team_id for composition worker execution",
     )
     p_hp_exec.add_argument(
         "--input",
         dest="hyperplan_bundle",
         required=True,
-        help="path to HyperplanResultBundleV1 JSON (fixture lane payloads)",
+        help="path to HyperplanResultBundleV1 JSON (lane payloads)",
     )
     p_hp_exec.add_argument(
         "--executor",
         dest="composition_executor",
         default="fixture",
-        help="auto-worker executor (fixture only; grok/agy/cursor refused)",
+        help=(
+            "auto-worker executor (fixture|grok; "
+            "agy/claude/codex/cursor/kimi/omc refused)"
+        ),
     )
     p_hp_exec.set_defaults(
         func=cmd_team,
@@ -3455,9 +3458,10 @@ def register_team_parsers(
         "execute",
         parents=[common],
         help=(
-            "fixture-only auto-workers: claim-lane/submit-lane-result then "
-            "collect-tasks; stamps omg.team.composition_execution_v1 "
-            "(compile execution_supported stays false; no PoC)"
+            "auto-workers: claim-lane/submit-lane-result then collect-tasks; "
+            "stamps omg.team.composition_execution_v1 "
+            "(executor fixture|grok; compile execution_supported stays false; "
+            "no PoC)"
         ),
     )
     p_sr_exec.add_argument(
@@ -3470,19 +3474,22 @@ def register_team_parsers(
         "--team-id",
         dest="team_id",
         required=True,
-        help="Team API team_id for fixture worker execution",
+        help="Team API team_id for composition worker execution",
     )
     p_sr_exec.add_argument(
         "--input",
         dest="security_research_bundle",
         required=True,
-        help="path to SecurityResearchResultBundleV1 JSON (fixture lane payloads)",
+        help="path to SecurityResearchResultBundleV1 JSON (lane payloads)",
     )
     p_sr_exec.add_argument(
         "--executor",
         dest="composition_executor",
         default="fixture",
-        help="auto-worker executor (fixture only; grok/agy/cursor refused)",
+        help=(
+            "auto-worker executor (fixture|grok; "
+            "agy/claude/codex/cursor/kimi/omc refused)"
+        ),
     )
     p_sr_exec.set_defaults(
         func=cmd_team,

@@ -3,11 +3,12 @@
 Hermetic Security Research contract: deterministic DAG compiler, fail-closed
 manifest persistence, offline result production, **shared composition
 task-driver admission/collection**, **worker-scoped lane claim/submit**,
-and **fixture-backed auto-worker execution** under the canonical Team run
+and **fixture- or grok-backed auto-worker execution** under the canonical Team run
 root. Compile / produce / admit / collect / claim contracts keep
 `execution_supported=false`. Immutable safe-PoC policy is unchanged: this
-slice never runs a PoC. Live grok / agy / antigravity / cursor
-auto-execution remains unsupported.
+slice never runs a PoC. `executor=grok` launches via existing Jobs
+`launch_worker` (not `live_verified`). agy / antigravity / claude / codex /
+cursor / kimi / omc auto-execution remain refused.
 
 Authoritative modules: `omg_cli.team.compositions.security_research`,
 `omg_cli.team.compositions.task_driver`,
@@ -23,7 +24,7 @@ omg team security-research admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team security-research collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team security-research claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--json]
 omg team security-research submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
-omg team security-research execute --run RUN_ID --team-id TEAM_ID --executor fixture --input RESULT_BUNDLE.json [--json]
+omg team security-research execute --run RUN_ID --team-id TEAM_ID --executor fixture|grok --input RESULT_BUNDLE.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize`,
@@ -46,16 +47,19 @@ PR13 lane protocol (`CompositionLaneClaimV1` + `LaneTaskResultV1` via existing
 `claim-task` / `transition-task-status`). No PoC execution, network access, or
 provider launch. `execution_supported=false` retained.
 
-`execute` is **leader-only** and **fixture-only** (shared Hyperplan driver).
-It runs claim-lane / submit-lane-result with fixture workers, then
-collect-tasks, and writes `security-research-v1-execution.json`
-(`omg.team.composition_execution_v1`) **last**. `--input` is a
+`execute` is **leader-only** (shared Hyperplan driver). It runs claim-lane /
+submit-lane-result, then collect-tasks, and writes
+`security-research-v1-execution.json`
+(`omg.team.composition_execution_v1`) **last**. `--executor fixture` uses
+in-process pane workers and still refuses `worker_topology=job`.
+`--executor grok` launches grok through existing `launch_worker` Jobs
+machinery (not `live_verified`). `--input` is a
 `SecurityResearchResultBundleV1` and is normalized with the same exact-key /
 foreign-writer / digest / `artifact_kind` contract as `produce-report`
-**before** fixture workers submit `LaneTaskResultV1` payloads. Safe-PoC
-policy is unchanged: no PoC, network, or weaponized research. grok / agy /
-antigravity / cursor and job topology fail closed. Compile/produce/collect
-stay `execution_supported=false`.
+**before** workers submit `LaneTaskResultV1` payloads. Safe-PoC
+policy is unchanged: no PoC, network, or weaponized research. agy /
+antigravity / claude / codex / cursor / kimi / omc remain refused.
+Compile/produce/collect stay `execution_supported=false`.
 
 `produce-report` derives a report from a bounded
 `SecurityResearchResultBundleV1` (exactly one receipt per manifest lane;
@@ -129,7 +133,8 @@ closed. Survivors that fail validation land in `rejected_candidates`.
   report
 - Missing / cancelled run → refuse
 - Never sets `verified` / `passes`
-- Never launches panes, Jobs, providers, Antigravity, MCP, or PoC execution
+- Produce / admit / collect never launch panes, Jobs, providers, Antigravity, MCP, or PoC
+- Grok execute launches only via existing `launch_worker` (provider=grok); never a PoC
 - Worker claim/submit refuse leader / partial / non-Team spawn contexts
 - Execute `--input` uses the ResultBundleV1 normalizer (foreign writer /
   claimed digest / artifact_kind / unexpected fields refused)
@@ -145,12 +150,13 @@ task driver (admit-tasks / collect-tasks) landed under #69 PR12. Composition
 lane worker protocol (claim-lane / submit-lane-result) landed under #69
 PR13. Fixture-backed composition execution landed under #69 PR14
 (`omg.team.composition_execution_v1`; compile/produce stay
-`execution_supported=false`; safe-PoC policy unchanged). Does **not** close
-#69: live grok / agy / antigravity / cursor auto-workers, PoC running, job-backed
-live workers, host prompt-queue / fan-out consume, model synthesis, live
-Antigravity evidence, and full OMX remain open. Hyperplan hermetic result
-production landed under #69 PR10. Manifests retain
-`execution_supported=false`. No `live_*` maturity claims. Catalog stays v4
-(execute is a CLI/Python path, not a catalog op).
+`execution_supported=false`; safe-PoC policy unchanged). Grok composition
+execute is admitted via the Jobs `launch_worker` path (not `live_verified`).
+Does **not** close #69: agy / antigravity / claude / codex / cursor / kimi /
+omc auto-workers, PoC running, live AG job-backed workers, host
+prompt-queue / fan-out consume, model synthesis, live Antigravity evidence,
+and full OMX remain open. Hyperplan hermetic result production landed under
+#69 PR10. Manifests retain `execution_supported=false`. No `live_*` maturity
+claims. Catalog stays v4 (execute is a CLI/Python path, not a catalog op).
 
 Refs #69.

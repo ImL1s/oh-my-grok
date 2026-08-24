@@ -3,10 +3,11 @@
 Hermetic Hyperplan contract: deterministic DAG compiler, fail-closed
 manifest persistence, offline result production, **shared composition
 task-driver admission/collection**, **worker-scoped lane claim/submit**,
-and **fixture-backed auto-worker execution** under the canonical Team run
+and **fixture- or grok-backed auto-worker execution** under the canonical Team run
 root. Compile / produce / admit / collect / claim contracts keep
-`execution_supported=false`. Live grok / agy / antigravity / cursor
-auto-execution remains unsupported.
+`execution_supported=false`. `executor=grok` launches via existing Jobs
+`launch_worker` (not `live_verified`). agy / antigravity / claude / codex /
+cursor / kimi / omc auto-execution remain refused.
 
 Authoritative modules: `omg_cli.team.compositions.hyperplan`,
 `omg_cli.team.compositions.task_driver`,
@@ -22,7 +23,7 @@ omg team hyperplan admit-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team hyperplan collect-tasks --run RUN_ID --team-id TEAM_ID [--json]
 omg team hyperplan claim-lane --run RUN_ID --team-id TEAM_ID --lane-id LANE [--json]
 omg team hyperplan submit-lane-result --run RUN_ID --team-id TEAM_ID --claim-file CLAIM.json --result RESULT.json [--json]
-omg team hyperplan execute --run RUN_ID --team-id TEAM_ID --executor fixture --input RESULT_BUNDLE.json [--json]
+omg team hyperplan execute --run RUN_ID --team-id TEAM_ID --executor fixture|grok --input RESULT_BUNDLE.json [--json]
 ```
 
 `plan` performs **zero** filesystem mutation. `materialize`,
@@ -50,20 +51,24 @@ claim token; machine `--json` may expose it for the worker. Submit consumes a
 claim file (no `--claim-token` argv). Rejected/blocked lane results still
 transition the Team task to `completed`. `execution_supported=false` retained.
 
-`execute` is **leader-only** and **fixture-only**. After admit-tasks it drives
-each pending lane through the real claim-lane / submit-lane-result protocol
-using in-process fixture workers (`pane_id=fx-{worker_id}`), then
+`execute` is **leader-only**. After admit-tasks it drives each pending lane
+through the real claim-lane / submit-lane-result protocol, then
 collect-tasks, and writes `.omg/state/runs/<run>/team/compositions/hyperplan-v1-execution.json`
-(`omg.team.composition_execution_v1`) **last**. `--input` is a
+(`omg.team.composition_execution_v1`) **last**. `--executor fixture` uses
+in-process pane workers (`pane_id=fx-{worker_id}`) and still refuses
+`worker_topology=job`. `--executor grok` launches grok through existing
+`launch_worker` Jobs machinery, waits for SUCCEEDED, then submits the
+normalized `--input` lane results (`pane_id=job-{job_id}`). `--input` is a
 `HyperplanResultBundleV1` and is normalized with the same exact-key /
 foreign-writer / digest / `artifact_kind` contract as `produce-decision`
-**before** fixture workers submit `LaneTaskResultV1` payloads. That evidence
+**before** workers submit `LaneTaskResultV1` payloads. That evidence
 document may stamp `execution_supported=true` only with worker evidence
-(run ids, fixture pane ids, lane result/claim digests). Forged
-`{execution_supported:true}` without evidence is refused. The materialized
-manifest and collect return keep `execution_supported=false`. grok / agy /
-antigravity / cursor executors and `worker_topology=job` fail closed. No
-tmux, Jobs, MCP, PoC, or `live_*`. Never writes `passes` / `verified`.
+(run ids, pane ids, lane result/claim digests; grok rows also carry
+`job_id`). Forged `{execution_supported:true}` without evidence is refused.
+The materialized manifest and collect return keep
+`execution_supported=false`. agy / antigravity / claude / codex / cursor /
+kimi / omc remain refused. No tmux, MCP, PoC, or `live_verified`. Never
+writes `passes` / `verified`.
 
 `collect-tasks` remains leader-only: requires a committed batch with exact lane
 coverage, every mapped task `completed` + claim-free + still bound, parses
@@ -145,7 +150,8 @@ conflicts) fail closed rather than being silently normalized.
   decision
 - Missing / cancelled run → refuse
 - Never sets `verified` / `passes`
-- Never launches panes, Jobs, providers, Antigravity, or MCP
+- Produce / admit / collect never launch panes, Jobs, providers, Antigravity, or MCP
+- Grok execute launches only via existing `launch_worker` (provider=grok)
 - Worker claim/submit refuse leader / partial / non-Team spawn contexts
 - Concurrent same-lane claims yield exactly one winner
 - Same-result submit is idempotent; conflicting submit is refused
@@ -163,8 +169,10 @@ task driver (admit-tasks / collect-tasks) landed under #69 PR12. Composition
 lane worker protocol (claim-lane / submit-lane-result) landed under #69
 PR13. Fixture-backed composition execution landed under #69 PR14
 (`omg.team.composition_execution_v1`; compile/produce stay
-`execution_supported=false`). Does **not** close #69: live grok / agy /
-antigravity / cursor auto-workers, job-backed live workers, host
+`execution_supported=false`). Grok composition execute is admitted via the
+Jobs `launch_worker` path (hermetic fake grok in tests; not
+`live_verified`). Does **not** close #69: agy / antigravity / claude /
+codex / cursor / kimi / omc auto-workers, live AG job-backed workers, host
 prompt-queue / fan-out consume, model synthesis, live Antigravity evidence,
 and full OMX remain open. Security Research hermetic result production
 landed under #69 PR9. Manifests retain `execution_supported=false`. No

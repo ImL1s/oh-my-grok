@@ -258,8 +258,8 @@ omg team status --run RUN --json
 omg team collect --run RUN   # seal_all_tasks + integrate；永不 verified
 omg team stop --run RUN      # 只殺記錄的 session + pgid（禁止 pkill -f）
 # Hyperplan / Security Research V1 fixture execute（#69 PR14；compile 仍 execution_supported=false）:
-omg team hyperplan execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
-omg team security-research execute --run RUN --team-id TEAM --executor fixture --input RESULT_BUNDLE.json --json
+omg team hyperplan execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
+omg team security-research execute --run RUN --team-id TEAM --executor fixture|grok --input RESULT_BUNDLE.json --json
 # 关闭 team plane：export OMG_DISABLE_TMUX_TEAM=1
 ```
 
