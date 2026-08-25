@@ -24,11 +24,11 @@ from omg_cli.contracts.path_keys import (
     ContractPathError,
     atomic_write_bytes,
     ensure_managed_dir,
-    read_managed_regular_bytes,
-    _win32_file_parts,
 )
 from omg_cli.win32_nofollow import (
     Win32NofollowError,
+    read_relative_regular,
+    volume_root_and_parts,
     walk_managed_directories,
     windows_nofollow_ready,
 )
@@ -140,15 +140,12 @@ def _win32_source_error(exc: Win32NofollowError) -> InstallMigrateError:
 
 def _windows_parts(path: Path) -> tuple[Path, list[str]]:
     try:
-        base, parts = _win32_file_parts(Path(path).absolute())
-    except ContractPathError as exc:
-        text = str(exc).lower()
-        if "symlink" in text or "reparse" in text:
-            raise InstallMigrateError("E_SYMLINK", "refusing symlink source") from exc
-        raise InstallMigrateError("E_PATH", "unsafe source file name") from exc
+        root, parts = volume_root_and_parts(path)
+    except Win32NofollowError as exc:
+        raise _win32_source_error(exc) from exc
     if not parts:
         raise InstallMigrateError("E_PATH", "unsafe source path")
-    return base, parts
+    return root, parts
 
 
 def _windows_leaf_kind(path: Path) -> str:
@@ -167,25 +164,12 @@ def _windows_leaf_kind(path: Path) -> str:
 
 
 def _read_regular_windows(path: Path, *, max_bytes: int) -> bytes:
+    root, parts = _windows_parts(path)
     try:
-        return read_managed_regular_bytes(path, max_bytes=max_bytes)
-    except FileNotFoundError as exc:
-        raise InstallMigrateError("E_SOURCE", "source file is unreadable") from exc
-    except ContractPathError as exc:
-        text = str(exc).lower()
-        if "symlink" in text or "reparse" in text:
-            raise InstallMigrateError("E_SYMLINK", "refusing symlink source") from exc
-        if "exceed" in text or "limit" in text:
-            raise InstallMigrateError(
-                "E_SOURCE", "source file exceeds import size limit"
-            ) from exc
-        if "changed" in text:
-            raise InstallMigrateError(
-                "E_SOURCE", "source file changed while reading"
-            ) from exc
-        if "regular" in text:
-            raise InstallMigrateError("E_SOURCE", "source is not a regular file") from exc
-        raise InstallMigrateError("E_SOURCE", "source file is unreadable") from exc
+        body, _mode = read_relative_regular(root, parts, max_bytes=max_bytes)
+    except Win32NofollowError as exc:
+        raise _win32_source_error(exc) from exc
+    return body
 
 
 def _iter_source_files_windows(source: Path) -> list[Path]:

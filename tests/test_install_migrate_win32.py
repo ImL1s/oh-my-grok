@@ -123,6 +123,29 @@ def test_windows_backend_refuses_reparse_source(
     _assert_nofollow_flags(fake_win32)
 
 
+def test_windows_read_refuses_symlink_ancestor(
+    tmp_path: Path, fake_win32: FakeWin32API
+) -> None:
+    """Intermediate junctions must not be skipped by opening a deep parent."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_bytes(_SECRET)
+    src = tmp_path / "src"
+    src.mkdir()
+    nested = src / "link"
+    try:
+        nested.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation requires privileges on this host")
+    source = nested / "SKILL.md"
+    with pytest.raises(InstallMigrateError, match="E_SYMLINK"):
+        read_regular_nofollow(source)
+    with pytest.raises(InstallMigrateError, match="E_SYMLINK"):
+        run_import(source, project_root=tmp_path, dry_run=True)
+    assert (outside / "SKILL.md").read_bytes() == _SECRET
+    _assert_nofollow_flags(fake_win32)
+
+
 def test_windows_walk_refuses_symlink_child(
     tmp_path: Path, fake_win32: FakeWin32API
 ) -> None:

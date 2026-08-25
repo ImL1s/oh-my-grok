@@ -48,13 +48,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ### Fixed
 - **#77 leftover: Windows no-follow import/migrate source reads:**
-  `omg setup import|migrate` source walks and `read_regular_nofollow` use
-  `win32_nofollow` / `path_keys` confined APIs on Windows (`CreateFileW` /
-  `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT`, reject symlink + mount-point
-  reparse) instead of aborting as a POSIX-only leftover. POSIX `O_NOFOLLOW`
-  open+fstat TOCTOU is unchanged when available. Destination writes stay on
-  `atomic_write_bytes` / `ensure_managed_dir`. File copy is not live discovery.
-  Does **not** close #77 (live AG install matrix remains). Refs #77.
+  `omg setup import|migrate` source walks and `read_regular_nofollow` walk
+  every component from the volume root with `NtCreateFile`
+  `FILE_OPEN_REPARSE_POINT` (not a deep absolute parent, which would follow
+  intermediate junctions). POSIX `O_NOFOLLOW` open+fstat TOCTOU is unchanged
+  when available. Destination writes stay on `atomic_write_bytes` /
+  `ensure_managed_dir`. File copy is not live discovery. Does **not** close
+  #77 (live AG install matrix remains). Refs #77.
 - **#77 leftover: Windows managed-store no-follow:** high-level
   `path_keys` primitives (`ensure_managed_dir`, `atomic_write_bytes`,
   `read_managed_regular_bytes`, `confined_path`, `exclusive_lock`,

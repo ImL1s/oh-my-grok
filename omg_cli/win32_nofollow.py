@@ -187,6 +187,31 @@ def _validate_component(name: str) -> str:
     return name
 
 
+def volume_root_and_parts(path: Path | str) -> tuple[Path, list[str]]:
+    """Split *path* into a volume root plus every remaining component.
+
+    CreateFileW ``FILE_FLAG_OPEN_REPARSE_POINT`` only applies to the final
+    path component. Import/migrate sources therefore walk from the volume
+    root with ``NtCreateFile`` + ``FILE_OPEN_REPARSE_POINT`` on each
+    ancestor instead of opening a deep existing parent by absolute path.
+    UNC roots are refused (no trusted walk start).
+    """
+
+    resolved = Path(path)
+    if not resolved.is_absolute():
+        resolved = resolved.absolute()
+    parts = resolved.parts
+    if len(parts) < 2:
+        raise Win32NofollowError("not_regular", "source path has no components")
+    root_s = parts[0]
+    if root_s in {"\\", "\\\\"} or root_s.startswith("\\\\"):
+        raise Win32NofollowError(
+            "unavailable", "UNC source paths are not supported"
+        )
+    rest = [_validate_component(part) for part in parts[1:]]
+    return Path(root_s), rest
+
+
 def _reject_reparse(api: Win32NofollowAPI, handle: int, *, label: str, directory: bool) -> FileInfo:
     info = api.get_info(handle)
     if info.is_reparse or info.reparse_tag:
