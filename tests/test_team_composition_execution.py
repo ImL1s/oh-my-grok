@@ -12,8 +12,11 @@ import pytest
 
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
-from omg_cli.jobs.models import JobState
-from omg_cli.jobs.store import list_job_ids, read_job_record
+from omg_cli.jobs.lease import release_lease_dict
+from omg_cli.jobs.models import JobState, JobStoreError
+from omg_cli.jobs.ownership import capture_identity, pid_alive
+from omg_cli.jobs.runtime import absorb_live_job_identities, cancel_job, prove_job_processes_gone
+from omg_cli.jobs.store import list_job_ids, read_job_record, write_job_record
 from omg_cli.main import main
 from omg_cli.state import write_status
 from omg_cli.team.compositions.execution import (
@@ -23,6 +26,7 @@ from omg_cli.team.compositions.execution import (
     CompositionExecutionError,
     _grok_job_wait_s,
     compile_composition_execution_v1,
+    composition_execution_path,
     execute_composition_tasks_v1,
     fixture_pane_id,
     grok_job_pane_id,
@@ -92,6 +96,52 @@ _POSIX = pytest.mark.skipif(
     os.name != "posix",
     reason="managed-store exclusive_lock / atomic_write requires POSIX",
 )
+
+
+def _hp_execution_path(root: Path, run_id: str) -> Path:
+    return composition_execution_path(root, run_id, "hyperplan_v1")
+
+
+def _kill_session(proc: subprocess.Popen[Any]) -> None:
+    import signal
+
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 1:
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        pass
+
+
+def _stamp_live_identity(rec: Any, ident: Any) -> None:
+    rec.pid = ident.pid
+    rec.pgid = ident.pgid
+    rec.pid_starttime = ident.pid_starttime
+    pp = dict(rec.provider_process or {})
+    pp.update(
+        {
+            "state": "bound",
+            "pid": ident.pid,
+            "pgid": ident.pgid,
+            "pid_starttime": ident.pid_starttime,
+        }
+    )
+    rec.provider_process = pp
+    rec.owner_lease = release_lease_dict(getattr(rec, "owner_lease", None))
+
+
+def _absorb_plus(identities: dict[int, Any], extra: Any) -> None:
+    absorb_live_job_identities(identities)
+    if extra is not None and getattr(extra, "pid", None) not in identities:
+        identities[extra.pid] = extra
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -875,6 +925,9 @@ def test_hyperplan_grok_execute_launches_job_and_stamps_evidence(
     rec = read_job_record(tmp_path, jobs[0])
     assert rec.provider == "grok"
     assert rec.state == JobState.SUCCEEDED
+    prove_job_processes_gone(tmp_path, jobs[0])
+    if rec.pid is not None:
+        assert not pid_alive(rec.pid)
     for row in execution["worker_evidence"]:
         assert row["job_id"] == jobs[0]
         assert row["pane_id"] == grok_job_pane_id(jobs[0])
@@ -956,6 +1009,268 @@ def test_hyperplan_grok_execute_failed_job_does_not_stamp(
         / "compositions"
         / "hyperplan-v1-execution.json"
     )
+    assert not exec_path.exists()
+    loaded = load_hyperplan_manifest(tmp_path, run_id)
+    assert loaded["execution_supported"] is False
+
+
+@_POSIX
+def test_hyperplan_grok_execute_forged_succeeded_live_process_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """Forged SUCCEEDED while a live start identity exists must not stamp."""
+    del fake_grok_path
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    assert isinstance(ident.pid_starttime, str) and ident.pid_starttime
+
+    def _status(project_root: Path, job_id: str) -> Any:
+        rec = read_job_record(project_root, job_id)
+        _stamp_live_identity(rec, ident)
+        return rec
+
+    def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
+        rec = _status(project_root, job_id)
+        rec.state = JobState.SUCCEEDED
+        write_job_record(project_root, rec)
+        on_poll = kwargs.get("on_poll")
+        if callable(on_poll):
+            on_poll(rec)
+        return rec, False
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.job_status", _status
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda idents: _absorb_plus(idents, ident),
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    try:
+        with pytest.raises(
+            HyperplanError, match="still live|claimed terminal"
+        ) as exc_info:
+            execute_hyperplan_tasks_v1(
+                tmp_path,
+                run_id,
+                TEAM,
+                executor="grok",
+                bundle=_hp_bundle(manifest),
+            )
+        assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+        assert not pid_alive(proc.pid)
+        exec_path = _hp_execution_path(tmp_path, run_id)
+        assert not exec_path.exists()
+        loaded = load_hyperplan_manifest(tmp_path, run_id)
+        assert loaded["execution_supported"] is False
+        status = json.loads(
+            (tmp_path / ".omg" / "state" / "runs" / run_id / "status.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert status.get("verified") is not True
+        assert not status.get("passes")
+    finally:
+        if pid_alive(proc.pid):
+            _kill_session(proc)
+
+
+@_POSIX
+def test_hyperplan_grok_execute_timeout_cancel_failure_is_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """Timeout cancel JobStoreError is not swallowed into success."""
+    del fake_grok_path
+
+    def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
+        del kwargs
+        rec = read_job_record(project_root, job_id)
+        return rec, True
+
+    def _cancel(*_args: Any, **_kwargs: Any) -> Any:
+        raise JobStoreError("cancel unproven", code="E_JOB_CANCEL_UNPROVEN")
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.cancel_job", _cancel
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError, match="cancel failed") as exc_info:
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="grok",
+            bundle=_hp_bundle(manifest),
+        )
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+    exec_path = _hp_execution_path(tmp_path, run_id)
+    assert not exec_path.exists()
+    loaded = load_hyperplan_manifest(tmp_path, run_id)
+    assert loaded["execution_supported"] is False
+
+
+@_POSIX
+def test_hyperplan_grok_execute_timeout_cancel_unproven_is_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """Timeout after a forged SUCCEEDED stamp must prove exit, not succeed."""
+    del fake_grok_path
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    ident = capture_identity(proc.pid, pgid=os.getpgid(proc.pid))
+    assert isinstance(ident.pid_starttime, str) and ident.pid_starttime
+
+    def _status(project_root: Path, job_id: str) -> Any:
+        rec = read_job_record(project_root, job_id)
+        _stamp_live_identity(rec, ident)
+        return rec
+
+    def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
+        rec = _status(project_root, job_id)
+        rec.state = JobState.SUCCEEDED
+        write_job_record(project_root, rec)
+        on_poll = kwargs.get("on_poll")
+        if callable(on_poll):
+            on_poll(rec)
+        return rec, True
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.job_status", _status
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda idents: _absorb_plus(idents, ident),
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    try:
+        with pytest.raises(HyperplanError, match="timed out|unproven") as exc_info:
+            execute_hyperplan_tasks_v1(
+                tmp_path,
+                run_id,
+                TEAM,
+                executor="grok",
+                bundle=_hp_bundle(manifest),
+            )
+        assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+        exec_path = _hp_execution_path(tmp_path, run_id)
+        assert not exec_path.exists()
+        loaded = load_hyperplan_manifest(tmp_path, run_id)
+        assert loaded["execution_supported"] is False
+    finally:
+        if pid_alive(proc.pid):
+            _kill_session(proc)
+
+
+@_POSIX
+def test_hyperplan_grok_execute_wait_error_cancels_before_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """recovery-required wait must cancel/prove, not skip the cancel path."""
+    del fake_grok_path
+    cancelled: list[str] = []
+
+    def _wait(*_args: Any, **_kwargs: Any) -> tuple[Any, bool]:
+        raise JobStoreError("lease stale live", code="E_JOB_RECOVERY_REQUIRED")
+
+    real_cancel = cancel_job
+
+    def _cancel(project_root: Path, job_id: str, **kwargs: Any) -> Any:
+        cancelled.append(job_id)
+        return real_cancel(project_root, job_id, **kwargs)
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.cancel_job", _cancel
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError) as exc_info:
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="grok",
+            bundle=_hp_bundle(manifest),
+        )
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+    assert cancelled
+    exec_path = _hp_execution_path(tmp_path, run_id)
+    assert not exec_path.exists()
+    loaded = load_hyperplan_manifest(tmp_path, run_id)
+    assert loaded["execution_supported"] is False
+
+
+@_POSIX
+def test_hyperplan_grok_execute_inner_identity_unproven_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """Missing spawn-recovery identity must not stamp execution evidence."""
+    del fake_grok_path
+
+    def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
+        del kwargs
+        rec = read_job_record(project_root, job_id)
+        rec.state = JobState.SUCCEEDED
+        rec.owner_lease = release_lease_dict(getattr(rec, "owner_lease", None))
+        write_job_record(project_root, rec)
+        return rec, False
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.parse_process_identity",
+        lambda **_kwargs: None,
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError, match="never captured") as exc_info:
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="grok",
+            bundle=_hp_bundle(manifest),
+        )
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+    exec_path = _hp_execution_path(tmp_path, run_id)
     assert not exec_path.exists()
     loaded = load_hyperplan_manifest(tmp_path, run_id)
     assert loaded["execution_supported"] is False
@@ -1151,6 +1466,9 @@ def test_cli_hyperplan_execute_grok_json(
     rec = read_job_record(tmp_path, job_id)
     assert rec.provider == "grok"
     assert rec.state == JobState.SUCCEEDED
+    prove_job_processes_gone(tmp_path, job_id)
+    if rec.pid is not None:
+        assert not pid_alive(rec.pid)
     assert body.get("live_verified") is not True
 
 

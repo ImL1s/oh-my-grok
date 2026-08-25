@@ -57,8 +57,10 @@ collect-tasks, and writes `.omg/state/runs/<run>/team/compositions/hyperplan-v1-
 (`omg.team.composition_execution_v1`) **last**. `--executor fixture` uses
 in-process pane workers (`pane_id=fx-{worker_id}`) and still refuses
 `worker_topology=job`. `--executor grok` launches grok through existing
-`launch_worker` Jobs machinery, waits for SUCCEEDED, then submits the
-normalized `--input` lane results (`pane_id=job-{job_id}`). `--input` is a
+`launch_worker` Jobs machinery, waits, proves process exit
+(`prove_job_processes_gone`; a terminal `job.json` SUCCEEDED stamp is
+not enough), then submits the normalized `--input` lane results
+(`pane_id=job-{job_id}`). `--input` is a
 `HyperplanResultBundleV1` and is normalized with the same exact-key /
 foreign-writer / digest / `artifact_kind` contract as `produce-decision`
 **before** workers submit `LaneTaskResultV1` payloads. That evidence

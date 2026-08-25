@@ -14,15 +14,17 @@ produce-report **before** workers submit ``LaneTaskResultV1`` payloads.
 Compile / produce / admit / collect / claim keep ``execution_supported=false``.
 
 Executors: ``fixture`` (in-process pane workers) and ``grok`` (existing
-``launch_worker`` Jobs plane; provider=grok). agy / antigravity / claude /
-codex / cursor / kimi / omc remain refused. Grok execute is **not**
-``live_verified``. No PoC, tmux, MCP, or catalog bump. Never writes
-``passes`` / ``verified``.
+``launch_worker`` Jobs plane; provider=grok). After wait, grok execute
+proves process exit — a terminal ``job.json`` stamp is not enough.
+agy / antigravity / claude / codex / cursor / kimi / omc remain refused.
+Grok execute is **not** ``live_verified``. No PoC, tmux, MCP, or catalog
+bump. Never writes ``passes`` / ``verified``.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,7 +47,15 @@ from omg_cli.contracts.state_schemas import (
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.runtime import cancel_job, job_status, wait_job
+from omg_cli.jobs.ownership import ProcessIdentity, parse_process_identity
+from omg_cli.jobs.runtime import (
+    absorb_live_job_identities,
+    cancel_job,
+    job_status,
+    prove_job_processes_gone,
+    reap_captured_identities,
+    wait_job,
+)
 from omg_cli.state import _safe_run_id
 from omg_cli.team.api import _read_task
 from omg_cli.team.compositions.lane_protocol import (
@@ -938,6 +948,40 @@ def _wrap_job(exc: BaseException) -> CompositionExecutionError:
     )
 
 
+def _cancel_composition_job(
+    root: Path,
+    job_id: str,
+    *,
+    reason: str,
+    identities: Sequence[Any] = (),
+) -> None:
+    """Cancel a grok composition job. Do not swallow ``JobStoreError``.
+
+    ``cancel_job`` does not signal PIDs from a possibly forged terminal
+    ``job.json`` stamp. Independently captured identities are reaped
+    only when prove-after-cancel still sees LIVE processes.
+    """
+    try:
+        cancel_job(root, job_id, reason=reason)
+    except JobStoreError as exc:
+        try:
+            reap_captured_identities(identities)
+        except JobStoreError:
+            pass
+        raise CompositionExecutionError(
+            f"grok composition job {reason} and cancel failed: {exc}",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        ) from exc
+    if identities:
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=identities, timeout_s=0.05
+            )
+        except JobStoreError:
+            reap_captured_identities(identities)
+
+
 def _grok_job_wait_s(record: Any) -> float:
     """Wait at most the job's configured provider timeout (default 3600s)."""
     raw = None
@@ -971,7 +1015,9 @@ def _launch_and_wait_grok_job(
     """Launch one grok worker via existing ``launch_worker`` Jobs machinery.
 
     Returns ``(job_id, pane_id)``. Does not claim lanes. Never shells
-    agy/claude/codex. Not ``live_verified``.
+    agy/claude/codex. Not ``live_verified``. A terminal ``job.json`` stamp
+    is not process-exit proof; identities from ``job_status`` plus OS
+    children of a still-live runner are proven gone after wait.
     """
     prompt = (
         "omg team composition execute executor=grok "
@@ -1007,28 +1053,163 @@ def _launch_and_wait_grok_job(
             code="E_TEAM_COMPOSITION_EXEC_JOB",
             details={"provider": handle.provider},
         )
+    start_identities: tuple[Any, ...] = ()
+    captured: dict[int, ProcessIdentity] = {}
+    runner_pids: set[int] = set()
+    timed_out = False
+    record: Any = None
     try:
+        spawn = parse_process_identity(
+            pid=getattr(handle, "spawn_pid", None),
+            pgid=getattr(handle, "spawn_pgid", None),
+            pid_starttime=getattr(handle, "spawn_starttime", None),
+        )
+        if spawn is not None:
+            captured[spawn.pid] = spawn
+        runner = spawn
+        start_identities = tuple(captured.values())
+        runner_pids = {runner.pid} if runner is not None else set()
         started = job_status(root, job_id)
+
+        def _sync_start_identities() -> None:
+            nonlocal start_identities
+            start_identities = tuple(captured.values())
+
+        def _on_poll(_wait_record: object) -> None:
+            del _wait_record
+            absorb_live_job_identities(captured)
+            _sync_start_identities()
+
+        deadline = time.monotonic() + 0.5
+        while True:
+            absorb_live_job_identities(captured)
+            _sync_start_identities()
+            if (set(captured) - runner_pids) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
         wait_s = _grok_job_wait_s(started)
-        record, timed_out = wait_job(root, job_id, timeout_s=wait_s)
-    except JobStoreError as exc:
-        raise _wrap_job(exc) from exc
-    if timed_out:
         try:
-            cancel_job(root, job_id, reason="composition grok wait timeout")
-        except JobStoreError:
-            pass
+            record, timed_out = wait_job(
+                root,
+                job_id,
+                timeout_s=wait_s,
+                poll_s=0.02,
+                stop_on_recovery_required=True,
+                on_poll=_on_poll,
+            )
+        finally:
+            absorb_live_job_identities(captured)
+            _sync_start_identities()
+    except JobStoreError as exc:
+        _cancel_composition_job(
+            root,
+            job_id,
+            reason="composition-grok-wait-error",
+            identities=start_identities,
+        )
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=start_identities
+            )
+        except JobStoreError as prove_exc:
+            raise CompositionExecutionError(
+                f"grok composition job {job_id} wait failed and cancel "
+                f"unproven: {prove_exc}",
+                code="E_TEAM_COMPOSITION_EXEC_JOB",
+                details={"job_id": job_id},
+            ) from prove_exc
+        raise CompositionExecutionError(
+            f"grok composition job {job_id} wait failed: {exc}",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        ) from exc
+    if timed_out:
+        _cancel_composition_job(
+            root,
+            job_id,
+            reason="wait-timeout",
+            identities=start_identities,
+        )
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=start_identities
+            )
+        except JobStoreError as exc:
+            raise CompositionExecutionError(
+                f"grok composition job {job_id} timed out and cancel "
+                f"unproven: {exc}",
+                code="E_TEAM_COMPOSITION_EXEC_JOB",
+                details={"job_id": job_id},
+            ) from exc
         raise CompositionExecutionError(
             f"grok composition job {job_id} timed out",
             code="E_TEAM_COMPOSITION_EXEC_JOB",
             details={"job_id": job_id},
         )
-    if record.state != JobState.SUCCEEDED:
+    # Terminal job.json is not process-exit proof. A forged SUCCEEDED stamp
+    # used to skip cancel while grok was still live. Inner grok is a new
+    # session (not in the runner pgid) and is missing from launch; capture
+    # it from OS children of the still-live runner during wait. If the
+    # runner died before that snapshot, identities can look gone while a
+    # detached grok remains — fail closed like simplify.
+    if not captured:
+        try:
+            cancel_job(root, job_id, reason="composition-grok-missing-runner")
+        except JobStoreError:
+            pass
+        raise CompositionExecutionError(
+            "grok composition runner identity was never captured "
+            "before terminal state",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        )
+    try:
+        prove_job_processes_gone(
+            root, job_id, extra_identities=start_identities
+        )
+    except JobStoreError as exc:
+        _cancel_composition_job(
+            root,
+            job_id,
+            reason="composition-grok-terminal-live",
+            identities=start_identities,
+        )
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=start_identities
+            )
+        except JobStoreError as prove_exc:
+            try:
+                reap_captured_identities(start_identities)
+                prove_job_processes_gone(
+                    root, job_id, extra_identities=start_identities
+                )
+            except JobStoreError as reap_exc:
+                raise CompositionExecutionError(
+                    f"grok composition job {job_id} terminal but process "
+                    f"still live: {reap_exc}",
+                    code="E_TEAM_COMPOSITION_EXEC_JOB",
+                    details={"job_id": job_id},
+                ) from reap_exc
+            raise CompositionExecutionError(
+                f"grok composition job {job_id} claimed terminal while "
+                f"process was live: {prove_exc}",
+                code="E_TEAM_COMPOSITION_EXEC_JOB",
+                details={"job_id": job_id},
+            ) from prove_exc
+        raise CompositionExecutionError(
+            f"grok composition job {job_id} claimed terminal while "
+            f"process was live: {exc}",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        ) from exc
+    if record is None or record.state != JobState.SUCCEEDED:
+        state_value = getattr(getattr(record, "state", None), "value", None)
         raise CompositionExecutionError(
             f"grok composition job {job_id} did not succeed "
-            f"(state={record.state.value})",
+            f"(state={state_value})",
             code="E_TEAM_COMPOSITION_EXEC_JOB",
-            details={"job_id": job_id, "state": record.state.value},
+            details={"job_id": job_id, "state": state_value},
         )
     return job_id, grok_job_pane_id(job_id)
 
@@ -1065,10 +1246,11 @@ def execute_composition_tasks_v1(
     """Leader-only: workers claim/submit → collect → execution evidence.
 
     ``executor=fixture`` uses in-process pane workers. ``executor=grok``
-    launches grok through existing ``launch_worker`` Jobs machinery, waits
-    for SUCCEEDED, then submits the normalized ``--input`` lane results.
-    Does **not** flip compile/produce ``execution_supported``. Does not
-    launch agy/claude/codex/cursor. Never writes ``passes`` / ``verified``.
+    launches grok through existing ``launch_worker`` Jobs machinery, waits,
+    proves OS process exit (a terminal ``job.json`` stamp is not enough),
+    then submits the normalized ``--input`` lane results. Does **not**
+    flip compile/produce ``execution_supported``. Does not launch
+    agy/claude/codex/cursor. Never writes ``passes`` / ``verified``.
     Not ``live_verified``.
     """
     resolved_executor = require_composition_executor(executor)

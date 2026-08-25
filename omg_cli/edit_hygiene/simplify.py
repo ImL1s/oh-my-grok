@@ -53,12 +53,11 @@ from omg_cli.jobs.ownership import (
     become_child_subreaper,
     child_identities,
     merge_identity,
-    pgid_member_identities,
     probe_identity_liveness,
-    refresh_identity,
     same_occupant,
 )
 from omg_cli.jobs.runtime import (
+    absorb_live_job_identities,
     cancel_job,
     collect_job,
     identities_from_start_record,
@@ -682,25 +681,7 @@ def _absorb_runner_children(
 ) -> None:
     """Snapshot OS children and live process-group members (not job.json)."""
     del runner_pids
-    scanned: set[int] = set()
-    pending = True
-    while pending:
-        pending = False
-        for ident in list(identities.values()):
-            if ident.pid in scanned:
-                continue
-            scanned.add(ident.pid)
-            refreshed = refresh_identity(ident)
-            if refreshed is not None:
-                merge_identity(identities, refreshed)
-                ident = identities[ident.pid]
-            extras: list[ProcessIdentity] = []
-            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
-                extras.extend(pgid_member_identities(ident.pgid))
-                extras.extend(child_identities(ident.pid))
-            for extra in extras:
-                if merge_identity(identities, extra):
-                    pending = True
+    absorb_live_job_identities(identities)
 
 
 def _cancel_simplify_job(

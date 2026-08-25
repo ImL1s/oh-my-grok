@@ -1113,6 +1113,155 @@ def identities_from_start_record(record: object | None) -> tuple[Any, ...]:
     return tuple(found)
 
 
+def absorb_live_job_identities(
+    identities: dict[int, ProcessIdentity],
+) -> None:
+    """Snapshot OS children and live process-group members (not job.json).
+
+    Walks still-live captured identities and merges their current process-group
+    members plus direct children. Inner grok is often ``start_new_session``
+    (not in the runner pgid) and missing from ``start_job`` / ``job_status``.
+    """
+    from omg_cli.jobs.ownership import (
+        child_identities,
+        merge_identity,
+        pgid_member_identities,
+        probe_identity_liveness,
+        refresh_identity,
+    )
+
+    scanned: set[int] = set()
+    pending = True
+    while pending:
+        pending = False
+        for ident in list(identities.values()):
+            if ident.pid in scanned:
+                continue
+            scanned.add(ident.pid)
+            refreshed = refresh_identity(ident)
+            if refreshed is not None:
+                merge_identity(identities, refreshed)
+                ident = identities[ident.pid]
+            extras: list[ProcessIdentity] = []
+            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                extras.extend(pgid_member_identities(ident.pgid))
+                extras.extend(child_identities(ident.pid))
+            for extra in extras:
+                if merge_identity(identities, extra):
+                    pending = True
+
+
+def reap_captured_identities(identities: Sequence[Any]) -> None:
+    """Signal independently captured PIDs. Never trusts forged ``job.json`` PIDs.
+
+    Terminal ``cancel_job`` does not kill SUCCEEDED/FAILED/LOST records, so
+    callers that captured live identities before the stamp must reap them.
+    A later ``setsid()`` keeps pid+starttime and only changes PGID — refresh
+    that occupant before treating a PGID mismatch as reuse and skipping.
+    """
+    import signal
+
+    from omg_cli.jobs.ownership import (
+        kill_pgid,
+        merge_identity,
+        refresh_identity,
+        wait_until_gone,
+    )
+
+    found: dict[int, ProcessIdentity] = {}
+    for ident in identities:
+        pid = getattr(ident, "pid", None)
+        if isinstance(ident, ProcessIdentity):
+            found[ident.pid] = ident
+        elif isinstance(pid, int):
+            parsed = ProcessIdentity(
+                pid=pid,
+                pgid=int(getattr(ident, "pgid", pid) or pid),
+                pid_starttime=getattr(ident, "pid_starttime", None),
+            )
+            found[pid] = parsed
+    absorb_live_job_identities(found)
+
+    try:
+        self_pgid = os.getpgrp()
+    except OSError:
+        self_pgid = os.getpid()
+    self_pids = {os.getpid(), os.getppid()}
+
+    def _occupant(ident: ProcessIdentity) -> ProcessIdentity:
+        refreshed = refresh_identity(ident)
+        if refreshed is not None:
+            merge_identity(found, refreshed)
+            return found[ident.pid]
+        return ident
+
+    for ident in list(found.values()):
+        if not isinstance(ident, ProcessIdentity):
+            pid = getattr(ident, "pid", None)
+            pgid = getattr(ident, "pgid", None)
+            if not isinstance(pid, int) or not isinstance(pgid, int):
+                continue
+            ident = ProcessIdentity(
+                pid=pid,
+                pgid=pgid,
+                pid_starttime=getattr(ident, "pid_starttime", None),
+            )
+        ident = _occupant(ident)
+        pid = ident.pid
+        pgid = ident.pgid
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not isinstance(pgid, int) or pgid <= 1:
+            continue
+        if pgid == self_pgid or pid in self_pids:
+            continue
+        outcome = probe_identity_liveness(ident)
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        stamp = ident.pid_starttime
+        if not isinstance(stamp, str) or stamp == "":
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal "
+                "(missing start fingerprint)",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        kill_pgid(pgid, signal.SIGTERM)
+        wait_until_gone(pid, timeout_s=1.0)
+        ident = _occupant(ident)
+        pgid = ident.pgid
+        outcome = probe_identity_liveness(ident)
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        stamp = ident.pid_starttime
+        if not isinstance(stamp, str) or stamp == "":
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM "
+                "(missing start fingerprint)",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if not isinstance(pgid, int) or pgid <= 1 or pgid == self_pgid:
+            continue
+        kill_pgid(pgid, signal.SIGKILL)
+        wait_until_gone(pid, timeout_s=2.0)
+        ident = _occupant(ident)
+        outcome = probe_identity_liveness(ident)
+        if outcome not in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            raise JobStoreError(
+                f"start identity pid={pid} still live after SIGKILL",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+
+
 def prove_job_processes_gone(
     project_root: Path,
     job_id: str,
@@ -3216,6 +3365,7 @@ __all__ = [
     "CancelOwnership",
     "GcResult",
     "StartResult",
+    "absorb_live_job_identities",
     "cancel_job",
     "cancel_linked_acp_sidecar",
     "collect_job",
@@ -3229,6 +3379,7 @@ __all__ = [
     "observe_job",
     "preflight_retry_job",
     "prove_job_processes_gone",
+    "reap_captured_identities",
     "read_acp_sidecar_binding",
     "recover_job",
     "recover_jobs",

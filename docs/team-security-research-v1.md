@@ -53,7 +53,7 @@ submit-lane-result, then collect-tasks, and writes
 (`omg.team.composition_execution_v1`) **last**. `--executor fixture` uses
 in-process pane workers and still refuses `worker_topology=job`.
 `--executor grok` launches grok through existing `launch_worker` Jobs
-machinery (not `live_verified`). `--input` is a
+machinery, waits, and proves process exit (not `live_verified`). `--input` is a
 `SecurityResearchResultBundleV1` and is normalized with the same exact-key /
 foreign-writer / digest / `artifact_kind` contract as `produce-report`
 **before** workers submit `LaneTaskResultV1` payloads. Safe-PoC
