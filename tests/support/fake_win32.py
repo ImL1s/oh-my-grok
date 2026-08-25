@@ -305,6 +305,12 @@ class FakeWin32API:
         if item.fd is not None:
             os.fsync(item.fd)
 
+    def set_mode(self, handle: int, mode: int) -> None:
+        item = self._require(handle)
+        if item.fd is None:
+            raise Win32NofollowError("write", "cannot chmod a reparse point")
+        os.fchmod(item.fd, int(mode) & 0o7777)
+
     def rename_replace(
         self,
         handle: int,

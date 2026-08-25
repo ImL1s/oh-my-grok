@@ -130,6 +130,8 @@ class Win32NofollowAPI(Protocol):
 
     def unlink(self, root_handle: int, name: str) -> None: ...
 
+    def set_mode(self, handle: int, mode: int) -> None: ...
+
     def lock_ex(self, handle: int) -> None: ...
 
     def unlock(self, handle: int) -> None: ...
@@ -729,6 +731,8 @@ def atomic_write_relative(
         existing = _probe_leaf(api, parent, name, directory=False)
         if existing is not None and not replace:
             raise Win32NofollowError("exists", f"destination exists: {name}")
+        if mode is not None:
+            api.set_mode(tmp, int(mode) & 0o7777)
         try:
             api.rename_replace(tmp, name, root_handle=parent, replace=replace)
         except Win32NofollowError as exc:
@@ -737,12 +741,6 @@ def atomic_write_relative(
             raise
         _close(api, tmp)
         tmp = None
-        if mode is not None:
-            dest = Path(root_p).joinpath(*clean)
-            try:
-                os.chmod(dest, int(mode) & 0o7777)
-            except OSError as exc:
-                raise Win32NofollowError("write", "mode apply failed") from exc
     except Win32NofollowError:
         raise
     except OSError as exc:
@@ -1266,6 +1264,42 @@ class CtypesWin32API:
     def flush(self, handle: int) -> None:
         if not self._kernel32.FlushFileBuffers(self._HANDLE(handle)):
             self._raise_last("write", "FlushFileBuffers failed")
+
+    def set_mode(self, handle: int, mode: int) -> None:
+        ctypes = self._ctypes
+        info = self.get_info(handle)
+        attrs = int(info.attributes)
+        if int(mode) & 0o222:
+            attrs &= ~FILE_ATTRIBUTE_READONLY
+            if attrs == 0:
+                attrs = FILE_ATTRIBUTE_NORMAL
+        else:
+            attrs = (attrs | FILE_ATTRIBUTE_READONLY) & ~FILE_ATTRIBUTE_NORMAL
+
+        class _FILE_BASIC_INFO(ctypes.Structure):
+            _fields_ = [
+                ("CreationTime", ctypes.c_int64),
+                ("LastAccessTime", ctypes.c_int64),
+                ("LastWriteTime", ctypes.c_int64),
+                ("ChangeTime", ctypes.c_int64),
+                ("FileAttributes", ctypes.c_uint32),
+            ]
+
+        basic = _FILE_BASIC_INFO()
+        basic.CreationTime = -1
+        basic.LastAccessTime = -1
+        basic.LastWriteTime = -1
+        basic.ChangeTime = -1
+        basic.FileAttributes = attrs
+        FileBasicInfo = 0
+        ok = self._kernel32.SetFileInformationByHandle(
+            self._HANDLE(handle),
+            FileBasicInfo,
+            ctypes.byref(basic),
+            ctypes.sizeof(basic),
+        )
+        if not ok:
+            self._raise_last("write", "SetFileInformationByHandle FileBasicInfo failed")
 
     def _final_path(self, handle: int) -> str:
         ctypes = self._ctypes
