@@ -79,8 +79,10 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   stages both artifacts then replaces `{kind}-index.scip` before
   `{kind}-index.json`, so `index_present` implies a sibling `.scip`.
   SCIP publish failure leaves JSON untouched. JSON publish failure
-  restores the previous SCIP when a complete pair existed; otherwise
-  it unlinks the new SCIP only when inode/size/digest still match. JSON-lite stays `not_scip: true`; protobuf query
+  restores the previous SCIP only after the SCIP replace succeeded;
+  a staging failure before that replace does not rewrite the existing
+  `.scip`. Otherwise it unlinks the new SCIP only when inode/size/digest
+  still match. JSON-lite stays `not_scip: true`; protobuf query
   stays `not_scip: false` when it decodes. Not live Antigravity MCP.
   Never `verified`. Refs #73 (does not close).
 - **#76 leftover: prove grok exit after terminal job.json:** `wait_job`

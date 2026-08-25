@@ -1948,19 +1948,21 @@ def _publish_codegraph_pair(
         except OSError:
             previous_scip = None
     proof: _CodegraphPublishProof | None = None
+    scip_replaced = False
     try:
         json_tmp.write_text(json_text, encoding="utf-8")
         scip_tmp.write_bytes(scip_blob)
         _replace_file(scip_tmp, scip_dest)
+        scip_replaced = True
         proof = _codegraph_publish_proof(scip_dest, scip_blob)
         _replace_file(json_tmp, json_dest)
     except OSError:
-        if previous_scip is not None:
+        if scip_replaced and previous_scip is not None:
             try:
                 scip_dest.write_bytes(previous_scip)
             except OSError:
                 pass
-        elif proof is not None:
+        elif scip_replaced and proof is not None:
             _unlink_if_codegraph_publish_proof(scip_dest, proof)
         raise
     finally:

@@ -1345,6 +1345,31 @@ def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
     )
 
 
+def test_codegraph_index_does_not_rewrite_scip_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging failure before SCIP replace must not rewrite the existing .scip."""
+    (tmp_path / "mod.py").write_text("def first():\n    return 1\n", encoding="utf-8")
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["index_present"] is True
+    scip_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.scip"
+    previous = scip_path.read_bytes()
+    assert previous
+
+    original_write_text = Path.write_text
+
+    def _boom_json_tmp(self: Path, *args: object, **kwargs: object) -> int:
+        if str(self).endswith(".json.tmp"):
+            raise OSError("injected json tmp write failure")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _boom_json_tmp)
+    (tmp_path / "other.py").write_text("def second():\n    return 2\n", encoding="utf-8")
+    with pytest.raises(OSError, match="injected json tmp write failure"):
+        codegraph_index(root=tmp_path, mode="local")
+    assert scip_path.read_bytes() == previous
+
+
 def test_codegraph_index_atomic_scip_then_json_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
