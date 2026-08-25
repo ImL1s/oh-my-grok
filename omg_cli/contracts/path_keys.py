@@ -144,12 +144,14 @@ def _raise_win32(exc: Win32NofollowError, *, label: str, name: str) -> NoReturn:
 
 
 def _windows_mode_matches(observed: int, required: int) -> bool:
-    """NTFS typically surfaces writable files as 0666, readonly as 0444."""
+    """Compare synthesized Windows modes without treating 0666 as 0600.
+
+    Readonly (0444) may match immutable 0400 because the FILE_ATTRIBUTE_READONLY
+    bit is actually set. Writable 0666 is not owner-only 0600.
+    """
     if observed == required:
         return True
-    if required == DATA_FILE_MODE and observed in {DATA_FILE_MODE, 0o666}:
-        return True
-    if required == IMMUTABLE_SOURCE_MODE and observed in {IMMUTABLE_SOURCE_MODE, 0o444}:
+    if required == IMMUTABLE_SOURCE_MODE and observed == 0o444:
         return True
     return False
 
