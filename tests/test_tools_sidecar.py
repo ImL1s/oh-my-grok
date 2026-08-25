@@ -1345,6 +1345,95 @@ def test_codegraph_scip_lite_occurrences(tmp_path: Path) -> None:
     )
 
 
+def test_codegraph_index_does_not_rewrite_scip_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging failure before SCIP replace must not rewrite the existing .scip."""
+    (tmp_path / "mod.py").write_text("def first():\n    return 1\n", encoding="utf-8")
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["index_present"] is True
+    scip_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.scip"
+    previous = scip_path.read_bytes()
+    assert previous
+
+    original_write_text = Path.write_text
+
+    def _boom_json_tmp(self: Path, *args: object, **kwargs: object) -> int:
+        if str(self).endswith(".json.tmp"):
+            raise OSError("injected json tmp write failure")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _boom_json_tmp)
+    (tmp_path / "other.py").write_text("def second():\n    return 2\n", encoding="utf-8")
+    with pytest.raises(OSError, match="injected json tmp write failure"):
+        codegraph_index(root=tmp_path, mode="local")
+    assert scip_path.read_bytes() == previous
+
+
+def test_codegraph_index_atomic_scip_then_json_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON publish failure after SCIP is on disk must not advance JSON."""
+    src = tmp_path / "mod.py"
+    src.write_text("def first():\n    return 1\n", encoding="utf-8")
+    json_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.json"
+    scip_path = tmp_path / ".omg" / "artifacts" / "codegraph" / "local-index.scip"
+    json_tmp = json_path.with_suffix(".json.tmp")
+    inject = {"json": True}
+
+    def _fail_json_after_scip(src_path: Path, dst: Path) -> None:
+        dest = Path(dst)
+        if inject["json"] and dest.name == "local-index.json":
+            assert scip_path.is_file()
+            raise OSError("injected json publish failure")
+        os.replace(src_path, dst)
+
+    monkeypatch.setattr("omg_cli.tools_sidecar._replace_file", _fail_json_after_scip)
+    with pytest.raises(OSError, match="injected json publish failure"):
+        codegraph_index(root=tmp_path, mode="local")
+    assert not json_path.is_file()
+    assert not json_tmp.is_file()
+    first_status = codegraph_status(root=tmp_path, mode="local")
+    assert first_status["index_present"] is False
+    assert first_status["not_scip"] is True
+    with pytest.raises(ToolsError, match="E_CODEGRAPH_NO_INDEX"):
+        codegraph_query(root=tmp_path, mode="local", query="first")
+    assert not scip_path.is_file()
+
+    inject["json"] = False
+    built = codegraph_index(root=tmp_path, mode="local")
+    assert built["ok"] is True
+    assert built["verified"] is False
+    assert built["index_present"] is True
+    assert built["not_scip"] is False
+    assert json_path.is_file()
+    assert scip_path.is_file()
+    json_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert json_payload["not_scip"] is True
+    previous_json = json_path.read_text(encoding="utf-8")
+    previous_count = json_payload["file_count"]
+    happy_hits = codegraph_query(root=tmp_path, mode="local", query="first")
+    assert happy_hits["not_scip"] is False
+    assert any(row.get("name") == "first" for row in happy_hits["hits"])
+
+    (tmp_path / "other.py").write_text("def second():\n    return 2\n", encoding="utf-8")
+    inject["json"] = True
+    with pytest.raises(OSError, match="injected json publish failure"):
+        codegraph_index(root=tmp_path, mode="local")
+    assert json_path.read_text(encoding="utf-8") == previous_json
+    assert json.loads(previous_json)["file_count"] == previous_count
+    assert not json_tmp.is_file()
+    assert scip_path.is_file()
+    status = codegraph_status(root=tmp_path, mode="local")
+    assert status["index_present"] is True
+    assert status["not_scip"] is False
+    second_hits = codegraph_query(root=tmp_path, mode="local", query="second")
+    assert not any(row.get("name") == "second" for row in second_hits["hits"])
+    first_hits = codegraph_query(root=tmp_path, mode="local", query="first")
+    assert first_hits["not_scip"] is False
+    assert any(row.get("name") == "first" for row in first_hits["hits"])
+
+
 def test_codegraph_query_reads_scip_protobuf_not_json_occurrences(
     tmp_path: Path,
 ) -> None:
