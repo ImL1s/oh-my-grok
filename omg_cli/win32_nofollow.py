@@ -56,6 +56,7 @@ IO_REPARSE_TAG_SYMLINK = 0xA000000C
 _NT_MISSING = {0xC0000033, 0xC0000034, 0xC000003A}
 _NT_COLLISION = {0xC0000035}
 _NT_SHARING = {0xC0000043}
+_NT_NOT_DIRECTORY = {0xC0000103}  # STATUS_NOT_A_DIRECTORY
 _WIN_MISSING = {2, 3}
 _WIN_SHARING = {32}
 
@@ -1086,6 +1087,8 @@ class CtypesWin32API:
             raise Win32NofollowError("write", message)
         if code in _NT_SHARING:
             raise Win32NofollowError("changed", message)
+        if code in _NT_NOT_DIRECTORY:
+            raise Win32NofollowError("not_regular", message)
         raise Win32NofollowError("write", f"{message} (ntstatus=0x{code:08x})")
 
     def create_file(
