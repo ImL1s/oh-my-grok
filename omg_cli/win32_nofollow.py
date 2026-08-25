@@ -856,17 +856,7 @@ class CtypesWin32API:
             ctypes.byref(info),
             ctypes.sizeof(info),
         )
-        if ok:
-            return
-        src = self._final_path(handle)
-        parent = self._final_path(root_handle)
-        dest = parent + ("\\" if not parent.endswith("\\") else "") + dest_name
-        self.close(handle)
-        MOVEFILE_REPLACE_EXISTING = 0x1
-        MOVEFILE_WRITE_THROUGH = 0x8
-        if not self._kernel32.MoveFileExW(
-            src, dest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-        ):
+        if not ok:
             self._raise_last("write", f"cannot replace {dest_name}")
 
     def unlink(self, root_handle: int, name: str) -> None:
