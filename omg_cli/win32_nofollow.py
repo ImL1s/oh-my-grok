@@ -28,6 +28,7 @@ FILE_SHARE_DELETE = 0x00000004
 OPEN_EXISTING = 3
 CREATE_NEW = 1
 FILE_ATTRIBUTE_NORMAL = 0x00000080
+FILE_ATTRIBUTE_READONLY = 0x00000001
 FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -1321,8 +1322,11 @@ class CtypesWin32API:
             ctypes.sizeof(basic),
         )
         if not ok:
-            # NTFS cannot store POSIX 0600; managed reads accept 0666 as
-            # the writable equivalent. Do not fail a published write.
+            if int(mode) & 0o222 == 0:
+                self._raise_last(
+                    "write",
+                    "SetFileInformationByHandle FileBasicInfo failed",
+                )
             return
 
     def _final_path(self, handle: int) -> str:
