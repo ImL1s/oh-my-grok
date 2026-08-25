@@ -29,7 +29,13 @@ from omg_cli.contracts.path_keys import (
 from omg_cli.contracts.writer_chain import canonical_json_bytes
 from omg_cli import state as state_mod
 
-pytestmark = pytest.mark.platform
+pytestmark = [
+    pytest.mark.platform,
+    pytest.mark.skipif(
+        os.name != "posix",
+        reason="POSIX dir_fd/O_NOFOLLOW managed-store",
+    ),
+]
 
 
 def test_safe_path_keys_are_namespace_bound_and_reject_hostile_text() -> None:

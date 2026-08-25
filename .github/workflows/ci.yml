@@ -178,4 +178,4 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: Windows no-follow confinement
-        run: python -m pytest -q -m "not live" --tb=short tests/test_win32_nofollow.py tests/test_edit_verify.py::test_verify_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_plan_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_apply_fail_closed_without_nofollow_backend tests/test_agents_catalog.py::test_catalog_pin_unavailable_fails_closed
+        run: python -m pytest -q -m "not live" --tb=short tests/test_win32_nofollow.py tests/test_path_keys_win32.py tests/test_edit_verify.py::test_verify_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_plan_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_apply_fail_closed_without_nofollow_backend tests/test_agents_catalog.py::test_catalog_pin_unavailable_fails_closed

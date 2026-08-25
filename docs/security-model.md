@@ -117,6 +117,12 @@ Authoritative local stores under `.omg` use the primitives in
 - fail closed with `ContractPathError` when equivalent no-follow/`dir_fd`
   support is unavailable (no weaker path-based fallback).
 
+On Windows, the same high-level APIs (`ensure_managed_dir`,
+`atomic_write_bytes`, `read_managed_regular_bytes`, `confined_path`,
+`exclusive_lock`, `append_locked_jsonl`) walk each component with
+`CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` and reject
+reparse points; descriptor-relative `*_at` / `dir_fd` APIs remain POSIX-only.
+
 System path prefixes above the managed region (for example macOS `/tmp` →
 `/private/tmp`) may still contain platform symlinks; confinement is claimed for
 managed components, not for the entire absolute path from `/`. Issue #16 closed
