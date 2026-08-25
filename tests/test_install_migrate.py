@@ -14,6 +14,7 @@ from omg_cli.install_migrate import (
     InstallMigrateError,
     apply_owned_uninstall,
     plan_owned_uninstall,
+    read_regular_nofollow,
     run_import,
     run_migrate,
 )
@@ -175,6 +176,8 @@ def test_symlink_source_refused(tmp_path: Path) -> None:
         link.symlink_to(real)
     except OSError:
         pytest.skip("symlink creation requires privileges on this host")
+    with pytest.raises(InstallMigrateError, match="E_SYMLINK"):
+        read_regular_nofollow(link)
     with pytest.raises(InstallMigrateError, match="E_SYMLINK"):
         run_import(link, project_root=tmp_path, dry_run=True)
     assert load_manifest(project_root=tmp_path, scope="project") is None

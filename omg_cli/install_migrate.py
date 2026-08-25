@@ -3,6 +3,10 @@
 Copy-safe ingest and in-place legacy classification. File copy is not live
 Grok or Antigravity discovery. Never sets ``verified`` / ``observed`` /
 ``healthy`` / ``passes``.
+
+Source walks and regular-file reads use POSIX ``O_NOFOLLOW`` open+fstat when
+available; otherwise Windows ``CreateFileW`` / ``NtCreateFile``
+``FILE_FLAG_OPEN_REPARSE_POINT`` via ``win32_nofollow`` / ``path_keys``.
 """
 
 from __future__ import annotations
@@ -20,6 +24,13 @@ from omg_cli.contracts.path_keys import (
     ContractPathError,
     atomic_write_bytes,
     ensure_managed_dir,
+    read_managed_regular_bytes,
+    _win32_file_parts,
+)
+from omg_cli.win32_nofollow import (
+    Win32NofollowError,
+    walk_managed_directories,
+    windows_nofollow_ready,
 )
 from omg_cli.install_manifest import (
     SCHEMA,
@@ -97,12 +108,122 @@ def _posix(path: Path) -> str:
     return path.absolute().as_posix()
 
 
+def _posix_nofollow_ready() -> bool:
+    return os.name == "posix" and hasattr(os, "O_NOFOLLOW")
+
+
 def _require_nofollow() -> None:
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
-        raise InstallMigrateError(
-            "E_PATH",
-            "import/migrate requires POSIX O_NOFOLLOW (Windows leftover)",
-        )
+    if _posix_nofollow_ready():
+        return
+    if windows_nofollow_ready():
+        return
+    raise InstallMigrateError(
+        "E_PATH",
+        "import/migrate requires POSIX O_NOFOLLOW or Windows no-follow",
+    )
+
+
+def _win32_source_error(exc: Win32NofollowError) -> InstallMigrateError:
+    kind = exc.kind
+    if kind == "symlink":
+        return InstallMigrateError("E_SYMLINK", "refusing symlink source")
+    if kind == "size":
+        return InstallMigrateError("E_SOURCE", "source file exceeds import size limit")
+    if kind == "changed":
+        return InstallMigrateError("E_SOURCE", "source file changed while reading")
+    if kind in {"not_regular", "links"}:
+        return InstallMigrateError("E_SOURCE", "source is not a regular file")
+    if kind == "missing":
+        return InstallMigrateError("E_SOURCE", "source file is unreadable")
+    return InstallMigrateError("E_SOURCE", "source file is unreadable")
+
+
+def _windows_parts(path: Path) -> tuple[Path, list[str]]:
+    try:
+        base, parts = _win32_file_parts(Path(path).absolute())
+    except ContractPathError as exc:
+        text = str(exc).lower()
+        if "symlink" in text or "reparse" in text:
+            raise InstallMigrateError("E_SYMLINK", "refusing symlink source") from exc
+        raise InstallMigrateError("E_PATH", "unsafe source file name") from exc
+    if not parts:
+        raise InstallMigrateError("E_PATH", "unsafe source path")
+    return base, parts
+
+
+def _windows_leaf_kind(path: Path) -> str:
+    """Return ``file`` or ``dir``. Fail closed on reparse/symlink."""
+    base, parts = _windows_parts(path)
+    try:
+        api, handle = walk_managed_directories(base, parts, create=False)
+    except Win32NofollowError as exc:
+        if exc.kind == "symlink":
+            raise InstallMigrateError("E_SYMLINK", "refusing symlink source") from exc
+        if exc.kind == "not_regular":
+            return "file"
+        raise _win32_source_error(exc) from exc
+    api.close(handle)
+    return "dir"
+
+
+def _read_regular_windows(path: Path, *, max_bytes: int) -> bytes:
+    try:
+        return read_managed_regular_bytes(path, max_bytes=max_bytes)
+    except FileNotFoundError as exc:
+        raise InstallMigrateError("E_SOURCE", "source file is unreadable") from exc
+    except ContractPathError as exc:
+        text = str(exc).lower()
+        if "symlink" in text or "reparse" in text:
+            raise InstallMigrateError("E_SYMLINK", "refusing symlink source") from exc
+        if "exceed" in text or "limit" in text:
+            raise InstallMigrateError(
+                "E_SOURCE", "source file exceeds import size limit"
+            ) from exc
+        if "changed" in text:
+            raise InstallMigrateError(
+                "E_SOURCE", "source file changed while reading"
+            ) from exc
+        if "regular" in text:
+            raise InstallMigrateError("E_SOURCE", "source is not a regular file") from exc
+        raise InstallMigrateError("E_SOURCE", "source file is unreadable") from exc
+
+
+def _iter_source_files_windows(source: Path) -> list[Path]:
+    """List regular files under *source* without following a reparse/symlink."""
+    source = Path(source).absolute()
+    kind = _windows_leaf_kind(source)
+    if kind == "file":
+        return [source]
+    found: list[Path] = []
+
+    def walk(directory: Path) -> None:
+        if _windows_leaf_kind(directory) != "dir":
+            raise InstallMigrateError(
+                "E_SOURCE", "source path is not a file or directory"
+            )
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise InstallMigrateError(
+                "E_SOURCE", "source directory is unreadable"
+            ) from exc
+        for entry in entries:
+            path = Path(entry.path)
+            child_kind = _windows_leaf_kind(path)
+            if child_kind == "dir":
+                if entry.name in _SKIP_DIR_NAMES:
+                    continue
+                walk(path)
+                continue
+            if child_kind == "file":
+                found.append(path)
+                if len(found) > MAX_IMPORT_FILES:
+                    raise InstallMigrateError(
+                        "E_SOURCE", "source tree exceeds import file count limit"
+                    )
+
+    walk(source)
+    return found
 
 
 def credential_shaped(data: bytes) -> bool:
@@ -125,6 +246,8 @@ def credential_shaped(data: bytes) -> bool:
 def read_regular_nofollow(path: Path, *, max_bytes: int = MAX_IMPORT_BYTES) -> bytes:
     """Read a regular file without following a symlink. Fail-closed on TOCTOU."""
     _require_nofollow()
+    if not _posix_nofollow_ready():
+        return _read_regular_windows(path, max_bytes=max_bytes)
     if path.is_symlink():
         raise InstallMigrateError("E_SYMLINK", "refusing symlink source")
     flags = os.O_RDONLY | os.O_NOFOLLOW
@@ -285,6 +408,8 @@ def _symlink_parent(path: Path, roots: tuple[Path, ...]) -> bool:
 def _iter_source_files(source: Path) -> list[Path]:
     """List regular files under *source*. Any symlink in the tree fails closed."""
     _require_nofollow()
+    if not _posix_nofollow_ready():
+        return _iter_source_files_windows(source)
     if source.is_symlink():
         raise InstallMigrateError("E_SYMLINK", "refusing symlink source")
     if source.is_file():
