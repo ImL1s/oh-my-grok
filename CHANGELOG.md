@@ -56,6 +56,18 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   Descriptor-relative `*_at` / `dir_fd` APIs stay POSIX-only. POSIX
   `O_NOFOLLOW`/`dir_fd` is unchanged when available. Does **not** close #77
   (live AG install matrix remains). Refs #77.
+- **#69 leftover: grok composition execute proves process exit:**
+  `_launch_and_wait_grok_job` no longer returns on terminal `job.json`
+  SUCCEEDED without `prove_job_processes_gone`. Wait snapshots
+  `identities_from_start_record` plus OS children / pgid members of a
+  still-live runner (inner grok is `start_new_session`). Prove failure
+  cancels without signaling PIDs from a possibly forged stamp, proves
+  again, and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution json /
+  `execution_supported=true`). Timeout `cancel_job` no longer swallows
+  `JobStoreError`; cancel/prove unproven is an error. Fixture path,
+  compile/produce `execution_supported=false`, and refused
+  agy/claude/codex/cursor/kimi/omc executors are unchanged. Does **not**
+  claim `live_verified` and does **not** close #69. Refs #69.
 - **#77 leftover Windows O_NOFOLLOW:** confined hash-edit read/write/apply
   and agent/skill catalog pin/write on Windows open each path component with
   `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` (no

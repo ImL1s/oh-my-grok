@@ -199,9 +199,10 @@ claim-lane / submit-lane-result + fixture- or grok-backed auto-worker
 execution landed. Compile / produce / admit / collect / claim keep
 `execution_supported=false`. `omg.team.composition_execution_v1` may stamp
 true only with worker evidence. `--executor grok` uses existing Jobs
-`launch_worker` (not `live_verified`). agy/claude/codex/cursor/kimi/omc
-remain refused. Hermetic `--worker-topology=job --provider grok` is
-admitted.
+`launch_worker` (not `live_verified`) and proves OS process exit after
+wait — a terminal `job.json` stamp is not enough.
+agy/claude/codex/cursor/kimi/omc remain refused. Hermetic
+`--worker-topology=job --provider grok` is admitted.
 
 ```bash
 omg team hyperplan plan --spec SPEC.json --json

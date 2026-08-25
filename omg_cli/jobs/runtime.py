@@ -1113,6 +1113,44 @@ def identities_from_start_record(record: object | None) -> tuple[Any, ...]:
     return tuple(found)
 
 
+def absorb_live_job_identities(
+    identities: dict[int, ProcessIdentity],
+) -> None:
+    """Snapshot OS children and live process-group members (not job.json).
+
+    Walks still-live captured identities and merges their current process-group
+    members plus direct children. Inner grok is often ``start_new_session``
+    (not in the runner pgid) and missing from ``start_job`` / ``job_status``.
+    """
+    from omg_cli.jobs.ownership import (
+        child_identities,
+        merge_identity,
+        pgid_member_identities,
+        probe_identity_liveness,
+        refresh_identity,
+    )
+
+    scanned: set[int] = set()
+    pending = True
+    while pending:
+        pending = False
+        for ident in list(identities.values()):
+            if ident.pid in scanned:
+                continue
+            scanned.add(ident.pid)
+            refreshed = refresh_identity(ident)
+            if refreshed is not None:
+                merge_identity(identities, refreshed)
+                ident = identities[ident.pid]
+            extras: list[ProcessIdentity] = []
+            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                extras.extend(pgid_member_identities(ident.pgid))
+                extras.extend(child_identities(ident.pid))
+            for extra in extras:
+                if merge_identity(identities, extra):
+                    pending = True
+
+
 def prove_job_processes_gone(
     project_root: Path,
     job_id: str,
@@ -3216,6 +3254,7 @@ __all__ = [
     "CancelOwnership",
     "GcResult",
     "StartResult",
+    "absorb_live_job_identities",
     "cancel_job",
     "cancel_linked_acp_sidecar",
     "collect_job",
