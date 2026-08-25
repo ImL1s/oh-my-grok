@@ -628,6 +628,14 @@ class CtypesWin32API:
             wintypes.ULONG,
         ]
         ntdll.NtCreateFile.restype = ctypes.c_long
+        ntdll.NtSetInformationFile.argtypes = [
+            self._HANDLE,
+            ctypes.POINTER(_IO_STATUS_BLOCK),
+            ctypes.c_void_p,
+            wintypes.ULONG,
+            wintypes.ULONG,
+        ]
+        ntdll.NtSetInformationFile.restype = ctypes.c_long
 
     def _handle(self, value: Any) -> int:
         if value is None:
@@ -836,28 +844,36 @@ class CtypesWin32API:
         utf16 = dest_name.encode("utf-16-le")
         nchars = (len(utf16) // 2) + 1
 
-        class _FILE_RENAME_INFO(ctypes.Structure):
+        class _FILE_RENAME_INFORMATION(ctypes.Structure):
             _fields_ = [
-                ("ReplaceIfExists", self._wintypes.DWORD),
+                ("ReplaceIfExists", ctypes.c_ubyte),
                 ("RootDirectory", self._HANDLE),
-                ("FileNameLength", self._wintypes.DWORD),
+                ("FileNameLength", ctypes.c_ulong),
                 ("FileName", self._wintypes.WCHAR * nchars),
             ]
 
-        info = _FILE_RENAME_INFO()
+        info = _FILE_RENAME_INFORMATION()
         info.ReplaceIfExists = 1
         info.RootDirectory = self._HANDLE(root_handle)
         info.FileNameLength = len(utf16)
-        info.FileName = dest_name
-        FileRenameInfo = 3
-        ok = self._kernel32.SetFileInformationByHandle(
-            self._HANDLE(handle),
-            FileRenameInfo,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
+        ctypes.memmove(
+            ctypes.addressof(info) + _FILE_RENAME_INFORMATION.FileName.offset,
+            utf16 + b"\x00\x00",
+            len(utf16) + 2,
         )
-        if not ok:
-            self._raise_last("write", f"cannot replace {dest_name}")
+        iosb = self._IO_STATUS_BLOCK()
+        FileRenameInformation = 10
+        status = int(
+            self._ntdll.NtSetInformationFile(
+                self._HANDLE(handle),
+                ctypes.byref(iosb),
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+                FileRenameInformation,
+            )
+        )
+        if status < 0:
+            self._raise_nt(status, f"cannot replace {dest_name}")
 
     def unlink(self, root_handle: int, name: str) -> None:
         parent = self._final_path(root_handle)
