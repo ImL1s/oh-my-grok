@@ -19,7 +19,7 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 - Server `workspace/configuration` requests during initialize/hover/definition are answered with empty settings (one `{}` per item, or `[]`) so the language server can proceed. They are not dropped.
 - Hover / definition retry on LSP JSON-RPC `-32801` (`content modified`) while the language server indexes, the same way they retry JSON `null`.
 - `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
-- CodeGraph is a **toy local import/symbol scan** that also writes a hermetic SCIP protobuf `Index` beside JSON-lite (`{local,shared}-index.scip`). Query prefers protobuf occurrences (`not_scip: false` when the `.scip` decodes). JSON-only remains `not_scip`. Homebrew MIP `scip` (scipopt) is **not** Sourcegraph SCIP. Shared indexes are still not branch-accurate.
+- CodeGraph is a **toy local import/symbol scan** that also writes a hermetic SCIP protobuf `Index` beside JSON-lite (`{local,shared}-index.scip`). Index **stages both files, then publishes `.scip` before JSON**, so `index_present` (JSON) implies the sibling protobuf exists. A crash after SCIP before JSON keeps the previous JSON generation (or no JSON); SCIP-only is not a complete JSON-backed index. Query prefers protobuf occurrences (`not_scip: false` when the `.scip` decodes). JSON-only remains `not_scip`. Homebrew MIP `scip` (scipopt) is **not** Sourcegraph SCIP. Shared indexes are still not branch-accurate.
 - Network research is opt-in (`OMG_TOOLS_NETWORK=1`). When enabled, the default provider is **Wikipedia OpenSearch** (`GET en.wikipedia.org/w/api.php?action=opensearch`). Credentials are **never bundled**. `OMG_TOOLS_RESEARCH_PROVIDER=none` or `off` stays blocked (`E_NETWORK_NO_PROVIDER`). HTTP / timeout / non-JSON / unexpected shape fail closed as `E_NETWORK_PROVIDER` (not fake hits). This is **not** a live Antigravity MCP install.
 - Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
 - Never writes `passes` / `verified`.
@@ -68,7 +68,9 @@ Language servers are **never auto-installed**.
   `omg tools codegraph index` writes
   `.omg/artifacts/codegraph/{local,shared}-index.json` (JSON-lite,
   `not_scip: true`) and a sibling `{local,shared}-index.scip` protobuf
-  Index. Query prefers protobuf occurrences.
+  Index. Both files are staged; SCIP is replaced first, then JSON.
+  `index_present` is JSON-backed and therefore implies the sibling
+  `.scip` was already published. Query prefers protobuf occurrences.
 
 ## AST-grep
 

@@ -10,8 +10,9 @@ Honesty:
 - AST-grep missing → blocked, not fake success.
 - Shared CodeGraph indexes are not worktree-accurate.
 - CodeGraph writes SCIP protobuf beside JSON-lite; JSON-only stays
-  ``not_scip``. Homebrew MIP ``scip`` is refused as Sourcegraph SCIP.
-  Not live Antigravity MCP.
+  ``not_scip``. Index stages both files and publishes ``.scip`` before
+  JSON so ``index_present`` implies the sibling protobuf. Homebrew MIP
+  ``scip`` is refused as Sourcegraph SCIP. Not live Antigravity MCP.
 - Network research is opt-in (``OMG_TOOLS_NETWORK=1``); default
   provider is Wikipedia OpenSearch (no credentials bundled).
 - Never writes ``passes`` / ``verified``.
@@ -25,6 +26,7 @@ import os
 import re
 import select
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -42,7 +44,6 @@ from omg_cli.scip_codec import (
     detect_scip_cli,
     make_scip_symbol,
     occurrences_to_index,
-    write_scip_file,
 )
 
 SCHEMA = "omg-tools-sidecar/v1"
@@ -1863,6 +1864,110 @@ def codegraph_status(*, root: Path, mode: str = "auto") -> dict[str, Any]:
     }
 
 
+_CodegraphPublishProof = tuple[int, int, int, str]
+
+
+def _unlink_quiet(path: Path) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        return
+
+
+def _replace_file(src: Path, dst: Path) -> None:
+    os.replace(src, dst)
+
+
+def _codegraph_publish_proof(path: Path, expected: bytes) -> _CodegraphPublishProof | None:
+    """Identity of a regular file we just wrote: (dev, ino, size, sha256)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    if int(st.st_size) != len(expected):
+        return None
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if data != expected:
+        return None
+    return (st.st_dev, st.st_ino, int(st.st_size), hashlib.sha256(data).hexdigest())
+
+
+def _unlink_if_codegraph_publish_proof(path: Path, proof: _CodegraphPublishProof) -> None:
+    """Best-effort unlink only when dest is still the file we published."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        return
+    if (st.st_dev, st.st_ino, int(st.st_size)) != proof[:3]:
+        return
+    try:
+        with open(path, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return
+    if digest != proof[3]:
+        return
+    try:
+        st2 = os.lstat(path)
+    except OSError:
+        return
+    if (st2.st_dev, st2.st_ino, int(st2.st_size)) != proof[:3]:
+        return
+    _unlink_quiet(path)
+
+
+def _publish_codegraph_pair(
+    *,
+    json_dest: Path,
+    json_text: str,
+    scip_dest: Path,
+    scip_blob: bytes,
+) -> None:
+    """Stage JSON+SCIP, replace SCIP first, then JSON.
+
+    ``index_present`` is JSON-backed, so SCIP-first means a visible index
+    implies the sibling ``.scip`` was already published. JSON publish
+    failure restores the previous SCIP when a complete pair existed;
+    otherwise it unlinks the new SCIP only when inode/size/digest still
+    match.
+    """
+    json_tmp = json_dest.with_suffix(".json.tmp")
+    scip_tmp = scip_dest.with_suffix(scip_dest.suffix + ".tmp")
+    previous_scip: bytes | None = None
+    if json_dest.is_file() and scip_dest.is_file():
+        try:
+            previous_scip = scip_dest.read_bytes()
+        except OSError:
+            previous_scip = None
+    proof: _CodegraphPublishProof | None = None
+    try:
+        json_tmp.write_text(json_text, encoding="utf-8")
+        scip_tmp.write_bytes(scip_blob)
+        _replace_file(scip_tmp, scip_dest)
+        proof = _codegraph_publish_proof(scip_dest, scip_blob)
+        _replace_file(json_tmp, json_dest)
+    except OSError:
+        if previous_scip is not None:
+            try:
+                scip_dest.write_bytes(previous_scip)
+            except OSError:
+                pass
+        elif proof is not None:
+            _unlink_if_codegraph_publish_proof(scip_dest, proof)
+        raise
+    finally:
+        _unlink_quiet(json_tmp)
+        _unlink_quiet(scip_tmp)
+
+
 def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
     dirty = _git_dirty(root)
     effective = _effective_codegraph_mode(mode, dirty)
@@ -1902,11 +2007,14 @@ def codegraph_index(*, root: Path, mode: str = "local") -> dict[str, Any]:
     dest = _codegraph_index_path(root, effective)
     confined = confine_path(root, dest)
     confined.parent.mkdir(parents=True, exist_ok=True)
-    tmp = confined.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, confined)
     scip_dest = confine_path(root, _codegraph_scip_path(root, effective))
-    write_scip_file(scip_dest, occurrences_to_index(occurrences))
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    _publish_codegraph_pair(
+        json_dest=confined,
+        json_text=json_text,
+        scip_dest=scip_dest,
+        scip_blob=occurrences_to_index(occurrences),
+    )
     status = codegraph_status(root=root, mode=effective)
     status["built"] = True
     status["truncated"] = truncated
@@ -2298,8 +2406,8 @@ def doctor_payload(
         "note": (
             "OMG tools sidecar. Not Grok-native LSP. Not live Antigravity evidence. "
             "omg lsp remains host-owned. CodeGraph writes SCIP protobuf Index "
-            "beside JSON-lite; JSON-only stays not_scip. Homebrew MIP scip is "
-            "not Sourcegraph SCIP. "
+            "beside JSON-lite (SCIP published before JSON); JSON-only stays "
+            "not_scip. Homebrew MIP scip is not Sourcegraph SCIP. "
             "Detected language servers are not ready until explicitly started."
         ),
     }
