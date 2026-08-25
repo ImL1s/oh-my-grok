@@ -49,6 +49,7 @@ from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity, probe_identity_liveness
 from omg_cli.jobs.runtime import (
+    _read_spawn_identity_recovery,
     _runner_identity,
     absorb_live_job_identities,
     cancel_job,
@@ -1062,13 +1063,15 @@ def _launch_and_wait_grok_job(
     record: Any = None
     try:
         started = job_status(root, job_id)
-        start_identities = identities_from_start_record(started)
-        captured = {
-            ident.pid: ident
-            for ident in start_identities
-            if isinstance(ident, ProcessIdentity)
-        }
-        runner = _runner_identity(started)
+        spawn = _read_spawn_identity_recovery(root, job_id)
+        captured = {}
+        if spawn is not None:
+            captured[spawn.pid] = spawn
+        # Trust OS spawn recovery over mutable job.json PIDs.
+        runner = spawn if spawn is not None else _runner_identity(started)
+        if runner is not None and runner.pid not in captured:
+            captured[runner.pid] = runner
+        start_identities = tuple(captured.values())
         runner_pids = {runner.pid} if runner is not None else set()
 
         def _sync_start_identities() -> None:
