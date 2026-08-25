@@ -58,18 +58,21 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   (live AG install matrix remains). Refs #77.
 - **#69 leftover: grok composition execute proves process exit:**
   `_launch_and_wait_grok_job` no longer returns on terminal `job.json`
-  SUCCEEDED without `prove_job_processes_gone`. Wait snapshots
-  `identities_from_start_record` plus OS children / pgid members of a
-  still-live runner (inner grok is `start_new_session`). Prove failure
+  SUCCEEDED without `prove_job_processes_gone`. Wait keeps the
+  `launch_worker` StartResult identity in memory (`handle.spawn_*`) and
+  absorbs OS children / pgid members of a still-live runner (inner grok
+  is `start_new_session`). It does **not** trust `job.json` or
+  `spawn_identity.json` PIDs (grok-writable cwd). Prove failure
   cancels without signaling PIDs from a possibly forged stamp, proves
-  again, and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution json /
-  `execution_supported=true`). Timeout `cancel_job` no longer swallows
-  `JobStoreError`; cancel/prove unproven is an error. Wait errors
-  cancel and prove before rethrowing. Runner-only identities without
-  an inner capture fail closed. Fixture path,
-  compile/produce `execution_supported=false`, and refused
-  agy/claude/codex/cursor/kimi/omc executors are unchanged. Does **not**
-  claim `live_verified` and does **not** close #69. Refs #69.
+  again, reaps independently captured identities (never `killpg` the
+  caller pgid), and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution
+  json / `execution_supported=true`). Timeout `cancel_job` no longer
+  swallows `JobStoreError`; cancel/prove unproven is an error. Wait
+  errors cancel and prove before rethrowing. Missing spawn identity
+  fails closed. Fixture path, compile/produce `execution_supported=false`,
+  and refused agy/claude/codex/cursor/kimi/omc executors are unchanged.
+  Does **not** claim `live_verified` and does **not** close #69
+  (AG workers / host TUI prompt-queue remain). Refs #69.
 - **#77 leftover Windows O_NOFOLLOW:** confined hash-edit read/write/apply
   and agent/skill catalog pin/write on Windows open each path component with
   `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` (no
