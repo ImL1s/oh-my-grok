@@ -966,6 +966,10 @@ def _cancel_composition_job(
     try:
         cancel_job(root, job_id, reason=reason)
     except JobStoreError as exc:
+        try:
+            reap_captured_identities(identities)
+        except JobStoreError:
+            pass
         raise CompositionExecutionError(
             f"grok composition job {reason} and cancel failed: {exc}",
             code="E_TEAM_COMPOSITION_EXEC_JOB",

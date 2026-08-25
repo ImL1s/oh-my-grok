@@ -1174,10 +1174,6 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
             self_pgid = os.getpid()
         if pgid == self_pgid or pid in {os.getpid(), os.getppid()}:
             continue
-        # Only session leaders we spawned (`start_new_session`); never a
-        # member of an inherited process group.
-        if pid != pgid:
-            continue
         if not isinstance(ident, ProcessIdentity):
             ident = ProcessIdentity(
                 pid=pid,
