@@ -12,9 +12,10 @@ import pytest
 
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
+from omg_cli.jobs.lease import release_lease_dict
 from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.ownership import capture_identity, pid_alive
-from omg_cli.jobs.runtime import cancel_job, prove_job_processes_gone
+from omg_cli.jobs.runtime import absorb_live_job_identities, cancel_job, prove_job_processes_gone
 from omg_cli.jobs.store import list_job_ids, read_job_record, write_job_record
 from omg_cli.main import main
 from omg_cli.state import write_status
@@ -134,6 +135,13 @@ def _stamp_live_identity(rec: Any, ident: Any) -> None:
         }
     )
     rec.provider_process = pp
+    rec.owner_lease = release_lease_dict(getattr(rec, "owner_lease", None))
+
+
+def _absorb_plus(identities: dict[int, Any], extra: Any) -> None:
+    absorb_live_job_identities(identities)
+    if extra is not None and getattr(extra, "pid", None) not in identities:
+        identities[extra.pid] = extra
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -1038,6 +1046,10 @@ def test_hyperplan_grok_execute_forged_succeeded_live_process_fails_closed(
     monkeypatch.setattr(
         "omg_cli.team.compositions.execution.wait_job", _wait
     )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda idents: _absorb_plus(idents, ident),
+    )
     run_id = _seed(tmp_path, monkeypatch)
     materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
     admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
@@ -1145,6 +1157,10 @@ def test_hyperplan_grok_execute_timeout_cancel_unproven_is_error(
     monkeypatch.setattr(
         "omg_cli.team.compositions.execution.wait_job", _wait
     )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda idents: _absorb_plus(idents, ident),
+    )
     run_id = _seed(tmp_path, monkeypatch)
     materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
     admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
@@ -1219,13 +1235,14 @@ def test_hyperplan_grok_execute_inner_identity_unproven_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
     fake_grok_path: Path,
 ) -> None:
-    """Runner-only start identities without an inner capture must not stamp."""
+    """Missing spawn-recovery identity must not stamp execution evidence."""
     del fake_grok_path
 
     def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
         del kwargs
         rec = read_job_record(project_root, job_id)
         rec.state = JobState.SUCCEEDED
+        rec.owner_lease = release_lease_dict(getattr(rec, "owner_lease", None))
         write_job_record(project_root, rec)
         return rec, False
 
@@ -1236,22 +1253,15 @@ def test_hyperplan_grok_execute_inner_identity_unproven_fails_closed(
         "omg_cli.team.compositions.execution.absorb_live_job_identities",
         lambda *_args, **_kwargs: None,
     )
-
-    def _runner_only(record: Any) -> tuple[Any, ...]:
-        from omg_cli.jobs.runtime import _runner_identity
-
-        runner = _runner_identity(record)
-        return (runner,) if runner is not None else ()
-
     monkeypatch.setattr(
-        "omg_cli.team.compositions.execution.identities_from_start_record",
-        _runner_only,
+        "omg_cli.team.compositions.execution._read_spawn_identity_recovery",
+        lambda *_args, **_kwargs: None,
     )
     run_id = _seed(tmp_path, monkeypatch)
     materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
     admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     manifest = load_hyperplan_manifest(tmp_path, run_id)
-    with pytest.raises(HyperplanError, match="inner provider identity") as exc_info:
+    with pytest.raises(HyperplanError, match="never captured") as exc_info:
         execute_hyperplan_tasks_v1(
             tmp_path,
             run_id,
