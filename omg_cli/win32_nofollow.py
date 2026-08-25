@@ -527,6 +527,7 @@ _FILE_OPEN_OPTIONS = (
     | FILE_SYNCHRONOUS_IO_NONALERT
 )
 _DIR_SHARE = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+_LOCK_SHARE = FILE_SHARE_READ | FILE_SHARE_WRITE
 
 
 def ensure_root_exists(root: Path | str) -> Path:
@@ -637,7 +638,28 @@ def confined_relative_walk(root: Path | str, parts: list[str]) -> None:
                     options=_DIR_OPEN_OPTIONS,
                 )
             except Win32NofollowError as exc:
-                if exc.kind in {"missing", "not_regular"}:
+                if exc.kind == "missing":
+                    return
+                if exc.kind == "not_regular":
+                    try:
+                        leaf = api.nt_create(
+                            current,
+                            component,
+                            access=GENERIC_READ | SYNCHRONIZE,
+                            share=FILE_SHARE_READ | FILE_SHARE_DELETE,
+                            disposition=FILE_OPEN,
+                            options=_FILE_OPEN_OPTIONS,
+                        )
+                    except Win32NofollowError as file_exc:
+                        if file_exc.kind == "missing":
+                            return
+                        raise
+                    try:
+                        _reject_reparse(
+                            api, leaf, label=component, directory=False
+                        )
+                    finally:
+                        _close(api, leaf)
                     return
                 raise
             try:
@@ -765,7 +787,7 @@ def _open_lock_leaf(api: Win32NofollowAPI, parent: int, name: str) -> int:
                 parent,
                 name,
                 access=access,
-                share=_DIR_SHARE,
+                share=_LOCK_SHARE,
                 disposition=FILE_CREATE,
                 options=_FILE_OPEN_OPTIONS,
             )
@@ -789,7 +811,7 @@ def _open_lock_leaf(api: Win32NofollowAPI, parent: int, name: str) -> int:
                         parent,
                         name,
                         access=access,
-                        share=_DIR_SHARE,
+                        share=_LOCK_SHARE,
                         disposition=FILE_OPEN,
                         options=_FILE_OPEN_OPTIONS,
                     )
@@ -1299,7 +1321,9 @@ class CtypesWin32API:
             ctypes.sizeof(basic),
         )
         if not ok:
-            self._raise_last("write", "SetFileInformationByHandle FileBasicInfo failed")
+            # NTFS cannot store POSIX 0600; managed reads accept 0666 as
+            # the writable equivalent. Do not fail a published write.
+            return
 
     def _final_path(self, handle: int) -> str:
         ctypes = self._ctypes
