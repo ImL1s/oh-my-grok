@@ -3,16 +3,21 @@
 Raw host/run identifiers never become path components.  Callers use a SHA-256
 key, then confine the resulting path beneath a managed root.
 
-Managed directories and files are created and mutated through descriptor-
-relative (``dir_fd``) operations with ``O_NOFOLLOW`` so intermediate or
-destination symlinks cannot redirect authoritative state outside the trusted
-store.  Path strings are used only to locate a pre-existing base directory;
-every managed component under that base is opened or created without following
-symlinks.
+On POSIX, managed directories and files are created and mutated through
+descriptor-relative (``dir_fd``) operations with ``O_NOFOLLOW`` so
+intermediate or destination symlinks cannot redirect authoritative state
+outside the trusted store.  Path strings are used only to locate a
+pre-existing base directory; every managed component under that base is
+opened or created without following symlinks.
 
-On hosts without POSIX ``dir_fd`` / ``O_NOFOLLOW`` support the primitives fail
-closed with :class:`ContractPathError` rather than falling back to weaker
-path-based writes.
+On Windows, the same high-level primitives walk each component with
+``CreateFileW`` / ``NtCreateFile`` ``FILE_FLAG_OPEN_REPARSE_POINT`` and
+reject reparse points. Descriptor-relative ``*_at`` / ``dir_fd`` APIs
+remain POSIX-only and fail closed.
+
+On hosts without POSIX ``dir_fd`` / ``O_NOFOLLOW`` or Windows no-follow
+support the primitives fail closed with :class:`ContractPathError` rather
+than falling back to weaker path-based writes.
 """
 
 from __future__ import annotations
@@ -25,7 +30,18 @@ import stat
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, NoReturn
+
+from omg_cli.win32_nofollow import (
+    Win32NofollowError,
+    append_locked_relative_jsonl,
+    atomic_write_relative,
+    confined_relative_walk,
+    ensure_relative_directories,
+    exclusive_lock_relative,
+    read_relative_regular,
+    windows_nofollow_ready,
+)
 
 try:
     import fcntl
@@ -75,23 +91,76 @@ def validate_safe_key(value: str) -> str:
     return value
 
 
+def _posix_confinement_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
 def _require_confinement_platform() -> None:
-    if os.name != "posix":  # pragma: no cover - non-POSIX is unsupported
+    """Fail closed unless POSIX ``dir_fd`` / ``O_NOFOLLOW`` is available.
+
+    Descriptor-relative ``*_at`` APIs stay POSIX-only. High-level helpers
+    dispatch to Windows no-follow when this returns via ``_managed_store_backend``.
+    """
+
+    if not _posix_confinement_ready():
         raise ContractPathError(
-            "managed-store confinement requires a POSIX host with dir_fd/O_NOFOLLOW"
+            "fd-level managed-store APIs require POSIX dir_fd/O_NOFOLLOW"
         )
-    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+
+
+def _managed_store_backend() -> str:
+    if _posix_confinement_ready():
+        return "posix"
+    if windows_nofollow_ready():
+        return "windows"
+    raise ContractPathError(
+        "managed-store confinement requires POSIX dir_fd/O_NOFOLLOW or Windows no-follow"
+    )
+
+
+def _raise_win32(exc: Win32NofollowError, *, label: str, name: str) -> NoReturn:
+    kind = exc.kind
+    if kind == "symlink":
+        raise ContractPathError(f"{label} may not be a symlink: {name}") from exc
+    if kind == "exists":
+        raise FileExistsError(name) from exc
+    if kind == "missing":
+        raise FileNotFoundError(name) from exc
+    if kind == "links":
         raise ContractPathError(
-            "managed-store confinement requires O_NOFOLLOW and O_DIRECTORY"
-        )
-    # dir_fd support is documented on os.open; fail closed if unavailable.
-    try:
-        probe = os.open
-        _ = probe  # silence unused; capability is structural
-    except Exception as exc:  # pragma: no cover
-        raise ContractPathError(
-            "managed-store confinement requires os.open dir_fd support"
+            f"{label} must be a single-link regular file: {name}"
         ) from exc
+    if kind == "not_regular":
+        raise ContractPathError(f"{label} must be a regular file: {name}") from exc
+    if kind == "size":
+        raise ContractPathError(str(exc)) from exc
+    if kind == "changed":
+        raise ContractPathError(f"{label} changed while reading: {name}") from exc
+    raise ContractPathError(str(exc)) from exc
+
+
+def _windows_mode_matches(observed: int, required: int) -> bool:
+    """Compare synthesized Windows modes without treating 0666 as 0600.
+
+    Readonly (0444) may match immutable 0400 because the FILE_ATTRIBUTE_READONLY
+    bit is actually set. Writable 0666 is not owner-only 0600.
+    """
+    if observed == required:
+        return True
+    if required == IMMUTABLE_SOURCE_MODE and observed == 0o444:
+        return True
+    return False
+
+
+def _win32_file_parts(path: Path) -> tuple[Path, list[str]]:
+    path = path.absolute()
+    name = _validate_component(path.name)
+    base, components = _split_base_and_components(path.parent)
+    return base, components + [name]
 
 
 def _validate_component(part: str) -> str:
@@ -265,7 +334,14 @@ def _walk_managed_dirs(base_fd: int, components: list[str], *, create: bool) -> 
 def ensure_managed_dir(path: Path | str) -> Path:
     """Create *path* as a ``0700`` directory with no-follow managed components."""
 
-    _require_confinement_platform()
+    if _managed_store_backend() == "windows":
+        target = Path(path).absolute()
+        base, components = _split_base_and_components(target)
+        try:
+            ensure_relative_directories(base, components)
+        except Win32NofollowError as exc:
+            _raise_win32(exc, label="managed directory", name=target.name)
+        return target
     target = Path(path).absolute()
     base, components = _split_base_and_components(target)
     base_fd = _open_base_dir(base)
@@ -313,9 +389,25 @@ def _reject_symlink_at(dir_fd: int, name: str, *, label: str) -> None:
 def confined_path(root: Path | str, *parts: str) -> Path:
     """Build a path below *root* while rejecting traversal and symlink parents."""
 
-    _require_confinement_platform()
     root_path = Path(root).absolute()
     clean_parts = [_validate_component(part) for part in parts]
+    if _managed_store_backend() == "windows":
+        if root_path.is_symlink():
+            raise ContractPathError(f"managed root may not be a symlink: {root_path}")
+        candidate = root_path.joinpath(*clean_parts)
+        try:
+            candidate.relative_to(root_path)
+        except ValueError as exc:  # pragma: no cover - guarded by component checks
+            raise ContractPathError("candidate escapes managed root") from exc
+        try:
+            confined_relative_walk(root_path, clean_parts)
+        except Win32NofollowError as exc:
+            _raise_win32(
+                exc,
+                label="managed path",
+                name=clean_parts[-1] if clean_parts else str(root_path),
+            )
+        return candidate
     if root_path.is_symlink():
         raise ContractPathError(f"managed root may not be a symlink: {root_path}")
     candidate = root_path.joinpath(*clean_parts)
@@ -439,13 +531,22 @@ def atomic_write_bytes(
 ) -> Path:
     """Write bytes durably with an exact mode under a no-follow parent descriptor.
 
-    ``replace=False`` publishes with a same-directory hard-link operation.
-    Unlike a preflight ``exists()`` check followed by ``os.replace()``, link
-    creation is one atomic no-clobber decision in the kernel.  It also refuses
-    an already-present symlink instead of replacing or following it.
+    ``replace=False`` publishes with a same-directory hard-link operation on
+    POSIX (one atomic no-clobber decision in the kernel) and a no-replace
+    rename on Windows.  Either backend refuses an already-present symlink or
+    reparse instead of replacing or following it.
     """
 
-    _require_confinement_platform()
+    if _managed_store_backend() == "windows":
+        destination = Path(path).absolute()
+        base, parts = _win32_file_parts(destination)
+        try:
+            atomic_write_relative(
+                base, parts, body, replace=replace, mode=mode
+            )
+        except Win32NofollowError as exc:
+            _raise_win32(exc, label="destination", name=destination.name)
+        return destination
     destination = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(destination)
     try:
@@ -506,13 +607,25 @@ def read_managed_regular_bytes(
     exact permission mode both before and after the read. Callers must
     not reopen the path to learn mode or digest.
     """
-    _require_confinement_platform()
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
         raise ValueError("max_bytes must be a non-negative integer")
     if required_mode is not None and (
         isinstance(required_mode, bool) or not isinstance(required_mode, int)
     ):
         raise ValueError("required_mode must be an integer or None")
+    if _managed_store_backend() == "windows":
+        source = Path(path).absolute()
+        name = _validate_component(source.name)
+        base, parts = _win32_file_parts(source)
+        try:
+            body, mode = read_relative_regular(base, parts, max_bytes=max_bytes)
+        except Win32NofollowError as exc:
+            _raise_win32(exc, label="managed file", name=name)
+        if required_mode is not None and not _windows_mode_matches(mode, required_mode):
+            raise ContractPathError(
+                f"managed file mode must be {required_mode:04o}, got {mode:04o}"
+            )
+        return body
     source = Path(path).absolute()
     name = _validate_component(source.name)
     parent_fd = open_existing_managed_dir_fd(source.parent)
@@ -663,9 +776,17 @@ def exclusive_lock_at(parent_fd: int, name: str) -> Iterator[None]:
 
 @contextmanager
 def exclusive_lock(path: Path | str) -> Iterator[None]:
-    """Hold a POSIX advisory lock without following a lock-file symlink."""
+    """Hold an advisory lock without following a lock-file symlink."""
 
-    _require_confinement_platform()
+    if _managed_store_backend() == "windows":
+        lock_path = Path(path).absolute()
+        base, parts = _win32_file_parts(lock_path)
+        try:
+            with exclusive_lock_relative(base, parts):
+                yield
+        except Win32NofollowError as exc:
+            _raise_win32(exc, label="lock file", name=lock_path.name)
+        return
     lock_path = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(lock_path)
     try:
@@ -678,9 +799,16 @@ def exclusive_lock(path: Path | str) -> Iterator[None]:
 def append_locked_jsonl(path: Path | str, canonical_record: bytes) -> None:
     """Append one complete canonical record with one ``O_APPEND`` write."""
 
-    _require_confinement_platform()
     if b"\n" in canonical_record or not canonical_record:
         raise ValueError("canonical JSONL record must be one non-empty physical line")
+    if _managed_store_backend() == "windows":
+        destination = Path(path).absolute()
+        base, parts = _win32_file_parts(destination)
+        try:
+            append_locked_relative_jsonl(base, parts, canonical_record)
+        except Win32NofollowError as exc:
+            _raise_win32(exc, label="journal", name=destination.name)
+        return
     destination = Path(path).absolute()
     parent_fd, name = _ensure_parent_dir_fd(destination)
     lock_name = name + ".lock"

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 # kernel32 CreateFileW
 GENERIC_READ = 0x80000000
@@ -27,6 +28,7 @@ FILE_SHARE_DELETE = 0x00000004
 OPEN_EXISTING = 3
 CREATE_NEW = 1
 FILE_ATTRIBUTE_NORMAL = 0x00000080
+FILE_ATTRIBUTE_READONLY = 0x00000001
 FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -36,13 +38,18 @@ INVALID_HANDLE_VALUE = -1
 # ntdll NtCreateFile
 FILE_OPEN = 1
 FILE_CREATE = 2
+FILE_OPEN_IF = 3
 FILE_DIRECTORY_FILE = 0x00000001
 FILE_NON_DIRECTORY_FILE = 0x00000040
 FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
 FILE_OPEN_FOR_BACKUP_INTENT = 0x00004000
 FILE_OPEN_REPARSE_POINT = 0x00200000
+FILE_APPEND_DATA = 0x0004
+FILE_READ_ATTRIBUTES = 0x0080
 OBJ_CASE_INSENSITIVE = 0x00000040
 OBJ_DONT_REPARSE = 0x00001000
+LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+_MAXDWORD = 0xFFFFFFFF
 
 IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 IO_REPARSE_TAG_SYMLINK = 0xA000000C
@@ -50,6 +57,7 @@ IO_REPARSE_TAG_SYMLINK = 0xA000000C
 _NT_MISSING = {0xC0000033, 0xC0000034, 0xC000003A}
 _NT_COLLISION = {0xC0000035}
 _NT_SHARING = {0xC0000043}
+_NT_NOT_DIRECTORY = {0xC0000103}  # STATUS_NOT_A_DIRECTORY
 _WIN_MISSING = {2, 3}
 _WIN_SHARING = {32}
 
@@ -112,9 +120,22 @@ class Win32NofollowAPI(Protocol):
 
     def flush(self, handle: int) -> None: ...
 
-    def rename_replace(self, handle: int, dest_name: str, *, root_handle: int) -> None: ...
+    def rename_replace(
+        self,
+        handle: int,
+        dest_name: str,
+        *,
+        root_handle: int,
+        replace: bool = True,
+    ) -> None: ...
 
     def unlink(self, root_handle: int, name: str) -> None: ...
+
+    def set_mode(self, handle: int, mode: int) -> None: ...
+
+    def lock_ex(self, handle: int) -> None: ...
+
+    def unlock(self, handle: int) -> None: ...
 
 
 _API: Win32NofollowAPI | None = None
@@ -355,10 +376,10 @@ def write_relative_regular(
         if len(current) > max_bytes:
             raise Win32NofollowError("size", f"current bytes exceed {max_bytes} byte limit")
         applied_mode = mode if mode is not None else (before.mode or _DEFAULT_MODE)
-        if current == payload:
-            return applied_mode
         if expected is not None and current != expected:
             raise Win32NofollowError("expected", "current file bytes do not match expected")
+        if current == payload:
+            return applied_mode
         tmp = api.nt_create(
             parent,
             tmp_name,
@@ -495,6 +516,411 @@ def reject_existing_reparse(path: Path | str) -> None:
         _close(api, parent)
 
 
+_DIR_OPEN_OPTIONS = (
+    FILE_DIRECTORY_FILE
+    | FILE_OPEN_REPARSE_POINT
+    | FILE_SYNCHRONOUS_IO_NONALERT
+    | FILE_OPEN_FOR_BACKUP_INTENT
+)
+_FILE_OPEN_OPTIONS = (
+    FILE_NON_DIRECTORY_FILE
+    | FILE_OPEN_REPARSE_POINT
+    | FILE_SYNCHRONOUS_IO_NONALERT
+)
+_DIR_SHARE = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+_LOCK_SHARE = FILE_SHARE_READ | FILE_SHARE_WRITE
+
+
+def ensure_root_exists(root: Path | str) -> Path:
+    """Create *root* with ordinary mkdir if missing (system prefix; may follow)."""
+
+    path = Path(root).absolute()
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _mkdir_open_at(api: Win32NofollowAPI, parent: int, name: str) -> int:
+    """FILE_CREATE a directory, or FILE_OPEN an existing one and reject reparse."""
+
+    name = _validate_component(name)
+    access = GENERIC_READ | SYNCHRONIZE
+    handle: int | None = None
+    try:
+        handle = api.nt_create(
+            parent,
+            name,
+            access=access,
+            share=_DIR_SHARE,
+            disposition=FILE_CREATE,
+            options=_DIR_OPEN_OPTIONS,
+        )
+    except Win32NofollowError as exc:
+        if exc.kind != "write":
+            raise
+    if handle is None:
+        handle = api.nt_create(
+            parent,
+            name,
+            access=access,
+            share=_DIR_SHARE,
+            disposition=FILE_OPEN,
+            options=_DIR_OPEN_OPTIONS,
+        )
+    try:
+        _reject_reparse(api, handle, label=name, directory=True)
+    except Exception:
+        _close(api, handle)
+        raise
+    return handle
+
+
+def walk_managed_directories(
+    root: Path | str,
+    parts: list[str],
+    *,
+    create: bool,
+) -> tuple[Win32NofollowAPI, int]:
+    """Open *parts* as directories under *root*. Caller owns the returned handle."""
+
+    clean = [_validate_component(part) for part in parts]
+    api = _get_api()
+    current = _open_root_dir(api, Path(root))
+    try:
+        for component in clean:
+            if create:
+                nxt = _mkdir_open_at(api, current, component)
+            else:
+                nxt = api.nt_create(
+                    current,
+                    component,
+                    access=GENERIC_READ | SYNCHRONIZE,
+                    share=_DIR_SHARE,
+                    disposition=FILE_OPEN,
+                    options=_DIR_OPEN_OPTIONS,
+                )
+                try:
+                    _reject_reparse(api, nxt, label=component, directory=True)
+                except Exception:
+                    _close(api, nxt)
+                    raise
+            _close(api, current)
+            current = nxt
+        return api, current
+    except Exception:
+        _close(api, current)
+        raise
+
+
+def ensure_relative_directories(root: Path | str, parts: list[str]) -> None:
+    """Create *parts* as directories under *root* without following a reparse."""
+
+    root_p = ensure_root_exists(root)
+    api, handle = walk_managed_directories(root_p, parts, create=True)
+    _close(api, handle)
+
+
+def confined_relative_walk(root: Path | str, parts: list[str]) -> None:
+    """Walk existing components under *root*; missing suffix is OK. Reject reparses."""
+
+    root_p = ensure_root_exists(root)
+    clean = [_validate_component(part) for part in parts]
+    api = _get_api()
+    current = _open_root_dir(api, root_p)
+    try:
+        for component in clean:
+            try:
+                nxt = api.nt_create(
+                    current,
+                    component,
+                    access=GENERIC_READ | SYNCHRONIZE,
+                    share=_DIR_SHARE,
+                    disposition=FILE_OPEN,
+                    options=_DIR_OPEN_OPTIONS,
+                )
+            except Win32NofollowError as exc:
+                if exc.kind == "missing":
+                    return
+                if exc.kind == "not_regular":
+                    try:
+                        leaf = api.nt_create(
+                            current,
+                            component,
+                            access=GENERIC_READ | SYNCHRONIZE,
+                            share=FILE_SHARE_READ | FILE_SHARE_DELETE,
+                            disposition=FILE_OPEN,
+                            options=_FILE_OPEN_OPTIONS,
+                        )
+                    except Win32NofollowError as file_exc:
+                        if file_exc.kind == "missing":
+                            return
+                        raise
+                    try:
+                        _reject_reparse(
+                            api, leaf, label=component, directory=False
+                        )
+                    finally:
+                        _close(api, leaf)
+                    return
+                raise
+            try:
+                info = api.get_info(nxt)
+                if info.is_reparse or info.reparse_tag:
+                    raise Win32NofollowError(
+                        "symlink",
+                        f"{component} may not be a symlink or reparse point",
+                    )
+                if not info.is_directory:
+                    _close(api, nxt)
+                    return
+            except Exception:
+                _close(api, nxt)
+                raise
+            _close(api, current)
+            current = nxt
+    finally:
+        _close(api, current)
+
+
+def _probe_leaf(
+    api: Win32NofollowAPI,
+    parent: int,
+    name: str,
+    *,
+    directory: bool,
+) -> FileInfo | None:
+    options = _DIR_OPEN_OPTIONS if directory else _FILE_OPEN_OPTIONS
+    try:
+        handle = api.nt_create(
+            parent,
+            name,
+            access=GENERIC_READ | SYNCHRONIZE,
+            share=_DIR_SHARE,
+            disposition=FILE_OPEN,
+            options=options,
+        )
+    except Win32NofollowError as exc:
+        if exc.kind == "missing":
+            return None
+        raise
+    try:
+        return _reject_reparse(api, handle, label=name, directory=directory)
+    finally:
+        _close(api, handle)
+
+
+def atomic_write_relative(
+    root: Path | str,
+    parts: list[str],
+    body: bytes,
+    *,
+    replace: bool = True,
+    mode: int | None = None,
+) -> None:
+    """Publish ``/``.join(*parts) under *root* without following a reparse.
+
+    ``replace=False`` is no-clobber: an existing reparse is rejected; an
+    existing regular file raises ``Win32NofollowError(kind='exists')``.
+    """
+
+    if not parts:
+        raise Win32NofollowError("not_regular", "path is empty")
+    if not isinstance(body, (bytes, bytearray)):
+        raise Win32NofollowError("write", "body must be bytes")
+    payload = bytes(body)
+    clean = [_validate_component(part) for part in parts]
+    name = clean[-1]
+    root_p = ensure_root_exists(root)
+    api, parent = walk_managed_directories(root_p, clean[:-1], create=True)
+    tmp: int | None = None
+    tmp_name = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        existing = _probe_leaf(api, parent, name, directory=False)
+        if existing is not None and not replace:
+            raise Win32NofollowError("exists", f"destination exists: {name}")
+        tmp = api.nt_create(
+            parent,
+            tmp_name,
+            access=GENERIC_WRITE | GENERIC_READ | SYNCHRONIZE | DELETE,
+            share=0,
+            disposition=FILE_CREATE,
+            options=_FILE_OPEN_OPTIONS,
+        )
+        _reject_reparse(api, tmp, label=tmp_name, directory=False)
+        written = 0
+        while written < len(payload):
+            written += api.write(tmp, payload[written:])
+        api.flush(tmp)
+        existing = _probe_leaf(api, parent, name, directory=False)
+        if existing is not None and not replace:
+            raise Win32NofollowError("exists", f"destination exists: {name}")
+        if mode is not None:
+            api.set_mode(tmp, int(mode) & 0o7777)
+        try:
+            api.rename_replace(tmp, name, root_handle=parent, replace=replace)
+        except Win32NofollowError as exc:
+            if not replace and exc.kind in {"write", "exists"}:
+                raise Win32NofollowError("exists", f"destination exists: {name}") from exc
+            raise
+        _close(api, tmp)
+        tmp = None
+    except Win32NofollowError:
+        raise
+    except OSError as exc:
+        raise Win32NofollowError("write", "atomic replace failed") from exc
+    finally:
+        if tmp is not None:
+            _close(api, tmp)
+            try:
+                api.unlink(parent, tmp_name)
+            except Exception:
+                pass
+        _close(api, parent)
+
+
+def _open_lock_leaf(api: Win32NofollowAPI, parent: int, name: str) -> int:
+    name = _validate_component(name)
+    access = GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE
+    last: Win32NofollowError | None = None
+    for _ in range(4):
+        try:
+            handle = api.nt_create(
+                parent,
+                name,
+                access=access,
+                share=_LOCK_SHARE,
+                disposition=FILE_CREATE,
+                options=_FILE_OPEN_OPTIONS,
+            )
+            try:
+                info = _reject_reparse(api, handle, label=name, directory=False)
+                if info.links != 1:
+                    raise Win32NofollowError(
+                        "links",
+                        f"lock file must be a unique regular file: {name}",
+                    )
+                return handle
+            except Exception:
+                _close(api, handle)
+                raise
+        except Win32NofollowError as exc:
+            if exc.kind == "symlink":
+                raise
+            if exc.kind in {"write", "exists"}:
+                try:
+                    handle = api.nt_create(
+                        parent,
+                        name,
+                        access=access,
+                        share=_LOCK_SHARE,
+                        disposition=FILE_OPEN,
+                        options=_FILE_OPEN_OPTIONS,
+                    )
+                except Win32NofollowError as open_exc:
+                    if open_exc.kind == "missing":
+                        last = open_exc
+                        continue
+                    raise
+                try:
+                    info = _reject_reparse(api, handle, label=name, directory=False)
+                    if info.links != 1:
+                        raise Win32NofollowError(
+                            "links",
+                            f"lock file must be a unique regular file: {name}",
+                        )
+                    return handle
+                except Exception:
+                    _close(api, handle)
+                    raise
+            if exc.kind == "missing":
+                last = exc
+                continue
+            raise
+    raise Win32NofollowError(
+        "unavailable", f"unable to open lock under managed parent: {name}"
+    ) from last
+
+
+@contextmanager
+def exclusive_lock_relative(root: Path | str, parts: list[str]) -> Iterator[None]:
+    """Hold LockFileEx on ``/``.join(*parts) without following a reparse."""
+
+    if not parts:
+        raise Win32NofollowError("not_regular", "path is empty")
+    clean = [_validate_component(part) for part in parts]
+    root_p = ensure_root_exists(root)
+    api, parent = walk_managed_directories(root_p, clean[:-1], create=True)
+    leaf: int | None = None
+    locked = False
+    try:
+        leaf = _open_lock_leaf(api, parent, clean[-1])
+        api.lock_ex(leaf)
+        locked = True
+        yield
+    finally:
+        if locked and leaf is not None:
+            try:
+                api.unlock(leaf)
+            except Exception:
+                pass
+        _close(api, leaf)
+        _close(api, parent)
+
+
+def append_locked_relative_jsonl(
+    root: Path | str,
+    parts: list[str],
+    record: bytes,
+) -> None:
+    """Append one line to ``/``.join(*parts) while holding a sibling ``.lock``."""
+
+    if not parts:
+        raise Win32NofollowError("not_regular", "path is empty")
+    if not isinstance(record, (bytes, bytearray)):
+        raise Win32NofollowError("write", "body must be bytes")
+    payload = bytes(record) + b"\n"
+    clean = [_validate_component(part) for part in parts]
+    name = clean[-1]
+    lock_name = name + ".lock"
+    root_p = ensure_root_exists(root)
+    api, parent = walk_managed_directories(root_p, clean[:-1], create=True)
+    lock_handle: int | None = None
+    journal: int | None = None
+    locked = False
+    try:
+        _probe_leaf(api, parent, name, directory=False)
+        lock_handle = _open_lock_leaf(api, parent, lock_name)
+        api.lock_ex(lock_handle)
+        locked = True
+        journal = api.nt_create(
+            parent,
+            name,
+            access=FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            share=_DIR_SHARE,
+            disposition=FILE_OPEN_IF,
+            options=_FILE_OPEN_OPTIONS,
+        )
+        info = _reject_reparse(api, journal, label=name, directory=False)
+        if info.links != 1:
+            raise Win32NofollowError(
+                "links",
+                f"journal must not be hard-linked: {name}",
+            )
+        written = 0
+        while written < len(payload):
+            written += api.write(journal, payload[written:])
+        api.flush(journal)
+    finally:
+        if locked and lock_handle is not None:
+            try:
+                api.unlock(lock_handle)
+            except Exception:
+                pass
+        _close(api, journal)
+        _close(api, lock_handle)
+        _close(api, parent)
+
+
 class CtypesWin32API:
     """Production backend: kernel32 + ntdll. Instantiated only on Windows."""
 
@@ -574,6 +1000,34 @@ class CtypesWin32API:
         kernel32.DeleteFileW.restype = wintypes.BOOL
         kernel32.GetFileType.argtypes = [self._HANDLE]
         kernel32.GetFileType.restype = wintypes.DWORD
+
+        class _OVERLAPPED(ctypes.Structure):
+            _fields_ = [
+                ("Internal", ctypes.c_ulonglong),
+                ("InternalHigh", ctypes.c_ulonglong),
+                ("Offset", wintypes.DWORD),
+                ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE),
+            ]
+
+        self._OVERLAPPED = _OVERLAPPED
+        kernel32.LockFileEx.argtypes = [
+            self._HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(_OVERLAPPED),
+        ]
+        kernel32.LockFileEx.restype = wintypes.BOOL
+        kernel32.UnlockFileEx.argtypes = [
+            self._HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(_OVERLAPPED),
+        ]
+        kernel32.UnlockFileEx.restype = wintypes.BOOL
 
         class _IO_STATUS_BLOCK(ctypes.Structure):
             _fields_ = [("Status", ctypes.c_long), ("Information", ctypes.c_size_t)]
@@ -661,6 +1115,8 @@ class CtypesWin32API:
             raise Win32NofollowError("write", message)
         if code in _NT_SHARING:
             raise Win32NofollowError("changed", message)
+        if code in _NT_NOT_DIRECTORY:
+            raise Win32NofollowError("not_regular", message)
         raise Win32NofollowError("write", f"{message} (ntstatus=0x{code:08x})")
 
     def create_file(
@@ -713,6 +1169,11 @@ class CtypesWin32API:
         oa.SecurityQualityOfService = None
         iosb = self._IO_STATUS_BLOCK()
         out = self._HANDLE()
+        file_attr = (
+            FILE_ATTRIBUTE_DIRECTORY
+            if options & FILE_DIRECTORY_FILE
+            else FILE_ATTRIBUTE_NORMAL
+        )
         status = int(
             self._ntdll.NtCreateFile(
                 ctypes.byref(out),
@@ -720,7 +1181,7 @@ class CtypesWin32API:
                 ctypes.byref(oa),
                 ctypes.byref(iosb),
                 None,
-                FILE_ATTRIBUTE_NORMAL,
+                file_attr,
                 share,
                 disposition,
                 options,
@@ -827,6 +1288,47 @@ class CtypesWin32API:
         if not self._kernel32.FlushFileBuffers(self._HANDLE(handle)):
             self._raise_last("write", "FlushFileBuffers failed")
 
+    def set_mode(self, handle: int, mode: int) -> None:
+        ctypes = self._ctypes
+        info = self.get_info(handle)
+        attrs = int(info.attributes)
+        if int(mode) & 0o222:
+            attrs &= ~FILE_ATTRIBUTE_READONLY
+            if attrs == 0:
+                attrs = FILE_ATTRIBUTE_NORMAL
+        else:
+            attrs = (attrs | FILE_ATTRIBUTE_READONLY) & ~FILE_ATTRIBUTE_NORMAL
+
+        class _FILE_BASIC_INFO(ctypes.Structure):
+            _fields_ = [
+                ("CreationTime", ctypes.c_int64),
+                ("LastAccessTime", ctypes.c_int64),
+                ("LastWriteTime", ctypes.c_int64),
+                ("ChangeTime", ctypes.c_int64),
+                ("FileAttributes", ctypes.c_uint32),
+            ]
+
+        basic = _FILE_BASIC_INFO()
+        basic.CreationTime = -1
+        basic.LastAccessTime = -1
+        basic.LastWriteTime = -1
+        basic.ChangeTime = -1
+        basic.FileAttributes = attrs
+        FileBasicInfo = 0
+        ok = self._kernel32.SetFileInformationByHandle(
+            self._HANDLE(handle),
+            FileBasicInfo,
+            ctypes.byref(basic),
+            ctypes.sizeof(basic),
+        )
+        if not ok:
+            if int(mode) & 0o222 == 0:
+                self._raise_last(
+                    "write",
+                    "SetFileInformationByHandle FileBasicInfo failed",
+                )
+            return
+
     def _final_path(self, handle: int) -> str:
         ctypes = self._ctypes
         buf = ctypes.create_unicode_buffer(_MAX_PATH_CHARS)
@@ -839,7 +1341,14 @@ class CtypesWin32API:
             self._raise_last("unavailable", "GetFinalPathNameByHandleW failed")
         return buf.value
 
-    def rename_replace(self, handle: int, dest_name: str, *, root_handle: int) -> None:
+    def rename_replace(
+        self,
+        handle: int,
+        dest_name: str,
+        *,
+        root_handle: int,
+        replace: bool = True,
+    ) -> None:
         ctypes = self._ctypes
         utf16 = dest_name.encode("utf-16-le")
         nchars = (len(utf16) // 2) + 1
@@ -853,7 +1362,7 @@ class CtypesWin32API:
             ]
 
         info = _FILE_RENAME_INFORMATION()
-        info.ReplaceIfExists = 1
+        info.ReplaceIfExists = 1 if replace else 0
         info.RootDirectory = self._HANDLE(root_handle)
         info.FileNameLength = len(utf16)
         ctypes.memmove(
@@ -882,3 +1391,28 @@ class CtypesWin32API:
             err = int(self._ctypes.get_last_error() or 0)
             if err not in _WIN_MISSING:
                 self._raise_last("write", f"cannot unlink {name}")
+
+    def lock_ex(self, handle: int) -> None:
+        ov = self._OVERLAPPED()
+        ok = self._kernel32.LockFileEx(
+            self._HANDLE(handle),
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            _MAXDWORD,
+            _MAXDWORD,
+            self._ctypes.byref(ov),
+        )
+        if not ok:
+            self._raise_last("unavailable", "LockFileEx failed")
+
+    def unlock(self, handle: int) -> None:
+        ov = self._OVERLAPPED()
+        ok = self._kernel32.UnlockFileEx(
+            self._HANDLE(handle),
+            0,
+            _MAXDWORD,
+            _MAXDWORD,
+            self._ctypes.byref(ov),
+        )
+        if not ok:
+            self._raise_last("unavailable", "UnlockFileEx failed")

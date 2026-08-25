@@ -47,6 +47,15 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   claim from fixtures. Refs #147 (does not close).
 
 ### Fixed
+- **#77 leftover: Windows managed-store no-follow:** high-level
+  `path_keys` primitives (`ensure_managed_dir`, `atomic_write_bytes`,
+  `read_managed_regular_bytes`, `confined_path`, `exclusive_lock`,
+  `append_locked_jsonl`) walk each component with `CreateFileW` /
+  `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` and reject reparse points;
+  `write_relative_regular` checks `expected` before a same-bytes no-op.
+  Descriptor-relative `*_at` / `dir_fd` APIs stay POSIX-only. POSIX
+  `O_NOFOLLOW`/`dir_fd` is unchanged when available. Does **not** close #77
+  (live AG install matrix remains). Refs #77.
 - **#77 leftover Windows O_NOFOLLOW:** confined hash-edit read/write/apply
   and agent/skill catalog pin/write on Windows open each path component with
   `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` (no
@@ -54,8 +63,7 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   POSIX `O_NOFOLLOW`/`dir_fd` is unchanged. Hermetic fake-win32 tests drive
   the real entries; `windows-nofollow` CI (`windows-latest`, `pytest -m
   "not live"`) is the live Windows proof path. Does **not** close #77
-  (live AG install matrix, doctor live evidence, managed-store `dir_fd`
-  remain). Refs #77.
+  (live AG install matrix, doctor live evidence remain). Refs #77.
 - **#69 leftover: grok composition executor:** `omg team hyperplan|security-research
   execute --executor grok` no longer raises `E_TEAM_COMPOSITION_EXEC_EXECUTOR`.
   Grok is admitted and launched through existing `launch_worker` Jobs machinery
