@@ -1161,6 +1161,21 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
 
     from omg_cli.jobs.ownership import kill_pgid, wait_until_gone
 
+    found: dict[int, ProcessIdentity] = {}
+    for ident in identities:
+        pid = getattr(ident, "pid", None)
+        if isinstance(ident, ProcessIdentity):
+            found[ident.pid] = ident
+        elif isinstance(pid, int):
+            parsed = ProcessIdentity(
+                pid=pid,
+                pgid=int(getattr(ident, "pgid", pid) or pid),
+                pid_starttime=getattr(ident, "pid_starttime", None),
+            )
+            found[pid] = parsed
+    absorb_live_job_identities(found)
+    identities = list(found.values())
+
     for ident in identities:
         pid = getattr(ident, "pid", None)
         pgid = getattr(ident, "pgid", None)
