@@ -10,6 +10,13 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 ## [Unreleased]
 
 ### Changed
+- **#76 leftover: honest OmO gap text for CLI hash-edit/comments:**
+  MATRIX-OmO / GAPS now describe `omg edit plan/apply/verify` and
+  `omg edit comments` (report-only default) as CLI supplements to host
+  edits. Classification stays `optional_unclaimed`. OmO completeness
+  proof `coverage_digest` refreshed for the gap-text-only inventory
+  change. Does **not** claim `omo.edit.hash_anchored` host intercept
+  parity and does **not** close #76 (HOST parity remains open). Refs #76.
 - **#147 leftover: TOCTOU promote, task inbox, interactive scale:**
   `input_ready` promotion re-proves pane/PID/start against current
   `team.json` and, on live pid-bound workers, `resolve_live_worker` /

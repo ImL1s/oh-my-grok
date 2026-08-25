@@ -1370,7 +1370,7 @@
         "#76",
         "#79"
       ],
-      "gap": "No hash-anchored edit surface in OMG; host edit tools are used as-is. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
+      "gap": "CLI hash-edit (`omg edit plan/apply/verify`) supplements host edits; it does not claim `omo.edit.hash_anchored` host intercept parity. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
     },
     {
       "id": "omo.tools.lsp_ast_codegraph_mcp",
@@ -1437,7 +1437,7 @@
         "#76",
         "#79"
       ],
-      "gap": "No dedicated OmO-style comment-hygiene checker claimed in OMG. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
+      "gap": "Comment hygiene is `omg edit comments` (report-only default); it supplements host edits and does not claim OmO-style host comment-hygiene parity. Near-1:1 leftover owned by #76 (aggregate #79), not closed #78."
     },
     {
       "id": "omo.ulw.ultrawork_loop",
@@ -1941,7 +1941,7 @@
         "omo.edit.hash_anchored",
         "omo.quality.comment_hygiene"
       ],
-      "summary": "OmO hash-anchored edit and comment-hygiene quality surfaces unclaimed; leftover owned by #76; #79 is aggregate tracker."
+      "summary": "CLI hash-edit (`omg edit plan/apply/verify`) and comment checker (`omg edit comments`, report-only default) supplement host edits; they do not claim `omo.edit.hash_anchored` host parity. Leftover owned by #76; #79 is aggregate tracker."
     },
     {
       "id": "gap.install.provider_doctor",
