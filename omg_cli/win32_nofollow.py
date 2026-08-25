@@ -690,6 +690,7 @@ def atomic_write_relative(
     body: bytes,
     *,
     replace: bool = True,
+    mode: int | None = None,
 ) -> None:
     """Publish ``/``.join(*parts) under *root* without following a reparse.
 
@@ -736,6 +737,12 @@ def atomic_write_relative(
             raise
         _close(api, tmp)
         tmp = None
+        if mode is not None:
+            dest = Path(root_p).joinpath(*clean)
+            try:
+                os.chmod(dest, int(mode) & 0o7777)
+            except OSError as exc:
+                raise Win32NofollowError("write", "mode apply failed") from exc
     except Win32NofollowError:
         raise
     except OSError as exc:

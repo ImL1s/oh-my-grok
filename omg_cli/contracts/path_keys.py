@@ -143,6 +143,17 @@ def _raise_win32(exc: Win32NofollowError, *, label: str, name: str) -> NoReturn:
     raise ContractPathError(str(exc)) from exc
 
 
+def _windows_mode_matches(observed: int, required: int) -> bool:
+    """NTFS typically surfaces writable files as 0666, readonly as 0444."""
+    if observed == required:
+        return True
+    if required == DATA_FILE_MODE and observed in {DATA_FILE_MODE, 0o666}:
+        return True
+    if required == IMMUTABLE_SOURCE_MODE and observed in {IMMUTABLE_SOURCE_MODE, 0o444}:
+        return True
+    return False
+
+
 def _win32_file_parts(path: Path) -> tuple[Path, list[str]]:
     path = path.absolute()
     name = _validate_component(path.name)
@@ -528,7 +539,9 @@ def atomic_write_bytes(
         destination = Path(path).absolute()
         base, parts = _win32_file_parts(destination)
         try:
-            atomic_write_relative(base, parts, body, replace=replace)
+            atomic_write_relative(
+                base, parts, body, replace=replace, mode=mode
+            )
         except Win32NofollowError as exc:
             _raise_win32(exc, label="destination", name=destination.name)
         return destination
@@ -606,7 +619,7 @@ def read_managed_regular_bytes(
             body, mode = read_relative_regular(base, parts, max_bytes=max_bytes)
         except Win32NofollowError as exc:
             _raise_win32(exc, label="managed file", name=name)
-        if required_mode is not None and mode != required_mode:
+        if required_mode is not None and not _windows_mode_matches(mode, required_mode):
             raise ContractPathError(
                 f"managed file mode must be {required_mode:04o}, got {mode:04o}"
             )
