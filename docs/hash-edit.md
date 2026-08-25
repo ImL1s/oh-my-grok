@@ -35,7 +35,8 @@ Workspace root follows `--project-root` / `OMG_PROJECT_ROOT` / discovery.
 library re-canonicalizes mappings).
 
 `omg edit plan` reads the descriptor, then reads the target through the
-same pinned `O_NOFOLLOW` directory walk as apply (size is checked before
+same no-follow confinement as apply (POSIX `O_NOFOLLOW` walk or Windows
+`CreateFileW`/`NtCreateFile` reparse-reject; size is checked before
 the file is loaded). It plans and prints a JSON envelope. It does not
 mutate the target, does not `patch(1)` a unified diff, and does not write
 `.omg/state`.
@@ -84,9 +85,10 @@ Library failures map to stable CLI codes (exit `1`). Missing/unreadable
 | `E_READ_ONLY` | `OMG_CAPABILITY_MODE=read-only` on mutating tools |
 | `E_OWNERSHIP` | active ULW/Team manifest and path not owned by calling task |
 
-Stale, ambiguous, and path errors fail closed. Plan and apply on hosts
-without `O_NOFOLLOW` / `dir_fd` (win32) fail closed in the library; do not
-weaken that floor.
+Stale, ambiguous, and path errors fail closed. POSIX plan/apply use pinned
+`O_NOFOLLOW` / `dir_fd`. Windows uses `CreateFileW` / `NtCreateFile` with
+`FILE_FLAG_OPEN_REPARSE_POINT` and rejects symlink/mount-point reparse
+(no `Path.open()` follow). Hosts with neither backend fail closed.
 
 ## Descriptor (fail closed)
 
@@ -128,19 +130,24 @@ UTF-8 and NUL bytes are rejected.
 
 `apply_hash_edit(workspace_root, descriptor, plan)`:
 
-1. Opens the workspace root with `O_DIRECTORY|O_NOFOLLOW` and walks the
-   descriptor path from that fd (top-level files such as `README.md` are
-   valid even when `/tmp` is a symlink).
-2. Takes an advisory `flock` on the parent **directory** fd. No lock
-   sidecar is created in the project tree.
-3. `lstat` then `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`. Rejects symlink
-   ancestor/leaf, FIFO, device, socket, multi-link, and non-regular files.
-   The pinned descriptor is read until the expected size or EOF (`os.read`
-   may return short of the request).
+1. POSIX: opens the workspace root with `O_DIRECTORY|O_NOFOLLOW` and walks
+   the descriptor path from that fd (top-level files such as `README.md` are
+   valid even when `/tmp` is a symlink). Windows: `CreateFileW` on the root
+   with `FILE_FLAG_OPEN_REPARSE_POINT`, then `NtCreateFile` relative opens
+   with `FILE_OPEN_REPARSE_POINT`; symlink and mount-point reparse tags are
+   rejected.
+2. POSIX: advisory `flock` on the parent **directory** fd. Windows: exclusive
+   share-mode open of the leaf. No lock sidecar is created in the project tree.
+3. POSIX: `lstat` then `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`. Windows: reparse
+   inspection on the pinned handle. Rejects symlink ancestor/leaf, FIFO,
+   device, socket, multi-link, and non-regular files. The pinned handle is
+   read until the expected size or EOF.
 4. Re-reads and re-plans under the lock. A digest change is concurrent
    failure, not a new unique_shift.
-5. Writes with `atomic_write_bytes_at` (fsync) and read-back of bytes
-   plus `stat.S_IMODE`. Failures before replace leave bytes unchanged.
+5. POSIX: `atomic_write_bytes_at` (fsync). Windows: same-directory exclusive
+   temp + `MoveFileEx` replace from the parent handle's path. Read-back of
+   bytes (POSIX also `stat.S_IMODE`). Failures before replace leave bytes
+   unchanged.
 
 **Mode contract:** the existing file's `stat.S_IMODE` bits (including
 execute) are preserved. Owner, xattr, ACL, and flags are not.

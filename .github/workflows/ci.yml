@@ -159,3 +159,23 @@ jobs:
           path: /tmp/omg104-artifacts/
           if-no-files-found: error
           retention-days: 7
+
+  # #77: hermetic Windows no-follow confinement (CreateFileW / NtCreateFile).
+  # pytest -m "not live" only — no secrets, no grok quota, no smoke.sh.
+  # Does not close #77 (live AG install matrix / doctor live evidence remain).
+  windows-nofollow:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Windows no-follow confinement
+        run: python -m pytest -q -m "not live" --tb=short tests/test_win32_nofollow.py tests/test_edit_verify.py::test_verify_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_plan_fail_closed_without_nofollow_backend tests/test_hash_edit_cli.py::test_cli_apply_fail_closed_without_nofollow_backend tests/test_agents_catalog.py::test_catalog_pin_unavailable_fails_closed

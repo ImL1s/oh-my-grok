@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -13,18 +12,19 @@ import pytest
 
 from omg_cli.cli_envelope import SCHEMA_VERSION
 from omg_cli.commands import edit as edit_cmds
+from omg_cli.hash_edit.apply import _posix_nofollow_ready, _windows_nofollow_ready
 from omg_cli.hash_edit.descriptor import HASH_EDIT_KIND
 from omg_cli.main import build_parser, cmd_edit, main
 
-_APPLY_SUPPORTED = sys.platform != "win32" and hasattr(os, "O_NOFOLLOW")
+_APPLY_SUPPORTED = _posix_nofollow_ready() or _windows_nofollow_ready()
 _PLAN_SUPPORTED = _APPLY_SUPPORTED
 _SKIP_APPLY = pytest.mark.skipif(
     not _APPLY_SUPPORTED,
-    reason="apply_hash_edit requires POSIX O_NOFOLLOW/fcntl",
+    reason="apply_hash_edit requires POSIX O_NOFOLLOW or Windows no-follow",
 )
 _SKIP_PLAN = pytest.mark.skipif(
     not _PLAN_SUPPORTED,
-    reason="plan target read requires POSIX O_NOFOLLOW/dir_fd",
+    reason="plan target read requires POSIX O_NOFOLLOW or Windows no-follow",
 )
 _REPLACEMENT = "UNIQUE_REPLACEMENT_TOKEN_XYZ"
 
@@ -271,13 +271,17 @@ def test_cli_apply_path_error_for_missing_file(
     assert code == "E_HASH_EDIT_PATH"
 
 
-@pytest.mark.skipif(
-    _APPLY_SUPPORTED,
-    reason="win32-only: apply must fail closed without O_NOFOLLOW/fcntl",
-)
-def test_cli_apply_fail_closed_without_posix_lock(
-    project: Path, capsys: pytest.CaptureFixture[str]
+def test_cli_apply_fail_closed_without_nofollow_backend(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._posix_nofollow_ready", lambda: False
+    )
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._windows_nofollow_ready", lambda: False
+    )
     current = "before\nalpha\nafter\n"
     target = _write_target(project, current)
     desc = _write_descriptor(project, _payload(current))
@@ -285,7 +289,7 @@ def test_cli_apply_fail_closed_without_posix_lock(
     assert rc == 1
     payload = _out(capsys)
     code = (payload.get("error") or {}).get("code") or payload.get("error_code")
-    # Library fail-closes before splice: confined_path (PATH) then fcntl (APPLY).
+    # Library fail-closes before splice when no POSIX/Windows no-follow backend.
     assert code in {"E_HASH_EDIT_PATH", "E_HASH_EDIT_APPLY"}
     assert target.read_bytes() == current.encode("utf-8")
     dumped = json.dumps(payload)
@@ -293,13 +297,17 @@ def test_cli_apply_fail_closed_without_posix_lock(
     assert not (project / ".omg" / "state").exists()
 
 
-@pytest.mark.skipif(
-    _PLAN_SUPPORTED,
-    reason="win32-only: plan must fail closed without O_NOFOLLOW/dir_fd",
-)
-def test_cli_plan_fail_closed_without_posix_nofollow(
-    project: Path, capsys: pytest.CaptureFixture[str]
+def test_cli_plan_fail_closed_without_nofollow_backend(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._posix_nofollow_ready", lambda: False
+    )
+    monkeypatch.setattr(
+        "omg_cli.hash_edit.apply._windows_nofollow_ready", lambda: False
+    )
     current = "before\nalpha\nafter\n"
     target = _write_target(project, current)
     desc = _write_descriptor(project, _payload(current))
