@@ -1151,6 +1151,67 @@ def absorb_live_job_identities(
                     pending = True
 
 
+def reap_captured_identities(identities: Sequence[Any]) -> None:
+    """Signal independently captured PIDs. Never trusts forged ``job.json`` PIDs.
+
+    Terminal ``cancel_job`` does not kill SUCCEEDED/FAILED/LOST records, so
+    callers that captured live identities before the stamp must reap them.
+    """
+    import signal
+
+    from omg_cli.jobs.ownership import kill_pgid, wait_until_gone
+
+    for ident in identities:
+        pid = getattr(ident, "pid", None)
+        pgid = getattr(ident, "pgid", None)
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not isinstance(pgid, int) or pgid <= 1:
+            continue
+        try:
+            self_pgid = os.getpgrp()
+        except OSError:
+            self_pgid = os.getpid()
+        if pgid == self_pgid or pid in {os.getpid(), os.getppid()}:
+            continue
+        # Only session leaders we spawned (`start_new_session`); never a
+        # member of an inherited process group.
+        if pid != pgid:
+            continue
+        if not isinstance(ident, ProcessIdentity):
+            ident = ProcessIdentity(
+                pid=pid,
+                pgid=pgid,
+                pid_starttime=getattr(ident, "pid_starttime", None),
+            )
+        outcome = probe_identity_liveness(ident)
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        kill_pgid(pgid, signal.SIGTERM)
+        wait_until_gone(pid, timeout_s=1.0)
+        outcome = probe_identity_liveness(ident)
+        if outcome is IdentityProbeOutcome.UNPROVEN:
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+        if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            continue
+        kill_pgid(pgid, signal.SIGKILL)
+        wait_until_gone(pid, timeout_s=2.0)
+        outcome = probe_identity_liveness(ident)
+        if outcome not in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
+            raise JobStoreError(
+                f"start identity pid={pid} still live after SIGKILL",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
+
+
 def prove_job_processes_gone(
     project_root: Path,
     job_id: str,
@@ -3268,6 +3329,7 @@ __all__ = [
     "observe_job",
     "preflight_retry_job",
     "prove_job_processes_gone",
+    "reap_captured_identities",
     "read_acp_sidecar_binding",
     "recover_job",
     "recover_jobs",

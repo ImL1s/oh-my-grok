@@ -55,6 +55,7 @@ from omg_cli.jobs.runtime import (
     identities_from_start_record,
     job_status,
     prove_job_processes_gone,
+    reap_captured_identities,
     wait_job,
 )
 from omg_cli.state import _safe_run_id
@@ -954,11 +955,13 @@ def _cancel_composition_job(
     job_id: str,
     *,
     reason: str,
+    identities: Sequence[Any] = (),
 ) -> None:
     """Cancel a grok composition job. Do not swallow ``JobStoreError``.
 
     ``cancel_job`` does not signal PIDs from a possibly forged terminal
-    ``job.json`` stamp. Unproven cancel is fail-closed.
+    ``job.json`` stamp. Independently captured identities are reaped
+    only when prove-after-cancel still sees LIVE processes.
     """
     try:
         cancel_job(root, job_id, reason=reason)
@@ -968,6 +971,13 @@ def _cancel_composition_job(
             code="E_TEAM_COMPOSITION_EXEC_JOB",
             details={"job_id": job_id},
         ) from exc
+    if identities:
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=identities, timeout_s=0.05
+            )
+        except JobStoreError:
+            reap_captured_identities(identities)
 
 
 def _grok_job_wait_s(record: Any) -> float:
@@ -1097,6 +1107,7 @@ def _launch_and_wait_grok_job(
             root,
             job_id,
             reason="composition-grok-wait-error",
+            identities=start_identities,
         )
         try:
             prove_job_processes_gone(
@@ -1119,6 +1130,7 @@ def _launch_and_wait_grok_job(
             root,
             job_id,
             reason="wait-timeout",
+            identities=start_identities,
         )
         try:
             prove_job_processes_gone(
@@ -1148,6 +1160,17 @@ def _launch_and_wait_grok_job(
                 captured.setdefault(ident.pid, ident)
         _sync_start_identities()
     extras = set(captured) - runner_pids
+    if not captured:
+        try:
+            cancel_job(root, job_id, reason="composition-grok-missing-runner")
+        except JobStoreError:
+            pass
+        raise CompositionExecutionError(
+            "grok composition runner identity was never captured "
+            "before terminal state",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        )
     if runner_pids and not extras:
         runner_live = False
         for pid in runner_pids:
@@ -1177,15 +1200,28 @@ def _launch_and_wait_grok_job(
             root,
             job_id,
             reason="composition-grok-terminal-live",
+            identities=start_identities,
         )
         try:
             prove_job_processes_gone(
                 root, job_id, extra_identities=start_identities
             )
         except JobStoreError as prove_exc:
+            try:
+                reap_captured_identities(start_identities)
+                prove_job_processes_gone(
+                    root, job_id, extra_identities=start_identities
+                )
+            except JobStoreError as reap_exc:
+                raise CompositionExecutionError(
+                    f"grok composition job {job_id} terminal but process "
+                    f"still live: {reap_exc}",
+                    code="E_TEAM_COMPOSITION_EXEC_JOB",
+                    details={"job_id": job_id},
+                ) from reap_exc
             raise CompositionExecutionError(
-                f"grok composition job {job_id} terminal but process "
-                f"still live: {prove_exc}",
+                f"grok composition job {job_id} claimed terminal while "
+                f"process was live: {prove_exc}",
                 code="E_TEAM_COMPOSITION_EXEC_JOB",
                 details={"job_id": job_id},
             ) from prove_exc

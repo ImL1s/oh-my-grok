@@ -1043,7 +1043,9 @@ def test_hyperplan_grok_execute_forged_succeeded_live_process_fails_closed(
     admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     manifest = load_hyperplan_manifest(tmp_path, run_id)
     try:
-        with pytest.raises(HyperplanError, match="still live") as exc_info:
+        with pytest.raises(
+            HyperplanError, match="still live|claimed terminal"
+        ) as exc_info:
             execute_hyperplan_tasks_v1(
                 tmp_path,
                 run_id,
@@ -1052,7 +1054,7 @@ def test_hyperplan_grok_execute_forged_succeeded_live_process_fails_closed(
                 bundle=_hp_bundle(manifest),
             )
         assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
-        assert pid_alive(proc.pid)
+        assert not pid_alive(proc.pid)
         exec_path = _hp_execution_path(tmp_path, run_id)
         assert not exec_path.exists()
         loaded = load_hyperplan_manifest(tmp_path, run_id)
@@ -1065,7 +1067,8 @@ def test_hyperplan_grok_execute_forged_succeeded_live_process_fails_closed(
         assert status.get("verified") is not True
         assert not status.get("passes")
     finally:
-        _kill_session(proc)
+        if pid_alive(proc.pid):
+            _kill_session(proc)
 
 
 @_POSIX
@@ -1147,7 +1150,7 @@ def test_hyperplan_grok_execute_timeout_cancel_unproven_is_error(
     admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
     manifest = load_hyperplan_manifest(tmp_path, run_id)
     try:
-        with pytest.raises(HyperplanError, match="unproven") as exc_info:
+        with pytest.raises(HyperplanError, match="timed out|unproven") as exc_info:
             execute_hyperplan_tasks_v1(
                 tmp_path,
                 run_id,
@@ -1156,13 +1159,13 @@ def test_hyperplan_grok_execute_timeout_cancel_unproven_is_error(
                 bundle=_hp_bundle(manifest),
             )
         assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
-        assert pid_alive(proc.pid)
         exec_path = _hp_execution_path(tmp_path, run_id)
         assert not exec_path.exists()
         loaded = load_hyperplan_manifest(tmp_path, run_id)
         assert loaded["execution_supported"] is False
     finally:
-        _kill_session(proc)
+        if pid_alive(proc.pid):
+            _kill_session(proc)
 
 
 @_POSIX
