@@ -555,6 +555,35 @@ def test_reap_captured_identities_skips_true_pid_reuse(
     assert signaled == []
 
 
+def test_reap_captured_identities_refuses_fingerprintless_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PID+PGID without start-time must not killpg a recycled occupant."""
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+    from omg_cli.jobs.runtime import reap_captured_identities
+
+    ident = ProcessIdentity(pid=4242, pgid=4242, pid_starttime=None)
+    signaled: list[int] = []
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.absorb_live_job_identities", lambda _found: None
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.refresh_identity", lambda _ident: None
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.kill_pgid",
+        lambda pgid, _sig: signaled.append(int(pgid)),
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.LIVE,
+    )
+    with pytest.raises(JobStoreError, match="missing start fingerprint"):
+        reap_captured_identities((ident,))
+    assert signaled == []
+
+
 def test_same_occupant_rejects_pid_reuse_with_new_starttime() -> None:
     from omg_cli.jobs.ownership import ProcessIdentity, same_occupant
 

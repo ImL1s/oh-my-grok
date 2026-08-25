@@ -1223,6 +1223,13 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
                 f"start identity pid={pid} unproven before signal",
                 code="E_JOB_CANCEL_UNPROVEN",
             )
+        stamp = ident.pid_starttime
+        if not isinstance(stamp, str) or stamp == "":
+            raise JobStoreError(
+                f"start identity pid={pid} unproven before signal "
+                "(missing start fingerprint)",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
         kill_pgid(pgid, signal.SIGTERM)
         wait_until_gone(pid, timeout_s=1.0)
         ident = _occupant(ident)
@@ -1235,6 +1242,13 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
             )
         if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
             continue
+        stamp = ident.pid_starttime
+        if not isinstance(stamp, str) or stamp == "":
+            raise JobStoreError(
+                f"start identity pid={pid} unproven after SIGTERM "
+                "(missing start fingerprint)",
+                code="E_JOB_CANCEL_UNPROVEN",
+            )
         if not isinstance(pgid, int) or pgid <= 1 or pgid == self_pgid:
             continue
         kill_pgid(pgid, signal.SIGKILL)

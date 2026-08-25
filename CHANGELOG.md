@@ -66,7 +66,8 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   cancels without signaling PIDs from a possibly forged stamp, proves
   again, reaps independently captured identities (never `killpg` the
   caller pgid; a later `setsid()` refreshes PGID instead of skipping as
-  reuse), and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution
+  reuse; identities without a start-time fingerprint are unproven and
+  are never signaled), and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution
   json / `execution_supported=true`). Timeout `cancel_job` no longer
   swallows `JobStoreError`; cancel/prove unproven is an error. Wait
   errors cancel and prove before rethrowing. Missing spawn identity
