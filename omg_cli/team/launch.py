@@ -70,6 +70,9 @@ class WorkerExecutionHandle:
     team_id: str | None = None
     task_id: str | None = None
     dry_run: bool = False
+    spawn_pid: int | None = None
+    spawn_pgid: int | None = None
+    spawn_starttime: str | None = None
 
     def __post_init__(self) -> None:
         topo = normalize_worker_topology(self.topology)
@@ -433,6 +436,16 @@ def launch_worker(
             code="E_TEAM_JOB_MISSING",
         )
 
+    spawn_pid = getattr(record, "pid", None)
+    spawn_pgid = getattr(record, "pgid", None)
+    spawn_starttime = getattr(record, "pid_starttime", None)
+    if not isinstance(spawn_pid, int):
+        spawn_pid = None
+    if not isinstance(spawn_pgid, int):
+        spawn_pgid = spawn_pid
+    if not isinstance(spawn_starttime, str):
+        spawn_starttime = None
+
     return WorkerExecutionHandle(
         topology=WORKER_TOPOLOGY_JOB,
         worker_id=wid,
@@ -445,6 +458,9 @@ def launch_worker(
         team_id=team_id,
         task_id=task_id or wid,
         dry_run=False,
+        spawn_pid=spawn_pid,
+        spawn_pgid=spawn_pgid,
+        spawn_starttime=spawn_starttime,
     )
 
 

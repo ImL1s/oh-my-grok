@@ -1254,8 +1254,8 @@ def test_hyperplan_grok_execute_inner_identity_unproven_fails_closed(
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "omg_cli.team.compositions.execution._read_spawn_identity_recovery",
-        lambda *_args, **_kwargs: None,
+        "omg_cli.team.compositions.execution.parse_process_identity",
+        lambda **_kwargs: None,
     )
     run_id = _seed(tmp_path, monkeypatch)
     materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())

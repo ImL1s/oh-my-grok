@@ -47,9 +47,8 @@ from omg_cli.contracts.state_schemas import (
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.ownership import ProcessIdentity
+from omg_cli.jobs.ownership import ProcessIdentity, parse_process_identity
 from omg_cli.jobs.runtime import (
-    _read_spawn_identity_recovery,
     absorb_live_job_identities,
     cancel_job,
     job_status,
@@ -1060,7 +1059,11 @@ def _launch_and_wait_grok_job(
     timed_out = False
     record: Any = None
     try:
-        spawn = _read_spawn_identity_recovery(root, job_id)
+        spawn = parse_process_identity(
+            pid=getattr(handle, "spawn_pid", None),
+            pgid=getattr(handle, "spawn_pgid", None),
+            pid_starttime=getattr(handle, "spawn_starttime", None),
+        )
         if spawn is not None:
             captured[spawn.pid] = spawn
         runner = spawn
