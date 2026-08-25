@@ -480,6 +480,81 @@ def test_refresh_identity_refuses_missing_fingerprint(
     assert refresh_identity(ident) is None
 
 
+def test_reap_captured_identities_signals_setsid_new_pgid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching start-time + new PGID is setsid, not reuse: still reap."""
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+    from omg_cli.jobs.runtime import reap_captured_identities
+
+    stale = ProcessIdentity(pid=4242, pgid=1111, pid_starttime="lstart:same")
+    new_pgid = 9999
+    signaled: list[int] = []
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.absorb_live_job_identities", lambda _found: None
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.refresh_identity",
+        lambda ident: ProcessIdentity(
+            pid=ident.pid,
+            pgid=new_pgid,
+            pid_starttime=ident.pid_starttime,
+        ),
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.kill_pgid",
+        lambda pgid, _sig: signaled.append(int(pgid)),
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.wait_until_gone",
+        lambda _pid, timeout_s=1.0: None,
+    )
+    probes = {"n": 0}
+
+    def _probe(ident: ProcessIdentity) -> IdentityProbeOutcome:
+        if ident.pgid == 1111:
+            return IdentityProbeOutcome.REUSED
+        probes["n"] += 1
+        if probes["n"] == 1:
+            return IdentityProbeOutcome.LIVE
+        return IdentityProbeOutcome.GONE
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.probe_identity_liveness", _probe
+    )
+    reap_captured_identities((stale,))
+    assert signaled == [new_pgid]
+
+
+def test_reap_captured_identities_skips_true_pid_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Start-time mismatch is a new occupant: do not signal the replacement."""
+    from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity
+    from omg_cli.jobs.runtime import reap_captured_identities
+
+    stale = ProcessIdentity(pid=4242, pgid=1111, pid_starttime="lstart:old")
+    signaled: list[int] = []
+
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.absorb_live_job_identities", lambda _found: None
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.refresh_identity", lambda _ident: None
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.ownership.kill_pgid",
+        lambda pgid, _sig: signaled.append(int(pgid)),
+    )
+    monkeypatch.setattr(
+        "omg_cli.jobs.runtime.probe_identity_liveness",
+        lambda _ident: IdentityProbeOutcome.REUSED,
+    )
+    reap_captured_identities((stale,))
+    assert signaled == []
+
+
 def test_same_occupant_rejects_pid_reuse_with_new_starttime() -> None:
     from omg_cli.jobs.ownership import ProcessIdentity, same_occupant
 

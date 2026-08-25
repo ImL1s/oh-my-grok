@@ -1156,10 +1156,17 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
 
     Terminal ``cancel_job`` does not kill SUCCEEDED/FAILED/LOST records, so
     callers that captured live identities before the stamp must reap them.
+    A later ``setsid()`` keeps pid+starttime and only changes PGID — refresh
+    that occupant before treating a PGID mismatch as reuse and skipping.
     """
     import signal
 
-    from omg_cli.jobs.ownership import kill_pgid, wait_until_gone
+    from omg_cli.jobs.ownership import (
+        kill_pgid,
+        merge_identity,
+        refresh_identity,
+        wait_until_gone,
+    )
 
     found: dict[int, ProcessIdentity] = {}
     for ident in identities:
@@ -1174,27 +1181,40 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
             )
             found[pid] = parsed
     absorb_live_job_identities(found)
-    identities = list(found.values())
 
-    for ident in identities:
-        pid = getattr(ident, "pid", None)
-        pgid = getattr(ident, "pgid", None)
-        if not isinstance(pid, int) or pid <= 1:
-            continue
-        if not isinstance(pgid, int) or pgid <= 1:
-            continue
-        try:
-            self_pgid = os.getpgrp()
-        except OSError:
-            self_pgid = os.getpid()
-        if pgid == self_pgid or pid in {os.getpid(), os.getppid()}:
-            continue
+    try:
+        self_pgid = os.getpgrp()
+    except OSError:
+        self_pgid = os.getpid()
+    self_pids = {os.getpid(), os.getppid()}
+
+    def _occupant(ident: ProcessIdentity) -> ProcessIdentity:
+        refreshed = refresh_identity(ident)
+        if refreshed is not None:
+            merge_identity(found, refreshed)
+            return found[ident.pid]
+        return ident
+
+    for ident in list(found.values()):
         if not isinstance(ident, ProcessIdentity):
+            pid = getattr(ident, "pid", None)
+            pgid = getattr(ident, "pgid", None)
+            if not isinstance(pid, int) or not isinstance(pgid, int):
+                continue
             ident = ProcessIdentity(
                 pid=pid,
                 pgid=pgid,
                 pid_starttime=getattr(ident, "pid_starttime", None),
             )
+        ident = _occupant(ident)
+        pid = ident.pid
+        pgid = ident.pgid
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not isinstance(pgid, int) or pgid <= 1:
+            continue
+        if pgid == self_pgid or pid in self_pids:
+            continue
         outcome = probe_identity_liveness(ident)
         if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
             continue
@@ -1205,6 +1225,8 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
             )
         kill_pgid(pgid, signal.SIGTERM)
         wait_until_gone(pid, timeout_s=1.0)
+        ident = _occupant(ident)
+        pgid = ident.pgid
         outcome = probe_identity_liveness(ident)
         if outcome is IdentityProbeOutcome.UNPROVEN:
             raise JobStoreError(
@@ -1213,8 +1235,11 @@ def reap_captured_identities(identities: Sequence[Any]) -> None:
             )
         if outcome in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
             continue
+        if not isinstance(pgid, int) or pgid <= 1 or pgid == self_pgid:
+            continue
         kill_pgid(pgid, signal.SIGKILL)
         wait_until_gone(pid, timeout_s=2.0)
+        ident = _occupant(ident)
         outcome = probe_identity_liveness(ident)
         if outcome not in {IdentityProbeOutcome.GONE, IdentityProbeOutcome.REUSED}:
             raise JobStoreError(
