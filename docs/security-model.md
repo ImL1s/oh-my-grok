@@ -122,6 +122,11 @@ On Windows, the same high-level APIs (`ensure_managed_dir`,
 `exclusive_lock`, `append_locked_jsonl`) walk each component with
 `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` and reject
 reparse points; descriptor-relative `*_at` / `dir_fd` APIs remain POSIX-only.
+`omg setup import` / `omg setup migrate` source walks and regular-file reads
+use that same split: POSIX `O_NOFOLLOW` open+fstat when available, otherwise
+the Windows no-follow walk (fail closed on reparse/symlink). File copy is not
+live Antigravity discovery and does not set `verified` / `observed` /
+`healthy`.
 
 System path prefixes above the managed region (for example macOS `/tmp` →
 `/private/tmp`) may still contain platform symlinks; confinement is claimed for
