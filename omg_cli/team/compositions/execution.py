@@ -24,6 +24,7 @@ bump. Never writes ``passes`` / ``verified``.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -46,8 +47,9 @@ from omg_cli.contracts.state_schemas import (
 from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
-from omg_cli.jobs.ownership import ProcessIdentity
+from omg_cli.jobs.ownership import IdentityProbeOutcome, ProcessIdentity, probe_identity_liveness
 from omg_cli.jobs.runtime import (
+    _runner_identity,
     absorb_live_job_identities,
     cancel_job,
     identities_from_start_record,
@@ -1041,6 +1043,7 @@ def _launch_and_wait_grok_job(
         )
     start_identities: tuple[Any, ...] = ()
     captured: dict[int, ProcessIdentity] = {}
+    runner_pids: set[int] = set()
     timed_out = False
     record: Any = None
     try:
@@ -1051,6 +1054,8 @@ def _launch_and_wait_grok_job(
             for ident in start_identities
             if isinstance(ident, ProcessIdentity)
         }
+        runner = _runner_identity(started)
+        runner_pids = {runner.pid} if runner is not None else set()
 
         def _sync_start_identities() -> None:
             nonlocal start_identities
@@ -1058,10 +1063,22 @@ def _launch_and_wait_grok_job(
 
         def _on_poll(_wait_record: object) -> None:
             absorb_live_job_identities(captured)
+            for ident in identities_from_start_record(_wait_record):
+                if isinstance(ident, ProcessIdentity):
+                    captured.setdefault(ident.pid, ident)
             _sync_start_identities()
 
-        absorb_live_job_identities(captured)
-        _sync_start_identities()
+        deadline = time.monotonic() + 0.5
+        while True:
+            absorb_live_job_identities(captured)
+            live = job_status(root, job_id)
+            for ident in identities_from_start_record(live):
+                if isinstance(ident, ProcessIdentity):
+                    captured.setdefault(ident.pid, ident)
+            _sync_start_identities()
+            if (set(captured) - runner_pids) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
         wait_s = _grok_job_wait_s(started)
         try:
             record, timed_out = wait_job(
@@ -1076,7 +1093,27 @@ def _launch_and_wait_grok_job(
             absorb_live_job_identities(captured)
             _sync_start_identities()
     except JobStoreError as exc:
-        raise _wrap_job(exc) from exc
+        _cancel_composition_job(
+            root,
+            job_id,
+            reason="composition-grok-wait-error",
+        )
+        try:
+            prove_job_processes_gone(
+                root, job_id, extra_identities=start_identities
+            )
+        except JobStoreError as prove_exc:
+            raise CompositionExecutionError(
+                f"grok composition job {job_id} wait failed and cancel "
+                f"unproven: {prove_exc}",
+                code="E_TEAM_COMPOSITION_EXEC_JOB",
+                details={"job_id": job_id},
+            ) from prove_exc
+        raise CompositionExecutionError(
+            f"grok composition job {job_id} wait failed: {exc}",
+            code="E_TEAM_COMPOSITION_EXEC_JOB",
+            details={"job_id": job_id},
+        ) from exc
     if timed_out:
         _cancel_composition_job(
             root,
@@ -1102,7 +1139,35 @@ def _launch_and_wait_grok_job(
     # Terminal job.json is not process-exit proof. A forged SUCCEEDED stamp
     # used to skip cancel while grok was still live. Inner grok is a new
     # session (not in the runner pgid) and is missing from launch; capture
-    # it from OS children of the still-live runner during wait.
+    # it from OS children of the still-live runner during wait. If the
+    # runner died before that snapshot, identities can look gone while a
+    # detached grok remains — fail closed like simplify.
+    if record is not None:
+        for ident in identities_from_start_record(record):
+            if isinstance(ident, ProcessIdentity):
+                captured.setdefault(ident.pid, ident)
+        _sync_start_identities()
+    extras = set(captured) - runner_pids
+    if runner_pids and not extras:
+        runner_live = False
+        for pid in runner_pids:
+            ident = captured.get(pid)
+            if ident is None:
+                continue
+            if probe_identity_liveness(ident) is IdentityProbeOutcome.LIVE:
+                runner_live = True
+                break
+        if not runner_live:
+            try:
+                cancel_job(root, job_id, reason="composition-grok-inner-unproven")
+            except JobStoreError:
+                pass
+            raise CompositionExecutionError(
+                "grok composition inner provider identity was never "
+                "captured before terminal state",
+                code="E_TEAM_COMPOSITION_EXEC_JOB",
+                details={"job_id": job_id},
+            )
     try:
         prove_job_processes_gone(
             root, job_id, extra_identities=start_identities

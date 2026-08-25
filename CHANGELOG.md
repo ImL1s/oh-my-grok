@@ -64,7 +64,9 @@ Product version source of truth: [`plugin.json`](./plugin.json).
   cancels without signaling PIDs from a possibly forged stamp, proves
   again, and raises `E_TEAM_COMPOSITION_EXEC_JOB` (no execution json /
   `execution_supported=true`). Timeout `cancel_job` no longer swallows
-  `JobStoreError`; cancel/prove unproven is an error. Fixture path,
+  `JobStoreError`; cancel/prove unproven is an error. Wait errors
+  cancel and prove before rethrowing. Runner-only identities without
+  an inner capture fail closed. Fixture path,
   compile/produce `execution_supported=false`, and refused
   agy/claude/codex/cursor/kimi/omc executors are unchanged. Does **not**
   claim `live_verified` and does **not** close #69. Refs #69.

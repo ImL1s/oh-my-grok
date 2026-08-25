@@ -14,7 +14,7 @@ from omg_cli.contracts.writer_chain import canonical_json_bytes, sha256_hex
 from omg_cli.evidence import CLI_WRITER
 from omg_cli.jobs.models import JobState, JobStoreError
 from omg_cli.jobs.ownership import capture_identity, pid_alive
-from omg_cli.jobs.runtime import prove_job_processes_gone
+from omg_cli.jobs.runtime import cancel_job, prove_job_processes_gone
 from omg_cli.jobs.store import list_job_ids, read_job_record, write_job_record
 from omg_cli.main import main
 from omg_cli.state import write_status
@@ -1163,6 +1163,104 @@ def test_hyperplan_grok_execute_timeout_cancel_unproven_is_error(
         assert loaded["execution_supported"] is False
     finally:
         _kill_session(proc)
+
+
+@_POSIX
+def test_hyperplan_grok_execute_wait_error_cancels_before_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """recovery-required wait must cancel/prove, not skip the cancel path."""
+    del fake_grok_path
+    cancelled: list[str] = []
+
+    def _wait(*_args: Any, **_kwargs: Any) -> tuple[Any, bool]:
+        raise JobStoreError("lease stale live", code="E_JOB_RECOVERY_REQUIRED")
+
+    real_cancel = cancel_job
+
+    def _cancel(project_root: Path, job_id: str, **kwargs: Any) -> Any:
+        cancelled.append(job_id)
+        return real_cancel(project_root, job_id, **kwargs)
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.cancel_job", _cancel
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError) as exc_info:
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="grok",
+            bundle=_hp_bundle(manifest),
+        )
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+    assert cancelled
+    exec_path = _hp_execution_path(tmp_path, run_id)
+    assert not exec_path.exists()
+    loaded = load_hyperplan_manifest(tmp_path, run_id)
+    assert loaded["execution_supported"] is False
+
+
+@_POSIX
+def test_hyperplan_grok_execute_inner_identity_unproven_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_grok_path: Path,
+) -> None:
+    """Runner-only start identities without an inner capture must not stamp."""
+    del fake_grok_path
+
+    def _wait(project_root: Path, job_id: str, **kwargs: Any) -> tuple[Any, bool]:
+        del kwargs
+        rec = read_job_record(project_root, job_id)
+        rec.state = JobState.SUCCEEDED
+        write_job_record(project_root, rec)
+        return rec, False
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.wait_job", _wait
+    )
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.absorb_live_job_identities",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def _runner_only(record: Any) -> tuple[Any, ...]:
+        from omg_cli.jobs.runtime import _runner_identity
+
+        runner = _runner_identity(record)
+        return (runner,) if runner is not None else ()
+
+    monkeypatch.setattr(
+        "omg_cli.team.compositions.execution.identities_from_start_record",
+        _runner_only,
+    )
+    run_id = _seed(tmp_path, monkeypatch)
+    materialize_hyperplan_v1(tmp_path, run_id, _hp_spec())
+    admit_hyperplan_tasks_v1(tmp_path, run_id, TEAM)
+    manifest = load_hyperplan_manifest(tmp_path, run_id)
+    with pytest.raises(HyperplanError, match="inner provider identity") as exc_info:
+        execute_hyperplan_tasks_v1(
+            tmp_path,
+            run_id,
+            TEAM,
+            executor="grok",
+            bundle=_hp_bundle(manifest),
+        )
+    assert exc_info.value.code == "E_TEAM_COMPOSITION_EXEC_JOB"
+    exec_path = _hp_execution_path(tmp_path, run_id)
+    assert not exec_path.exists()
+    loaded = load_hyperplan_manifest(tmp_path, run_id)
+    assert loaded["execution_supported"] is False
 
 
 @_POSIX
