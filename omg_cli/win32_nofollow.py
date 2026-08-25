@@ -155,7 +155,13 @@ def _get_api() -> Win32NofollowAPI:
 def _validate_component(name: str) -> str:
     if not isinstance(name, str) or not name:
         raise Win32NofollowError("not_regular", "empty path component")
-    if name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+    if (
+        name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+        or ":" in name
+    ):
         raise Win32NofollowError("not_regular", f"unsafe path component: {name!r}")
     return name
 

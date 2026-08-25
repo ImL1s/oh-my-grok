@@ -278,8 +278,6 @@ def _apply_hash_edit_windows(
         unified_diff_sha256=fresh_plan.unified_diff_sha256,
         preserved_mode=preserved_mode,
     )
-    if spliced == current:
-        return result
     try:
         write_relative_regular(
             root,

@@ -479,6 +479,43 @@ def test_windows_apply_splices_without_following(
     _assert_nofollow_flags(fake_win32)
 
 
+def test_windows_apply_noop_revalidates_under_exclusive_lock(
+    tmp_path: Path, fake_win32: FakeWin32API
+) -> None:
+    current = "before\nalpha\nafter\n"
+    target = tmp_path / "docs" / "example.md"
+    target.parent.mkdir()
+    target.write_text(current, encoding="utf-8")
+    payload = _payload(current, old_text="alpha", replacement="alpha")
+    plan = plan_hash_edit(
+        payload,
+        HashEditCurrentFact(path="docs/example.md", current_bytes=current.encode()),
+    )
+    result = apply_hash_edit(tmp_path, payload, plan)
+    assert result.after_sha256 == _digest_text(current)
+    assert target.read_text(encoding="utf-8") == current
+    dest_opens = [
+        call for call in fake_win32.nt_create_calls if call[1] == "example.md"
+    ]
+    assert len(dest_opens) >= 2
+    _assert_nofollow_flags(fake_win32)
+
+    swapped = {"n": 0}
+
+    def _swap(parent: str, name: str) -> None:
+        if name != "example.md":
+            return
+        swapped["n"] += 1
+        if swapped["n"] == 2:
+            Path(parent, name).write_text("before\nhacked\nafter\n", encoding="utf-8")
+
+    fake_win32.before_nt_create = _swap
+    fake_win32.nt_create_calls.clear()
+    with pytest.raises(HashEditConcurrencyError):
+        apply_hash_edit(tmp_path, payload, plan)
+    assert "hacked" in target.read_text(encoding="utf-8")
+
+
 def test_windows_apply_rejects_symlink_leaf(
     tmp_path: Path, fake_win32: FakeWin32API
 ) -> None:
