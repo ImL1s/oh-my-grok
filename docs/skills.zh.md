@@ -516,7 +516,7 @@ find_references/symbols/diagnostics）、
 
 | 指令 | Contract |
 |---|---|
-| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history\|acp-resume` | Host-session argv，加上已脱敏的 search/friction/replay/observatory/retention。`ag-history` 仅以 immutable 只读模式打开 Antigravity 已钉选的 SQLite summary schema v1，最多返回 200 条哈希且不含正文的 descriptor；拒绝 symlink，未知或损坏格式会安全跳过，并且不读取 title、preview、transcript、工具输出、app-data 路径或完整 workspace 路径。Replay 永不重放命令。`acp-resume` 复用 host ACP initialize+session/resume，只产出无正文 receipt（hermetic `OMG_ACP_BIN` 不是 live Grok；无 session/close；restore-code 一律拒绝）。Refs #74。 |
+| `omg session allocate\|route\|search\|friction\|replay\|observatory\|retain\|ag-history\|acp-resume` | Host-session argv，加上已脱敏的 search/friction/replay/observatory/retention。`ag-history` 仅以原生只读模式打开 Antigravity 已钉选的 SQLite summary schema v1，让已提交的 WAL 数据行一并纳入，最多返回 200 条哈希且不含正文的 descriptor；拒绝 symlink，未知或损坏格式会安全跳过，并且不读取 title、preview、transcript、工具输出、app-data 路径或完整 workspace 路径。Replay 永不重放命令。`acp-resume` 复用 host ACP initialize+session/resume，只产出无正文 receipt（hermetic `OMG_ACP_BIN` 不是 live Grok；无 session/close；restore-code 一律拒绝）。Refs #74。 |
 | `omg trace timeline` | 只读、有界的 lifecycle timeline（`--run` / `--session`）。永不打印原始 prompt。Refs #74。 |
 | `omg recover` | 不可变、受限 JSONL suffix；部分恢复保留 broken-chain/未知纪录警告。 |
 | `omg memory put\|search\|show\|export\|import\|rescan\|layers` | Redacted、确定性的专案 facts，外加只读 memory-layer 目录（不会合并成一份 unbounded memory.json）。 |

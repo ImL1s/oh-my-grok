@@ -309,6 +309,7 @@ def _open_summary_db(path: Path) -> sqlite3.Connection:
         raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only = ON")
+    connection.execute("BEGIN")
     return connection
 
 
@@ -334,10 +335,11 @@ def _import_summary_db(
         # Never add title, preview, app_data_dir, task details, or transcript
         # fields to this SELECT.  The privacy boundary is enforced at source.
         rows = connection.execute(
-            """SELECT substr(conversation_id, 1, 4096) AS conversation_id,
+            """SELECT rowid AS summary_rowid,
+                      substr(conversation_id, 1, 4096) AS conversation_id,
                       step_count,
                       substr(last_modified_time, 1, 128) AS last_modified_time,
-                      substr(workspace_uris, 1, ?) AS workspace_uris_prefix,
+                      length(workspace_uris) AS workspace_uris_chars,
                       length(CAST(workspace_uris AS BLOB)) AS workspace_uris_bytes,
                       substr(status, 1, 128) AS status,
                       substr(source, 1, 128) AS source,
@@ -352,24 +354,41 @@ def _import_summary_db(
                  FROM conversation_summaries
              ORDER BY last_modified_time DESC, conversation_id ASC
                 LIMIT ?""",
-            (MAX_WORKSPACE_URI_CHARS + 1, remaining),
+            (remaining,),
         )
         imported: list[dict[str, Any]] = []
         for row in rows:
-            raw_workspace = row["workspace_uris_prefix"]
+            workspace_chars = _bounded_int(
+                row["workspace_uris_chars"],
+                minimum=0,
+                maximum=MAX_WORKSPACE_URI_CHARS + 1,
+                fallback=MAX_WORKSPACE_URI_CHARS + 1,
+            )
             workspace_bytes = _bounded_int(
                 row["workspace_uris_bytes"],
                 minimum=0,
                 maximum=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
                 fallback=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
             )
-            workspace_uris = (
-                raw_workspace
-                if isinstance(raw_workspace, str)
-                and len(raw_workspace) <= MAX_WORKSPACE_URI_CHARS
+            workspace_uris: str | None = None
+            if (
+                workspace_budget > 0
+                and workspace_chars <= MAX_WORKSPACE_URI_CHARS
                 and workspace_bytes <= workspace_budget
-                else None
-            )
+            ):
+                workspace_row = connection.execute(
+                    """SELECT workspace_uris
+                         FROM conversation_summaries
+                        WHERE rowid = ?""",
+                    (row["summary_rowid"],),
+                ).fetchone()
+                candidate = workspace_row[0] if workspace_row is not None else None
+                if (
+                    isinstance(candidate, str)
+                    and len(candidate) <= MAX_WORKSPACE_URI_CHARS
+                    and len(candidate.encode("utf-8")) <= workspace_budget
+                ):
+                    workspace_uris = candidate
             if workspace_uris is not None:
                 workspace_budget -= workspace_bytes
             imported.append(_public_row(row, workspace_uris=workspace_uris))
