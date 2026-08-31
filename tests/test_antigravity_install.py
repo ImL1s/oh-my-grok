@@ -758,12 +758,13 @@ def test_runtime_both_does_not_overclaim_top_level_live_health(
         install_rules=False,
     )
 
-    assert result["observed"] is False
-    assert result["healthy"] is False
-    assert result["verified"] is False
+    assert result["observed"] is True
+    assert result["healthy"] is True
+    assert result["verified"] is True
     assert result["live_verified"] is False
     assert result["runtime_evidence"]["antigravity"]["live_verified"] is True
     inspected = inspect_install_manifest(project_root=project)
+    assert inspected["healthy"] is True
     assert inspected["live_verified"] is False
     assert inspected["runtime_evidence"]["antigravity"]["live_verified"] is True
 

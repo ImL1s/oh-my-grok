@@ -652,6 +652,8 @@ def _run_uninstall_locked(
             )
             return 1
 
+    agy_home_for_finalize: Path | None = None
+
     def rollback(reason: str) -> int:
         failures: list[str] = []
         if receipt is not None:
@@ -678,6 +680,22 @@ def _run_uninstall_locked(
                     )
                 except Exception as exc:  # noqa: BLE001
                     failures.append(f"plugin:{type(exc).__name__}")
+        if agy_home_for_finalize is not None:
+            try:
+                from omg_cli.antigravity_install import (
+                    config_root,
+                    restore_recovery_snapshot,
+                )
+
+                recovery = (
+                    config_root(agy_home_for_finalize) / ".omg-transactions" / "agy-uninstall"
+                )
+                if not restore_recovery_snapshot(
+                    recovery, runner=runner, home=agy_home_for_finalize
+                ):
+                    failures.append("agy-restore")
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"agy:{type(exc).__name__}")
         suffix = (
             f"; rollback readback FAILED ({', '.join(failures)})"
             if failures
@@ -688,7 +706,6 @@ def _run_uninstall_locked(
 
     # 1. Remove manifest-owned Agy before any Grok mutation. Its committed
     # durable marker remains until the whole cross-runtime uninstall completes.
-    agy_home_for_finalize: Path | None = None
     # Manifest-owned exact Agy import, then unchanged regular files.  The
     # plugin is removed only through the host CLI and only when its package
     # digest still matches the manifest.
@@ -764,7 +781,7 @@ def _run_uninstall_locked(
             plugin_mutated = True
         if receipt is not None and getattr(result, "returncode", 1) != 0:
             print("omg uninstall: host refused removal; managed files preserved", file=sys.stderr)
-            return 1
+            return rollback("host refused grok plugin removal")
     except OSError as exc:
         if receipt is not None:
             return rollback(f"host plugin uninstall failed ({type(exc).__name__})")

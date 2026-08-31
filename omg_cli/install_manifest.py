@@ -1391,17 +1391,17 @@ def _apply_manifest_locked(
             {"antigravity": antigravity_evidence} if antigravity_evidence is not None else {}
         )
         manifest["observed"] = bool(
-            runtime == "antigravity"
+            runtime in {"antigravity", "both"}
             and antigravity_evidence
             and antigravity_evidence.get("observed")
         )
         manifest["healthy"] = bool(
-            runtime == "antigravity"
+            runtime in {"antigravity", "both"}
             and antigravity_evidence
             and antigravity_evidence.get("healthy")
         )
         manifest["verified"] = bool(
-            runtime == "antigravity"
+            runtime in {"antigravity", "both"}
             and antigravity_evidence
             and antigravity_evidence.get("verified")
         )
@@ -1426,17 +1426,17 @@ def _apply_manifest_locked(
         return {
             "ok": True,
             "verified": bool(
-                runtime == "antigravity"
+                runtime in {"antigravity", "both"}
                 and antigravity_evidence
                 and antigravity_evidence.get("verified")
             ),
             "observed": bool(
-                runtime == "antigravity"
+                runtime in {"antigravity", "both"}
                 and antigravity_evidence
                 and antigravity_evidence.get("observed")
             ),
             "healthy": bool(
-                runtime == "antigravity"
+                runtime in {"antigravity", "both"}
                 and antigravity_evidence
                 and antigravity_evidence.get("healthy")
             ),
@@ -1722,14 +1722,18 @@ def inspect_install_manifest(
             break
     runtime_name = str(raw.get("runtime") or "")
     ag_enabled = bool(antigravity_evidence and antigravity_evidence.get("enabled"))
-    if runtime_name == "antigravity" and antigravity_evidence is not None:
-        enabled_value = bool(not drift and ag_enabled)
+    if runtime_name in {"antigravity", "both"} and antigravity_evidence is not None:
+        enabled_value = bool(not drift and ag_enabled and (runtime_exact if runtime_name == "both" else True))
         observed_value = bool(not drift and antigravity_evidence.get("observed"))
         healthy_value = bool(not drift and antigravity_evidence.get("healthy"))
         verified_value = bool(not drift and antigravity_evidence.get("verified"))
-        live_verified_value = bool(not drift and antigravity_evidence.get("live_verified"))
+        live_verified_value = bool(
+            runtime_name == "antigravity"
+            and not drift
+            and antigravity_evidence.get("live_verified")
+        )
     else:
-        enabled_value = bool(runtime_exact and (ag_enabled if runtime_name == "both" else True))
+        enabled_value = bool(runtime_exact)
         observed_value = False
         healthy_value = False
         verified_value = False

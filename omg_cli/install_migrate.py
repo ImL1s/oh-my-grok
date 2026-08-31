@@ -1076,7 +1076,10 @@ def apply_owned_uninstall(plan: Mapping[str, Any]) -> dict[str, Any]:
     preserved: list[str] = [str(row.get("path")) for row in plan.get("preserve") or []]
     from omg_cli.antigravity_install import release_ownership_reference
 
+    removing_plugin = bool(plan.get("remove_external"))
     for row in plan.get("release_external_references") or []:
+        if removing_plugin:
+            continue
         if not isinstance(row, dict) or not release_ownership_reference(
             reference=str(row.get("reference") or ""),
             expected_digest=str(row.get("content_hash") or ""),

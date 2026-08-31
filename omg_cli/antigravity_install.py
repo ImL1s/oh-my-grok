@@ -100,8 +100,15 @@ def _ensure_mcp_registered(
 ) -> bool:
     expected = _expected_mcp_entry(home)
     current = _mcp_entry(home)
-    if current is not None and current != expected:
-        raise AntigravityInstallError("existing Antigravity omg-tools MCP entry is foreign; preserved")
+    if current is not None:
+        current_enabled = dict(current)
+        expected_enabled = dict(expected)
+        current_enabled["disabled"] = False
+        expected_enabled["disabled"] = False
+        if current_enabled != expected_enabled:
+            raise AntigravityInstallError(
+                "existing Antigravity omg-tools MCP entry is foreign; preserved"
+            )
     created = current is None
     if created:
         result = _run(
@@ -1584,6 +1591,9 @@ def _replace_plugin_transactionally(
             raise AntigravityInstallError("Antigravity plugin changed before uninstall")
         if plugin_registry_identity(runner=runner, home=home) != expected_registry:
             raise AntigravityInstallError("Antigravity registry changed before uninstall")
+        _mark_recovery_phase(
+            recovery_dir, "installing_plugin", intended_plugin_digest=source_digest
+        )
         removed = _run(["agy", "plugin", "uninstall", PLUGIN_NAME], runner=runner, home=home)
         _require_success(removed, "plugin uninstall for registry refresh")
         installed = _run(["agy", "plugin", "install", str(plugin)], runner=runner, home=home)
