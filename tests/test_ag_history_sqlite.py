@@ -763,3 +763,118 @@ def test_workspace_uri_budget_is_shared_across_all_databases(
 
     assert result["record_count"] == 2
     assert sum(row["workspace_count"] for row in result["records"]) == 1
+
+
+def _shadowed_rowid_summary_db(home: Path, *, alias: str) -> Path:
+    root = home / ".gemini" / "antigravity-cli"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "conversation_summaries.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            f"""
+            PRAGMA user_version = 1;
+            CREATE TABLE conversation_summaries (
+              conversation_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL DEFAULT '',
+              preview TEXT NOT NULL DEFAULT '',
+              step_count INTEGER NOT NULL DEFAULT 0,
+              last_modified_time DATETIME NOT NULL,
+              workspace_uris TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT '',
+              source TEXT NOT NULL DEFAULT '',
+              project_id TEXT NOT NULL DEFAULT '',
+              agent_name TEXT NOT NULL DEFAULT '',
+              parent_conversation_id TEXT NOT NULL DEFAULT '',
+              nesting_depth INTEGER NOT NULL DEFAULT 0,
+              battle_id TEXT NOT NULL DEFAULT '',
+              winning_conversation_id TEXT NOT NULL DEFAULT '',
+              not_fully_idle NUMERIC NOT NULL DEFAULT false,
+              killed NUMERIC NOT NULL DEFAULT false,
+              last_user_input_time DATETIME NOT NULL,
+              last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
+              app_data_dir TEXT NOT NULL DEFAULT '',
+              "{alias}" TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX idx_conversation_summaries_last_modified_time_rowid
+              ON conversation_summaries(last_modified_time, "{alias}");
+            """
+        )
+        conn.execute(
+            f"""INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir,
+                "{alias}")
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "conversation-secret-id",
+                "RAW PRIVATE TITLE",
+                "RAW PRIVATE PREVIEW",
+                12,
+                "2026-08-31T00:00:00Z",
+                json.dumps(["file:///Users/private/secret-project"]),
+                "idle",
+                "antigravity",
+                "PRIVATE PROJECT",
+                "omg-executor",
+                "parent-secret-id",
+                1,
+                0,
+                "2026-08-31T00:00:00Z",
+                9,
+                "/Users/private/.gemini",
+                "abc",
+            ),
+        )
+    return path
+
+
+@pytest.mark.parametrize("alias", ("rowid", "_rowid_", "oid", "ROWID"))
+def test_declared_rowid_alias_returns_bounded_diagnostic(
+    tmp_path: Path, alias: str
+) -> None:
+    home = tmp_path / "home"
+    db = _shadowed_rowid_summary_db(home, alias=alias)
+    before = db.read_bytes()
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["supported"] is False
+    assert result["record_count"] == 0
+    assert result["records"] == []
+    assert result["pin"] == "unknown_version"
+    assert any(
+        item["reason"] == "unsupported_schema_version" for item in result["diagnostics"]
+    )
+    dumped = json.dumps(result)
+    assert "RAW PRIVATE TITLE" not in dumped
+    assert "conversation-secret-id" not in dumped
+    assert db.read_bytes() == before
+
+
+def test_project_local_db_reports_secure_open_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    local_dir = project_root / ".antigravity"
+    local_dir.mkdir(parents=True)
+    local_db = local_dir / "conversation_summaries.db"
+    local_db.write_bytes(_summary_db(tmp_path / "seed-home").read_bytes())
+    monkeypatch.setattr(ag_history, "_descriptor_open_ready", lambda: False)
+
+    result = inspect_ag_history(project_root, home=tmp_path / "missing-home")
+
+    assert result["present"] is True
+    assert result["imported"] is False
+    assert result["pin"] == "unsupported_platform"
+    assert result["reason"] == "ag_history_secure_open_unavailable"
+    assert result["diagnostics"] == [
+        {
+            "source": "conversation_summaries.db",
+            "reason": "secure_sqlite_open_unavailable",
+        }
+    ]
+    assert result["reason"] != "ag_history_absent"
+    assert "ag_history_absent" not in json.dumps(result)

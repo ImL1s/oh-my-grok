@@ -63,6 +63,9 @@ _REQUIRED_SUMMARY_COLUMNS = frozenset(
         "app_data_dir",
     }
 )
+# Declaring any of these names shadows SQLite's integer rowid aliases and
+# makes ORDER BY / blobopen rowid resolve to user data instead of the key.
+_ROWID_ALIAS_COLUMNS = frozenset({"rowid", "_rowid_", "oid"})
 class AgHistoryError(ValueError):
     """AG history probe failed closed without mutating anything."""
 
@@ -134,6 +137,12 @@ def _candidate_summary_dbs(project_root: Path, *, home: Path) -> list[Path]:
         seen.add(key)
         found.append(raw)
 
+    # Project-local indexes must be discovered by leaf existence only. The
+    # later open still requires descriptor-relative POSIX capability, so an
+    # unsupported platform can emit secure_sqlite_open_unavailable instead of
+    # falsely reporting ag_history_absent.
+    for name in _PROJECT_MARKERS:
+        _add(project_root / name / _SUMMARY_DB)
     for directory in _candidate_dirs(project_root, home=home):
         _add(directory / _SUMMARY_DB)
     env_dir = (
@@ -543,6 +552,11 @@ def _import_summary_db(
                 "unsupported Antigravity conversation_summaries shape",
                 code="E_AG_HISTORY_VERSION",
             )
+        if any(name.casefold() in _ROWID_ALIAS_COLUMNS for name in columns):
+            raise AgHistoryError(
+                "unsupported Antigravity conversation_summaries rowid alias",
+                code="E_AG_HISTORY_VERSION",
+            )
         order_plan = connection.execute(
             """EXPLAIN QUERY PLAN
                SELECT rowid
@@ -595,9 +609,16 @@ def _import_summary_db(
         )
         imported: list[dict[str, Any]] = []
         for row in rows:
+            try:
+                summary_rowid = int(row["summary_rowid"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise AgHistoryError(
+                    "unsupported Antigravity conversation_summaries rowid",
+                    code="E_AG_HISTORY_VERSION",
+                ) from exc
             workspace_uris, workspace_budget = _read_workspace_uris(
                 connection,
-                rowid=int(row["summary_rowid"]),
+                rowid=summary_rowid,
                 workspace_budget=workspace_budget,
             )
             imported.append(_public_row(row, workspace_uris=workspace_uris))
