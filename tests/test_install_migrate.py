@@ -487,8 +487,28 @@ def test_never_writes_passes_or_verified(tmp_path: Path) -> None:
     assert '"verified": false' in stored
     assert '"observed": false' in stored
     assert '"healthy": false' in stored
+    assert '"live_verified": false' in stored
     assert '"passes":' not in stored
     assert not (tmp_path / ".omg" / "state").exists()
+
+
+def test_persist_manifest_clears_live_verified(tmp_path: Path) -> None:
+    dest = persist_manifest(
+        {
+            "runtime": "antigravity",
+            "scope": "project",
+            "verified": True,
+            "live_verified": True,
+            "artifacts": [],
+        },
+        project_root=tmp_path,
+        scope="project",
+    )
+    stored = json.loads(dest.read_text(encoding="utf-8"))
+    assert stored["verified"] is False
+    assert stored["observed"] is False
+    assert stored["healthy"] is False
+    assert stored["live_verified"] is False
 
 
 def test_uninstall_plan_does_not_admit_arbitrary_grok_home_files(

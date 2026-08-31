@@ -38,16 +38,16 @@ from omg_cli.install_manifest import (
     load_manifest,
     path_is_under,
     persist_manifest,
+    project_manifest_path,
     upsert_manifest_artifacts,
+    user_manifest_path,
     user_store,
 )
 from omg_cli.project_root import path_is_under as resolved_path_is_under
 
 # Same credential needles as medley_inspect / redaction.
 _SK_TOKEN_RE = re.compile(r"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]{4,}")
-_BEARER_RE = re.compile(
-    r"(?i)(?:^|[^a-z0-9])bearer\s+(?:sk-|eyj|[a-z0-9._\-+/=]{20,})"
-)
+_BEARER_RE = re.compile(r"(?i)(?:^|[^a-z0-9])bearer\s+(?:sk-|eyj|[a-z0-9._\-+/=]{20,})")
 _X_API_KEY_RE = re.compile(r"(?i)x-api-key\s*[:=]\s*\S+")
 _PEM_NEEDLE = "-----begin "
 _TEXT_NEEDLES = ("api_key", "private_key")
@@ -81,8 +81,7 @@ _RELATIVE_MANAGED = {
 }
 
 _HONESTY_NOTE = (
-    "File copy is not live Grok/Antigravity discovery. Doctor observed/"
-    "healthy/verified stay false."
+    "File copy is not live Grok/Antigravity discovery. Doctor observed/healthy/verified stay false."
 )
 
 
@@ -182,15 +181,11 @@ def _iter_source_files_windows(source: Path) -> list[Path]:
 
     def walk(directory: Path) -> None:
         if _windows_leaf_kind(directory) != "dir":
-            raise InstallMigrateError(
-                "E_SOURCE", "source path is not a file or directory"
-            )
+            raise InstallMigrateError("E_SOURCE", "source path is not a file or directory")
         try:
             entries = list(os.scandir(directory))
         except OSError as exc:
-            raise InstallMigrateError(
-                "E_SOURCE", "source directory is unreadable"
-            ) from exc
+            raise InstallMigrateError("E_SOURCE", "source directory is unreadable") from exc
         for entry in entries:
             path = Path(entry.path)
             child_kind = _windows_leaf_kind(path)
@@ -698,9 +693,7 @@ def plan_migrate(
     if not source.exists():
         raise InstallMigrateError("E_SOURCE", "source path does not exist")
     stamp = imported_at or _utc_now()
-    roots = _containment_roots(
-        scope=scope, project_root=project_root, grok_home=grok_home
-    )
+    roots = _containment_roots(scope=scope, project_root=project_root, grok_home=grok_home)
     files = _iter_source_files(source)
     rows: list[dict[str, Any]] = []
     scan_root = source if source.is_dir() else source.parent
@@ -856,6 +849,10 @@ def plan_owned_uninstall(
         roots.append(Path(grok_home))
     if include_user_manifest:
         roots.append(user_store())
+    from omg_cli.antigravity_install import config_root as antigravity_config_root
+
+    ag_config = antigravity_config_root()
+    roots.append(ag_config)
     root_tuple = tuple(roots)
     uninstall_roots: list[Path] = []
     if project_root is not None:
@@ -870,9 +867,29 @@ def plan_owned_uninstall(
         uninstall_roots.append(rules_file_path(home=Path(grok_home)))
     if include_user_manifest:
         uninstall_roots.append(user_store())
+    # Exact official Agy plugin target only; never authorize the config tree.
+    from omg_cli.antigravity_install import installed_plugin_path
+
+    ag_plugin = installed_plugin_path()
+    uninstall_roots.append(ag_plugin)
     uninstall_tuple = tuple(uninstall_roots)
     allowed_global_ids = frozenset({"user.grok.hook", "user.grok.rules"})
+    planned_plugin_references: set[str] = set()
+    for _scope, doc, _root in documents:
+        if not any(
+            isinstance(row, dict) and str(row.get("id") or "") == "user.ag.plugin"
+            for row in (doc.get("artifacts") or [])
+        ):
+            continue
+        if _scope == "user":
+            planned_plugin_references.add(str(user_manifest_path().absolute()))
+        elif _root is not None:
+            planned_plugin_references.add(
+                str(project_manifest_path(Path(_root)).absolute())
+            )
     remove: list[dict[str, Any]] = []
+    remove_external: list[dict[str, Any]] = []
+    release_external_references: list[dict[str, Any]] = []
     preserve: list[dict[str, Any]] = []
     for _scope, doc, _root in documents:
         for row in doc.get("artifacts") or []:
@@ -908,26 +925,16 @@ def plan_owned_uninstall(
                     )
                     continue
             if _is_state_path(target, project_root):
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "state"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "state"})
                 continue
             if _path_has_dotdot(target):
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "escape"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "escape"})
                 continue
-            if not uninstall_tuple or not _uninstall_target_contained(
-                target, uninstall_tuple
-            ):
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "out-of-scope"}
-                )
+            if not uninstall_tuple or not _uninstall_target_contained(target, uninstall_tuple):
+                preserve.append({"id": ident, "path": str(target), "reason": "out-of-scope"})
                 continue
             if target.name == "manifest.json":
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "manifest"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "manifest"})
                 continue
             if target.name == "omg.md" and target.parent.name == "rules":
                 preserve.append(
@@ -938,33 +945,137 @@ def plan_owned_uninstall(
                     }
                 )
                 continue
+            if ident == "user.ag.plugin":
+                reference_path = (
+                    user_manifest_path()
+                    if _scope == "user"
+                    else project_manifest_path(Path(_root))  # type: ignore[arg-type]
+                ).absolute()
+                if ownership not in {"OMG-managed", "imported"}:
+                    preserve.append({"id": ident, "path": str(target), "reason": "machine-global"})
+                    continue
+                if target.absolute() != ag_plugin.absolute() or target.is_symlink():
+                    preserve.append({"id": ident, "path": str(target), "reason": "escape"})
+                    continue
+                if not isinstance(claimed, str) or not claimed:
+                    preserve.append({"id": ident, "path": str(target), "reason": "not-owned"})
+                    continue
+                from omg_cli.antigravity_install import (
+                    committed_owned_uninstall_matches,
+                    load_ownership_receipt,
+                    package_digest,
+                    resumable_owned_uninstall_matches,
+                )
+
+                actual_digest = package_digest(target) or ""
+                ownership_receipt = load_ownership_receipt()
+                references = (
+                    ownership_receipt.get("references", [])
+                    if isinstance(ownership_receipt, dict)
+                    else []
+                )
+                registry_identity = row.get("registry_identity")
+                mcp_registry_identity = row.get("mcp_registry_identity")
+                committed_removal = bool(
+                    isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and committed_owned_uninstall_matches(
+                        expected_digest=claimed,
+                        expected_registry_identity=registry_identity,
+                        expected_mcp_registry_identity=mcp_registry_identity,
+                    )
+                )
+                resumable_removal = bool(
+                    isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and resumable_owned_uninstall_matches(
+                        expected_digest=claimed,
+                        expected_registry_identity=registry_identity,
+                        expected_mcp_registry_identity=mcp_registry_identity,
+                    )
+                )
+                receipt_refs = {
+                    str(item) for item in references if isinstance(item, str)
+                }
+                covers_all_owners = bool(receipt_refs) and (
+                    receipt_refs <= planned_plugin_references
+                )
+                central_reference_authorizes = bool(
+                    str(reference_path) in references
+                    and (len(set(references)) == 1 or covers_all_owners)
+                )
+                if (
+                    str(reference_path) in references
+                    and len(set(references)) > 1
+                    and not covers_all_owners
+                    and isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and actual_digest == claimed
+                ):
+                    release_external_references.append(
+                        {
+                            "reference": str(reference_path),
+                            "content_hash": claimed,
+                            "registry_identity": registry_identity,
+                            "mcp_registry_identity": mcp_registry_identity,
+                        }
+                    )
+                    preserve.append({"id": ident, "path": str(target), "reason": "shared-global"})
+                    continue
+                if (
+                    not committed_removal
+                    and not resumable_removal
+                    and (
+                        (_scope == "project" and not central_reference_authorizes)
+                        or (_scope == "user" and ownership != "OMG-managed")
+                        or
+                        not target.is_dir()
+                        or actual_digest != claimed
+                        or ownership_receipt is None
+                        or ownership_receipt.get("plugin_digest") != claimed
+                        or ownership_receipt.get("registry_identity") != registry_identity
+                        or ownership_receipt.get("mcp_registry_identity")
+                        != mcp_registry_identity
+                        or not isinstance(registry_identity, str)
+                        or not isinstance(mcp_registry_identity, str)
+                    )
+                ):
+                    preserve.append({"id": ident, "path": str(target), "reason": "hash-drift"})
+                    continue
+                if any(
+                    str(existing.get("path")) == str(target) for existing in remove_external
+                ):
+                    continue
+                remove_external.append(
+                    {
+                        "id": ident,
+                        "path": str(target),
+                        "content_hash": claimed,
+                        "registry_identity": registry_identity,
+                        "mcp_registry_identity": mcp_registry_identity,
+                        "action": "agy-plugin-uninstall",
+                    }
+                )
+                continue
             if (
                 not root_tuple
                 or not _contained(target, root_tuple)
                 or _symlink_parent(target, root_tuple)
             ):
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "escape"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "escape"})
                 continue
             if target.is_symlink() or (target.exists() and not target.is_file()):
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "not-regular"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "not-regular"})
                 continue
             if not isinstance(claimed, str) or not claimed:
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "no-hash"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "no-hash"})
                 continue
             if not target.is_file():
                 continue
             try:
                 actual = read_regular_nofollow(target)
             except InstallMigrateError:
-                preserve.append(
-                    {"id": ident, "path": str(target), "reason": "unreadable"}
-                )
+                preserve.append({"id": ident, "path": str(target), "reason": "unreadable"})
                 continue
             digest = _sha256_bytes(actual)
             if digest != claimed:
@@ -987,6 +1098,10 @@ def plan_owned_uninstall(
         "ok": True,
         "has_manifest": bool(documents),
         "remove": remove,
+        "remove_external": remove_external,
+        "release_external_references": (
+            [] if remove_external else release_external_references
+        ),
         "preserve": preserve,
         **_honesty_fields(),
     }
@@ -996,6 +1111,24 @@ def apply_owned_uninstall(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Unlink regular files whose on-disk hash still matches the plan."""
     removed: list[str] = []
     preserved: list[str] = [str(row.get("path")) for row in plan.get("preserve") or []]
+    from omg_cli.antigravity_install import release_ownership_reference
+
+    removing_plugin = bool(plan.get("remove_external"))
+    for row in plan.get("release_external_references") or []:
+        if removing_plugin:
+            continue
+        if not isinstance(row, dict) or not release_ownership_reference(
+            reference=str(row.get("reference") or ""),
+            expected_digest=str(row.get("content_hash") or ""),
+            expected_registry_identity=str(row.get("registry_identity") or ""),
+            expected_mcp_registry_identity=str(row.get("mcp_registry_identity") or ""),
+        ):
+            return {
+                "ok": False,
+                "removed": removed,
+                "preserved": preserved,
+                **_honesty_fields(),
+            }
     for row in plan.get("remove") or []:
         if not isinstance(row, dict):
             continue

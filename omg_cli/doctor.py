@@ -1332,7 +1332,7 @@ def check_hooks_registry() -> SoftResult:
 
 
 def check_install_manifest() -> SoftResult:
-    """Report install-manifest drift. File copy is never live-verified."""
+    """Report manifest drift and fresh runtime-backed discovery tiers."""
     name = "install manifest"
     try:
         from omg_cli.cli_util import project_root
@@ -1347,18 +1347,25 @@ def check_install_manifest() -> SoftResult:
             ok = False
         if user.get("configured") and not user.get("ok"):
             ok = False
+        active = project if project.get("configured") else user
         detail = (
             f"project_configured={project.get('configured')}; "
             f"user_configured={user.get('configured')}; "
-            f"installed={bool(project.get('installed') or user.get('installed'))}; "
-            f"enabled={bool(project.get('enabled') or user.get('enabled'))}; "
-            f"observed=False; "
-            f"healthy=False; "
-            f"verified=False; "
-            f"runtime={project.get('runtime') or user.get('runtime')}; "
+            f"installed={bool(active.get('installed'))}; "
+            f"enabled={bool(active.get('enabled'))}; "
+            f"loadable={bool(active.get('loadable'))}; "
+            f"observed={bool(active.get('observed'))}; "
+            f"healthy={bool(active.get('healthy'))}; "
+            f"live_verified={bool(active.get('live_verified'))}; "
+            f"verified={bool(active.get('verified'))}; "
+            f"runtime={active.get('runtime')}; "
             f"drift={drift}"
         )
         if configured and not ok:
+            return (name, "warn", detail)
+        if active.get("runtime") in {"antigravity", "both"} and not active.get(
+            "healthy"
+        ):
             return (name, "warn", detail)
         return (name, "ok", detail)
     except Exception as exc:

@@ -2595,7 +2595,10 @@ def run_tools_stdio(
             continue
         if not isinstance(message, dict):
             continue
-        if message.get("method") == "notifications/cancelled":
+        # JSON-RPC notifications have no id and MUST NOT receive a response.
+        # Agy sends notifications/initialized before tools/list; replying with
+        # an error makes it reject this otherwise healthy MCP server.
+        if "id" not in message:
             continue
         reply = handle_mcp_rpc(
             message,

@@ -2,7 +2,7 @@
 
 English. **Code:** [`omg_cli/install_manifest.py`](../omg_cli/install_manifest.py)
 
-First cut of [#77](https://github.com/ImL1s/oh-my-grok/issues/77). Extends
+Implementation of [#77](https://github.com/ImL1s/oh-my-grok/issues/77). Extends
 `omg setup` / `omg doctor`. This is **not** a separate installer.
 
 ## Flags
@@ -36,9 +36,27 @@ malformed classification (no `--force` override).
 receipt-owned or manifest-owned **unchanged** regular files are unlinked.
 On-disk sha256 drift is preserved. Project `.omg/state` is never deleted.
 
+For `--runtime antigravity|both`, setup uses the official Antigravity CLI
+contract: `agy plugin validate`, `agy plugin install`, `agy plugin enable`,
+`agy plugin list`, then a bounded `agy --agent omg-explore` execution that must
+invoke the registered `omg.tools.doctor` MCP tool. The project/user scope remains explicit in
+the manifest; the runtime plugin itself is a machine-scoped artifact under
+Antigravity's user config, like Grok's machine-scoped hook/rules. Its ownership
+receipt is therefore centralized in that user config; project manifests only
+observe the import and cannot independently uninstall it. A same-name
+foreign or byte-drifted import is preserved and setup fails with `E_CONFLICT`.
+If discovery fails after a new import, setup uninstalls that new import and
+rolls back the file transaction. Before host mutation, an interrupted transaction
+durably records the original config root plus exact plugin and registry state in
+its backup directory so the next setup can recover even if `HOME` changed.
+
 ## Honesty
 
-- File copy is **not** live Grok/Antigravity verification.
+- File copy is **not** live Grok/Antigravity verification. `observed` records an
+  installed import; `healthy` requires fresh validate/list/enable/agent-discovery
+  evidence and an exact installed package digest. `live_verified` additionally
+  requires registered hook evidence and a successful bounded agent execution
+  that invokes the OMG MCP tool. Those tiers fail closed independently.
 - Doctor JSON `host.auth.ok` and `host.live_evidence` stay false in this slice.
 - An invalid/placeholder API key cannot false-green.
 - Foreign and user-owned files are preserved unless `--force` (preserved
@@ -62,4 +80,5 @@ On-disk sha256 drift is preserved. Project `.omg/state` is never deleted.
   (non-empty schema-valid rows are not enough).
 - `omg doctor` probes both the project manifest and `~/.omg-user`.
 
-简体/繁體 indexes point at this English page.
+Translations: [繁體中文](install-manifest.zh-TW.md) ·
+[简体中文](install-manifest.zh.md)

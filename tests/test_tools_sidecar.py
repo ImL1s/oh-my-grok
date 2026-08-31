@@ -506,6 +506,8 @@ def test_stdio_ndjson_initialize_and_doctor(tmp_path: Path) -> None:
     stdin = io.StringIO(
         json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         + "\n"
+        + json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        + "\n"
         + json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -521,6 +523,7 @@ def test_stdio_ndjson_initialize_and_doctor(tmp_path: Path) -> None:
     stdout = io.StringIO()
     assert run_tools_stdio(tmp_path, stdin=stdin, stdout=stdout) == 0
     lines = [json.loads(line) for line in stdout.getvalue().splitlines() if line]
+    assert len(lines) == 3, "notifications must not receive JSON-RPC responses"
     assert lines[0]["result"]["serverInfo"]["name"] == "omg-tools-sidecar"
     body = json.loads(lines[1]["result"]["content"][0]["text"])
     assert body["verified"] is False
