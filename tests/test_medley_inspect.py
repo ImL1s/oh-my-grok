@@ -494,6 +494,26 @@ def test_conflicting_route_digest_aliases_are_rejected(tmp_path: Path) -> None:
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
 
 
+def test_equivalent_route_digest_aliases_ignore_hex_case(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "route-digest-alias-case.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": "review-primary-example",
+                "routeDigest": "A" * 64,
+                "route_digest": "a" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+
+    _snapshot, document = resolve_host_snapshot(inspect_path=inspect)
+
+    assert document is not None
+    assert document.receipts[0]["route_receipt_digest"] == "a" * 64
+
+
 def test_claimed_sentinel_is_not_a_supported_version(tmp_path: Path) -> None:
     inspect = _write_inspect(
         tmp_path / "claimed.json",

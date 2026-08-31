@@ -322,7 +322,10 @@ def receipt_for_policy(
             continue
         consumer = consumer or ""
         row_digest = _consistent_string_alias(
-            row, "consumerPolicyDigest", "consumer_policy_digest"
+            row,
+            "consumerPolicyDigest",
+            "consumer_policy_digest",
+            case_insensitive=True,
         )
         if row_digest is False:
             continue
@@ -340,7 +343,7 @@ def receipt_for_policy(
         if not id_match and not agent_match:
             continue
         if want_digest:
-            if not row_digest or row_digest != want_digest:
+            if not row_digest or row_digest != want_digest.lower():
                 continue
         matches.append(dict(row))
     if not matches:
@@ -418,6 +421,7 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
         "routeDigest",
         "route_digest",
         "route_receipt_digest",
+        case_insensitive=True,
     )
     if digest_text is False:
         raise MedleyInspectError(
@@ -454,7 +458,11 @@ def _normalized_secret_key(key: str) -> str:
     return key.strip().lower().replace("-", "_")
 
 
-def _consistent_string_alias(row: Mapping[str, Any], *keys: str) -> str | None | bool:
+def _consistent_string_alias(
+    row: Mapping[str, Any],
+    *keys: str,
+    case_insensitive: bool = False,
+) -> str | None | bool:
     """Return the agreed nonempty string, ``None`` if absent, or ``False`` if aliases disagree."""
     values: list[str] = []
     for key in keys:
@@ -463,7 +471,7 @@ def _consistent_string_alias(row: Mapping[str, Any], *keys: str) -> str | None |
         text = _nonempty_string(row.get(key))
         if text is None:
             return False
-        values.append(text)
+        values.append(text.lower() if case_insensitive else text)
     unique = set(values)
     if not unique:
         return None
