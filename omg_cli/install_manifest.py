@@ -259,6 +259,23 @@ def _mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _fsync_dir(path: Path) -> None:
+    """POSIX directory fsync; Windows may deny opening a directory fd."""
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        if os.name != "nt":
+            raise
+    finally:
+        os.close(directory_fd)
+
+
 def _write_text_nofollow(path: Path, text: str) -> None:
     """Write a regular file atomically. Never follow a symlink to an outside path."""
     if path.is_symlink() or (os.path.lexists(path) and not path.is_file()):
@@ -273,11 +290,7 @@ def _write_text_nofollow(path: Path, text: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_dir(path.parent)
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
@@ -418,11 +431,7 @@ def _publish_intended_file(path: Path, body: bytes, *, mode: int = 0o644) -> Non
             os.fsync(stream.fileno())
         temporary.chmod(mode)
         os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_dir(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -433,11 +442,7 @@ def _publish_intended_symlink(path: Path, link: str) -> None:
     try:
         temporary.symlink_to(link)
         os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_dir(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -946,11 +951,7 @@ def rollback_interrupted(
         if kind == "created":
             target.unlink(missing_ok=True)
             if target.parent.is_dir():
-                directory_fd = os.open(target.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+                _fsync_dir(target.parent)
             created_removed.append(str(target))
         elif kind == "symlink":
             _publish_intended_symlink(target, str(prior))
@@ -976,11 +977,7 @@ def rollback_interrupted(
                     "note": "tx rollback readback failed; marker preserved"}
     marker.unlink(missing_ok=True)
     if marker.parent.is_dir():
-        directory_fd = os.open(marker.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_dir(marker.parent)
     return {
         "ok": True,
         "rolled_back": True,

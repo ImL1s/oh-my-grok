@@ -344,6 +344,18 @@ def test_install_refuses_canonical_grok_uninstall_journal(
         apply_manifest(manifest, project_root=tmp_path, plugin=ROOT)
 
 
+def test_fsync_dir_ignores_windows_directory_open_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(install_manifest_mod.os, "name", "nt")
+
+    def deny(*_args: object, **_kwargs: object) -> int:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(install_manifest_mod.os, "open", deny)
+    install_manifest_mod._fsync_dir(tmp_path)
+
+
 def test_file_backup_is_digest_verified_before_durable_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
