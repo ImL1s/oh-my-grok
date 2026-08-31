@@ -450,6 +450,21 @@ def test_doctor_strict_flag_accepted():
     assert "trust" in out.lower() or "inventory" in out.lower()
 
 
+def test_doctor_json_does_not_label_invalid_inspect_absent(tmp_path):
+    missing = tmp_path / "configured-but-missing.json"
+    r = _run_omg(
+        "--json",
+        "doctor",
+        cwd=REPO_ROOT,
+        env={"OMG_MEDLEY_INSPECT": str(missing)},
+    )
+    assert r.returncode in (0, 1)
+    payload = json.loads(r.stdout)
+    body = payload if payload.get("ok") else payload["error"]["details"]
+    assert body.get("inspect_source") != "absent"
+    assert body["routing_capabilities"]["error"] == "MedleyInspectError"
+
+
 def test_state_no_active(tmp_path):
     # setup dirs then state with no run (hermetic GROK_HOME)
     env = {"GROK_HOME": str(tmp_path / ".grokhome")}

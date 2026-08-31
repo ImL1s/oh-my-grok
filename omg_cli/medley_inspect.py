@@ -129,6 +129,11 @@ def load_inspect_document(
         )
     try:
         raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise MedleyInspectError(
+            "inspect file is not valid UTF-8",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        ) from exc
     except OSError as exc:
         raise MedleyInspectError(
             f"inspect file unreadable: {exc}",
@@ -175,9 +180,14 @@ def load_inspect_document(
                 "capability row must be an object",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
-        cap_id = str(item.get("capability_id") or item.get("capabilityId") or "").strip()
+        cap_id = _consistent_string_alias(item, "capability_id", "capabilityId")
         state = str(item.get("state") or "").strip()
-        if not cap_id or not state:
+        if cap_id is False:
+            raise MedleyInspectError(
+                "capability_id aliases must agree",
+                code="E_MEDLEY_INSPECT_SCHEMA",
+            )
+        if not isinstance(cap_id, str) or not cap_id or not state:
             raise MedleyInspectError(
                 "capability row needs capability_id and state",
                 code="E_MEDLEY_INSPECT_SCHEMA",
@@ -380,12 +390,18 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
             f"unsupported receipt schema {schema!r}",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    selected = (
-        item.get("selectedCatalogId")
-        or item.get("selected_catalog_id")
-        or item.get("selected_model_ref")
+    selected = _consistent_string_alias(
+        item,
+        "selectedCatalogId",
+        "selected_catalog_id",
+        "selected_model_ref",
     )
-    if _nonempty_string(selected) is None:
+    if selected is False:
+        raise MedleyInspectError(
+            "selected catalog id aliases must agree",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    if selected is None:
         raise MedleyInspectError(
             "receipt needs a selected catalog id",
             code="E_MEDLEY_INSPECT_SCHEMA",

@@ -153,6 +153,21 @@ def test_parser_wires_simplify_provider_grok() -> None:
     assert ns.simplify_provider is None
 
 
+def test_fingerprintless_preexisting_child_is_never_job_owned() -> None:
+    from omg_cli.edit_hygiene.simplify import _new_supervisor_children
+    from omg_cli.jobs.ownership import ProcessIdentity
+
+    fingerprintless = ProcessIdentity(pid=101, pgid=101, pid_starttime=None)
+    actual_job_child = ProcessIdentity(pid=202, pgid=202, pid_starttime="start:202")
+
+    discovered = _new_supervisor_children(
+        [fingerprintless, actual_job_child],
+        preexisting_pids={fingerprintless.pid},
+    )
+
+    assert discovered == (actual_job_child,)
+
+
 def test_simplify_enable_without_provider_is_assignment(
     project: Path,
     capsys: pytest.CaptureFixture[str],

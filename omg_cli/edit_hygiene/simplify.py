@@ -54,7 +54,6 @@ from omg_cli.jobs.ownership import (
     child_identities,
     merge_identity,
     probe_identity_liveness,
-    same_occupant,
 )
 from omg_cli.jobs.runtime import (
     absorb_live_job_identities,
@@ -684,6 +683,20 @@ def _absorb_runner_children(
     absorb_live_job_identities(identities)
 
 
+def _new_supervisor_children(
+    children: Sequence[ProcessIdentity],
+    *,
+    preexisting_pids: set[int],
+) -> tuple[ProcessIdentity, ...]:
+    """Return only children that were not present before this job started.
+
+    A preexisting child without a start fingerprint cannot later be proven to
+    belong to this job. Keep its PID tainted for the lifetime of the proposal
+    instead of refreshing it into a signal-eligible job identity.
+    """
+    return tuple(child for child in children if child.pid not in preexisting_pids)
+
+
 def _cancel_simplify_job(
     root: Path,
     job_id: str,
@@ -885,10 +898,8 @@ def _propose_with_grok(
                     assignment,
                 )
             supervisor_pid = os.getpid()
-            preexisting_children = {
-                child.pid: child
-                for child in child_identities(supervisor_pid)
-                if isinstance(child.pid_starttime, str) and child.pid_starttime
+            preexisting_pids = {
+                child.pid for child in child_identities(supervisor_pid)
             }
             started = start_job(
                 root,
@@ -925,10 +936,10 @@ def _propose_with_grok(
             def _absorb_supervisor_children() -> None:
                 if not runner_pids:
                     return
-                for child in child_identities(supervisor_pid):
-                    old = preexisting_children.get(child.pid)
-                    if old is not None and same_occupant(old, child):
-                        continue
+                for child in _new_supervisor_children(
+                    child_identities(supervisor_pid),
+                    preexisting_pids=preexisting_pids,
+                ):
                     merge_identity(captured, child)
 
             def _on_poll(_wait_record: object) -> None:

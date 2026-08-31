@@ -28,6 +28,26 @@ def test_job_provider_registry_includes_grok() -> None:
     assert meta.requires_preflight is True
 
 
+def test_grok_bounded_env_preserves_only_supported_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.grok import _bounded_env
+
+    supported = {
+        "GROK_API_KEY": "grok-secret",
+        "XAI_API_KEY": "xai-secret",
+        "OMG_GROK_API_KEY": "omg-secret",
+    }
+    for key, value in supported.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-leak")
+
+    env = _bounded_env()
+
+    assert {key: env[key] for key in supported} == supported
+    assert "UNRELATED_SECRET" not in env
+
+
 def test_grok_preflight_rejects_missing_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

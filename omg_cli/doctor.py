@@ -1617,7 +1617,6 @@ def run_doctor(
                 "host_tier": "unknown",
                 "error": type(extra).__name__,
             }
-            body["inspect_source"] = "absent"
         if payload_ok:
             emit_json(success("doctor", **body))
         else:
