@@ -25,6 +25,8 @@ SUPPORTED_AG_HISTORY_VERSIONS: frozenset[str] = frozenset(
     {f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"}
 )
 MAX_AG_HISTORY_RECORDS = 200
+MAX_WORKSPACE_URI_CHARS = 8_192
+MAX_WORKSPACE_URI_AGGREGATE_BYTES = 1_048_576
 
 _PROJECT_MARKERS = (
     ".antigravity",
@@ -141,6 +143,8 @@ def _candidate_summary_dbs(project_root: Path, *, home: Path) -> list[Path]:
 
 
 def _read_version_label(directory: Path) -> str | None:
+    """Classify legacy marker layouts without reading marker contents."""
+
     for name in _VERSION_FILES:
         path = directory / name
         try:
@@ -148,22 +152,11 @@ def _read_version_label(directory: Path) -> str | None:
                 continue
             if path.stat().st_size > 65_536:
                 return "oversized"
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
-        if not text:
-            continue
-        if name.endswith(".json"):
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError:
-                return "unparseable"
-            if isinstance(parsed, dict):
-                for key in ("history_version", "schema_version", "version"):
-                    value = parsed.get(key)
-                    if value is not None:
-                        return str(value)
-        return text.splitlines()[0][:128]
+        # Marker contents are host-private and not required for the supported
+        # SQLite summary pin. Never surface or parse them as public metadata.
+        return "marker-present"
     return None
 
 
@@ -204,7 +197,7 @@ def _safe_timestamp(value: object) -> str | None:
 
 
 def _workspace_descriptors(value: object) -> tuple[int, list[str]]:
-    if not isinstance(value, str) or len(value) > 1_000_000:
+    if not isinstance(value, str) or len(value) > MAX_WORKSPACE_URI_CHARS:
         return 0, []
     try:
         parsed = json.loads(value)
@@ -220,8 +213,10 @@ def _workspace_descriptors(value: object) -> tuple[int, list[str]]:
     return min(len(parsed), 32), fingerprints
 
 
-def _public_row(row: sqlite3.Row) -> dict[str, Any]:
-    workspace_count, workspace_hashes = _workspace_descriptors(row["workspace_uris"])
+def _public_row(
+    row: sqlite3.Row, *, workspace_uris: str | None
+) -> dict[str, Any]:
+    workspace_count, workspace_hashes = _workspace_descriptors(workspace_uris)
     result: dict[str, Any] = {
         "provider": "antigravity",
         "provenance": "antigravity_conversation_summaries",
@@ -294,7 +289,8 @@ def _import_summary_db(
             """SELECT substr(conversation_id, 1, 4096) AS conversation_id,
                       step_count,
                       substr(last_modified_time, 1, 128) AS last_modified_time,
-                      substr(workspace_uris, 1, 1000001) AS workspace_uris,
+                      substr(workspace_uris, 1, ?) AS workspace_uris_prefix,
+                      length(CAST(workspace_uris AS BLOB)) AS workspace_uris_bytes,
                       substr(status, 1, 128) AS status,
                       substr(source, 1, 128) AS source,
                       substr(project_id, 1, 4096) AS project_id,
@@ -308,9 +304,29 @@ def _import_summary_db(
                  FROM conversation_summaries
              ORDER BY last_modified_time DESC, conversation_id ASC
                 LIMIT ?""",
-            (remaining,),
-        ).fetchall()
-    return user_version, [_public_row(row) for row in rows]
+            (MAX_WORKSPACE_URI_CHARS + 1, remaining),
+        )
+        imported: list[dict[str, Any]] = []
+        workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
+        for row in rows:
+            raw_workspace = row["workspace_uris_prefix"]
+            workspace_bytes = _bounded_int(
+                row["workspace_uris_bytes"],
+                minimum=0,
+                maximum=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
+                fallback=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
+            )
+            workspace_uris = (
+                raw_workspace
+                if isinstance(raw_workspace, str)
+                and len(raw_workspace) <= MAX_WORKSPACE_URI_CHARS
+                and workspace_bytes <= workspace_budget
+                else None
+            )
+            if workspace_uris is not None:
+                workspace_budget -= workspace_bytes
+            imported.append(_public_row(row, workspace_uris=workspace_uris))
+    return user_version, imported
 
 
 def _empty_result() -> dict[str, Any]:
@@ -443,6 +459,8 @@ __all__ = [
     "AG_HISTORY_SCHEMA",
     "AgHistoryError",
     "MAX_AG_HISTORY_RECORDS",
+    "MAX_WORKSPACE_URI_AGGREGATE_BYTES",
+    "MAX_WORKSPACE_URI_CHARS",
     "SUPPORTED_AG_HISTORY_VERSIONS",
     "inspect_ag_history",
 ]

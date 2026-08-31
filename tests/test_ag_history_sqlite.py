@@ -156,3 +156,57 @@ def test_summary_symlink_is_never_followed(tmp_path: Path) -> None:
     assert result["imported"] is False
     assert result["present"] is True
     assert result["pin"] == "unsafe_path"
+
+
+def test_legacy_version_marker_content_is_never_disclosed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = home / ".gemini" / "antigravity-cli"
+    root.mkdir(parents=True)
+    secret = "PRIVATE-AUTH-TOKEN-123456"
+    (root / "VERSION").write_text(secret, encoding="utf-8")
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["present"] is True
+    assert result["supported"] is False
+    assert result["pin"] == "unknown_version"
+    assert result["private_content"] is False
+    dumped = json.dumps(result)
+    assert secret not in dumped
+    assert "marker-present" in result["versions"]
+
+
+def test_workspace_uri_import_has_per_row_and_aggregate_bounds(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    bounded_large = json.dumps(["file:///" + ("private-segment/" * 430)])
+    with sqlite3.connect(db) as conn:
+        template = conn.execute(
+            "SELECT * FROM conversation_summaries LIMIT 1"
+        ).fetchone()
+        assert template is not None
+        for index in range(170):
+            conn.execute(
+                """INSERT INTO conversation_summaries
+                   (conversation_id, title, preview, step_count, last_modified_time,
+                    workspace_uris, status, source, project_id, agent_name,
+                    parent_conversation_id, nesting_depth, killed,
+                    last_user_input_time, last_user_input_step_index, app_data_dir)
+                   VALUES (?, '', '', 1, ?, ?, 'idle', 'antigravity', '', '',
+                           'parent', 0, 0, ?, 0, '')""",
+                (
+                    f"conversation-{index}",
+                    f"2026-08-30T23:{index % 60:02d}:00Z",
+                    bounded_large,
+                    "2026-08-30T23:00:00Z",
+                ),
+            )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["record_count"] == 171
+    imported_workspace_counts = sum(
+        row["workspace_count"] for row in result["records"]
+    )
+    assert 1 < imported_workspace_counts < 171
+    assert "private-segment" not in json.dumps(result)
