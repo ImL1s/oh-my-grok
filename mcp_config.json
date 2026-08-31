@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "omg-tools": {
+      "command": "python3",
+      "args": [
+        "${extensionPath}/bin/omg",
+        "tools",
+        "serve",
+        "--stdio",
+        "--capability-mode",
+        "read-only"
+      ],
+      "env": {
+        "OMG_TOOLS_NETWORK": "0"
+      }
+    }
+  }
+}

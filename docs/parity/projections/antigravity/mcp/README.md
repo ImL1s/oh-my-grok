@@ -3,10 +3,12 @@
 **Status:** static parity projection for
 [#73](https://github.com/ImL1s/oh-my-grok/issues/73).
 
-This is **not** an installed Antigravity plugin, not proof that `agy` loaded
-an MCP server, and not live AG evidence.
+This projection is **not** an installed Antigravity plugin, not proof that
+`agy` loaded an MCP server, and not live AG evidence. The repository root now
+separately bundles the executable plugin manifest [`mcp_config.json`](../../../../../mcp_config.json);
+do not confuse that configuration with this static parity document.
 
-Suggested registration (when the user opts in later):
+Root plugin registration:
 
 ```text
 omg tools serve --stdio

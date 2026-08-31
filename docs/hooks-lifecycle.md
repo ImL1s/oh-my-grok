@@ -3,11 +3,11 @@
 English. **Registry:** [`hooks/registry.json`](../hooks/registry.json)
 (loader `omg_cli/hooks_registry.py`).
 
-This is a **first cut** of [#72](https://github.com/ImL1s/oh-my-grok/issues/72).
-It documents host mappings and dispatches in-process. It does **not** claim
-OMC-style lifecycle coverage on Grok Build. Remaining honesty: no
-UserPromptSubmit inject, timeout is not preemptive, Antigravity files are
-projections (not live AG).
+This implements the bounded host mappings for
+[#72](https://github.com/ImL1s/oh-my-grok/issues/72). It does **not** claim
+OMC-style lifecycle coverage where either host lacks an event. Remaining
+honesty: no UserPromptSubmit inject and registry timeouts are post-hoc; host
+command timeouts are enforced by Grok/Agy.
 
 ## Grok honesty
 
@@ -31,6 +31,27 @@ OMG_SKIP_HOOKS=a,b,c    # skip named hook ids or events
 
 Disabled Antigravity plugins are not executed from these projection files —
 the projection is documentation, not an install.
+
+## Antigravity plugin hooks
+
+The plugin root [`hooks.json`](../hooks.json) is the actual Agy plugin
+manifest. It registers only documented Agy events:
+
+| Agy hook | Canonical event | Behavior |
+|----------|-----------------|----------|
+| `PreToolUse` | `tool.pre` | Translates `run_command` / `CommandLine` and reuses the canonical deny gate. Agy receives `allow` or `deny`. |
+| `PostToolUse` | `tool.post` / `tool.failure` | Passive, redacted observation; Agy receives `{}`. |
+| `Stop` | `stop.request` | Reuses the bounded autopilot stop gate; canonical `block` becomes Agy `continue`. Otherwise allows stop. |
+
+[`hooks/bin/antigravity_hook.py`](../hooks/bin/antigravity_hook.py) loads no
+workspace-relative code: root `hooks.json` anchors the adapter with
+`${extensionPath}`, so an installed plugin resolves its own final directory
+even when Agy runs from another workspace. It reads no transcript and persists
+no raw tool arguments or errors. Its journal source is
+`antigravity-hook`; rows remain `verified=false`. Malformed/unbound input and
+journal failures fail open. `UserPromptSubmit`, `PreInvocation`, and
+`PostInvocation` are intentionally absent: Agy does not document
+UserPromptSubmit, and OMG does not disguise another event as prompt injection.
 
 ## Continuation
 
@@ -68,11 +89,12 @@ adopt. This does not set `verified`.
   `omg.stop.gate`, `omg.continuation.guard`. Test stubs may pass
   `allow_incomplete=True`.
 
-## Antigravity projection
+## Antigravity static projection
 
 [`docs/parity/projections/antigravity/hooks/`](./parity/projections/antigravity/hooks/)
-contains a README plus a **hooks.json-shaped** document. Copy via
-`install_antigravity_hook_projection(dest)` (later #77 install manifest).
-This is **not** live AG evidence and does **not** mean `agy` loaded hooks.
-`omg doctor` reports the registry inspect tiers; `omg setup` still installs
-Grok plugin hooks.
+contains a README plus a **hooks.json-shaped** historical parity document.
+It is distinct from the root live-plugin manifest and remains non-executable.
+Copy via `install_antigravity_hook_projection(dest)` only for parity inspection.
+Neither a root manifest nor a projection proves installation or observation.
+`omg doctor` reports `ag_configured`, `ag_loadable`, `ag_observed`, and
+`ag_healthy` separately.

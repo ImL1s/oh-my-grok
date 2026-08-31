@@ -21,6 +21,19 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 - `didOpen` text is bounded. Files larger than the sidecar cap are stamped `truncated: true`; hover / definition / rename / code_action (and other document semantic ops) are **refused** rather than analyzing a silent prefix.
 - CodeGraph is a **toy local import/symbol scan** that also writes a hermetic SCIP protobuf `Index` beside JSON-lite (`{local,shared}-index.scip`). Index **stages both files, then publishes `.scip` before JSON**, so `index_present` (JSON) implies the sibling protobuf exists. A crash after SCIP before JSON keeps the previous JSON generation (or no JSON); SCIP-only is not a complete JSON-backed index. Query prefers protobuf occurrences (`not_scip: false` when the `.scip` decodes). JSON-only remains `not_scip`. Homebrew MIP `scip` (scipopt) is **not** Sourcegraph SCIP. Shared indexes are still not branch-accurate.
 - Network research is opt-in (`OMG_TOOLS_NETWORK=1`). When enabled, the default provider is **Wikipedia OpenSearch** (`GET en.wikipedia.org/w/api.php?action=opensearch`). Credentials are **never bundled**. `OMG_TOOLS_RESEARCH_PROVIDER=none` or `off` stays blocked (`E_NETWORK_NO_PROVIDER`). HTTP / timeout / non-JSON / unexpected shape fail closed as `E_NETWORK_PROVIDER` (not fake hits). This is **not** a live Antigravity MCP install.
+
+## Antigravity plugin registration
+
+The root [`mcp_config.json`](../mcp_config.json) registers `omg-tools` for an
+installed Agy plugin. It launches the bundled `${extensionPath}/bin/omg tools serve --stdio`
+entry point with a fixed `--capability-mode read-only` ceiling and
+`OMG_TOOLS_NETWORK=0`. Clients cannot escalate that server to read-write;
+mutation calls return `E_READ_ONLY`. The server uses local stdio only and
+ships no credentials or remote `serverUrl`.
+
+`agy plugin validate .` or an install report that processes the MCP manifest
+proves syntax/discovery only. A live agent tool call plus exact result is still
+required before reporting `observed` / `healthy`.
 - Windows confinement is `Path.resolve()` + `relative_to`, not POSIX `path_keys`.
 - Never writes `passes` / `verified`.
 

@@ -1,7 +1,7 @@
 {
   "schema": "omg-hooks-registry/v1",
   "kind": "read_only_machine_registry",
-  "note": "Host-neutral lifecycle registry (#72 first cut). Grok PreToolUse/Stop are the only blocking host hooks (Stop pin grok >=0.2.107, cap 8/turn, fail-open). SessionStart/SubagentStop are passive (stdout ignored). UserPromptSubmit is eligible_unclaimed and MUST NOT inject. Antigravity files are projections, not live AG evidence. Kill switches: DISABLE_OMG / OMG_DISABLE_HOOKS / OMG_SKIP_HOOKS. Does not set verified.",
+  "note": "Host-neutral lifecycle registry (#72). Grok PreToolUse/Stop and Antigravity PreToolUse/Stop are blocking host hooks; PostToolUse is passive. Grok SessionStart/SubagentStop are passive (stdout ignored). UserPromptSubmit is unsupported and MUST NOT inject. Root Agy manifests are loadable configuration, not installation/live evidence. Kill switches: DISABLE_OMG / OMG_DISABLE_HOOKS / OMG_SKIP_HOOKS. Does not set verified.",
   "canonical_events": [
     "prompt.submit",
     "session.start",

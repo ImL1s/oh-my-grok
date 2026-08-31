@@ -1306,6 +1306,7 @@ def check_hooks_registry() -> SoftResult:
         from omg_cli.hooks_registry import inspect_hooks_registry
 
         payload = inspect_hooks_registry(plugin_root())
+        ag = payload.get("antigravity_host") or {}
         detail = (
             f"configured={payload.get('configured')}; "
             f"installed={payload.get('installed')}; "
@@ -1315,10 +1316,16 @@ def check_hooks_registry() -> SoftResult:
             f"healthy={payload.get('healthy')}; "
             f"verified={payload.get('verified')}; "
             f"hooks={payload.get('hook_count', 0)}; "
+            f"ag_configured={ag.get('configured')}; "
+            f"ag_loadable={ag.get('loadable')}; "
+            f"ag_observed={ag.get('observed')}; "
+            f"ag_healthy={ag.get('healthy')}; "
             "Grok UserPromptSubmit inject unsupported"
         )
         if not payload.get("ok"):
             return (name, "warn", detail + f"; {payload.get('error')}")
+        if ag.get("configured") is not True or ag.get("loadable") is not True:
+            return (name, "warn", detail + "; Antigravity host manifests unavailable")
         return (name, "ok", detail)
     except Exception as exc:
         return (name, "warn", f"hooks registry probe failed ({type(exc).__name__})")

@@ -507,12 +507,51 @@ def test_check_hooks_registry_includes_enabled_and_installed(monkeypatch):
     monkeypatch.delenv("DISABLE_OMG", raising=False)
     name, level, detail = doctor.check_hooks_registry()
     assert name == "hooks registry"
+    assert "ag_configured=True" in detail
+    assert "ag_loadable=True" in detail
+    assert "ag_observed=False" in detail
+    assert "ag_healthy=False" in detail
     assert "installed=" in detail
     assert "enabled=" in detail
     monkeypatch.setenv("OMG_DISABLE_HOOKS", "1")
     _name, _level, disabled = doctor.check_hooks_registry()
     assert "enabled=False" in disabled
     assert "installed=" in disabled
+
+
+def test_check_hooks_registry_warns_when_antigravity_manifests_are_unloadable(
+    monkeypatch,
+):
+    from omg_cli import hooks_registry
+
+    monkeypatch.setattr(
+        hooks_registry,
+        "inspect_hooks_registry",
+        lambda _root: {
+            "ok": True,
+            "configured": True,
+            "installed": True,
+            "enabled": True,
+            "loadable": True,
+            "observed": False,
+            "healthy": False,
+            "verified": False,
+            "hook_count": 1,
+            "antigravity_host": {
+                "configured": False,
+                "loadable": False,
+                "observed": False,
+                "healthy": False,
+            },
+        },
+    )
+
+    name, level, detail = doctor.check_hooks_registry()
+
+    assert name == "hooks registry"
+    assert level == "warn"
+    assert "ag_configured=False" in detail
+    assert "ag_loadable=False" in detail
 
 
 def test_check_plugin_enabled_warn_when_missing(tmp_path, monkeypatch):

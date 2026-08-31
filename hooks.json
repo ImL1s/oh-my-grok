@@ -1,0 +1,36 @@
+{
+  "omg-lifecycle": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${extensionPath}/hooks/bin/antigravity_hook.py\" PreToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${extensionPath}/hooks/bin/antigravity_hook.py\" PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 \"${extensionPath}/hooks/bin/antigravity_hook.py\" Stop",
+        "timeout": 5
+      }
+    ]
+  }
+}
