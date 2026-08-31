@@ -1266,6 +1266,45 @@ def test_diagnose_path_screencapture_keeps_absolute_fallback(
     assert diagnosis["command"] == ["/usr/sbin/screencapture", "-x"]
 
 
+def test_relative_path_screencapture_is_frozen_before_capture_cwd_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.visual_runtime import (
+        diagnose_capture_source,
+        execute_capture_command,
+    )
+
+    discovery = tmp_path / "discovery"
+    bin_dir = discovery / "bin"
+    bin_dir.mkdir(parents=True)
+    fake = bin_dir / "screencapture"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "Path(sys.argv[-1]).write_bytes(b'captured')\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.chdir(discovery)
+    monkeypatch.setattr(
+        "omg_cli.visual_runtime.shutil.which",
+        lambda name, **kwargs: "bin/screencapture" if name == "screencapture" else None,
+    )
+
+    diagnosis = diagnose_capture_source({}, env={"PATH": "bin"})
+    assert diagnosis["command"] == [str(fake), "-x"]
+
+    project = tmp_path / "different-project"
+    project.mkdir()
+    output = project / "capture.png"
+    result = execute_capture_command(
+        diagnosis["command"], root=project, output=output, env={"PATH": "bin"}
+    )
+    assert result["status"] == "captured"
+    assert output.read_bytes() == b"captured"
+
+
 def test_diagnose_path_screencapture_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
