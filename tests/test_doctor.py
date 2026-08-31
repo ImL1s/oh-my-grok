@@ -507,6 +507,10 @@ def test_check_hooks_registry_includes_enabled_and_installed(monkeypatch):
     monkeypatch.delenv("DISABLE_OMG", raising=False)
     name, level, detail = doctor.check_hooks_registry()
     assert name == "hooks registry"
+    assert "ag_configured=True" in detail
+    assert "ag_loadable=True" in detail
+    assert "ag_observed=False" in detail
+    assert "ag_healthy=False" in detail
     assert "installed=" in detail
     assert "enabled=" in detail
     monkeypatch.setenv("OMG_DISABLE_HOOKS", "1")

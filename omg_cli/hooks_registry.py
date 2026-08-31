@@ -10,8 +10,10 @@ legacy ``hooks/bin`` logical names (``stop``, ``pre_tool_use``,
 ``session_start``, ``subagent_stop``). Grok plugin scripts still
 honor ``DISABLE_OMG`` / ``OMG_SKIP_HOOKS`` via ``hooks/bin/_common.py``.
 
-Antigravity files under ``docs/parity/projections/antigravity/hooks/`` are
-static projections — not an installed AG plugin and not live AG evidence.
+Antigravity files under ``docs/parity/projections/antigravity/hooks/`` remain
+static projections.  The plugin root now separately bundles Agy-compatible
+``hooks.json`` / ``mcp_config.json``; bundling is not installation or live
+host evidence.
 Timeouts are recorded after the synchronous handler returns (Python cannot
 preempt). Dispatch appends a bounded redacted journal row (fail-open).
 CLI wrapper events (``artifact.created``, ``job.terminal``,
@@ -32,6 +34,9 @@ SCHEMA = "omg-hooks-registry/v1"
 KIND = "read_only_machine_registry"
 REGISTRY_RELATIVE = "hooks/registry.json"
 ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/hooks"
+ANTIGRAVITY_HOOKS_RELATIVE = "hooks.json"
+ANTIGRAVITY_MCP_RELATIVE = "mcp_config.json"
+ANTIGRAVITY_JOURNAL_SOURCE = "antigravity-hook"
 MAX_HOOK_OUTPUT_BYTES = 16_384
 MAX_HANDOFF_BYTES = 8_192
 AGGREGATE_BUDGET_MS = 2_000
@@ -153,6 +158,27 @@ GROK_EVENT_MAP: dict[str, str] = {
     "subagent.stop": "native_passive",
     "compact.pre": "wrapper",  # Grok PreCompact unavailable; CLI wrapper
     "idle": "native_blocking",  # Stop pin, fail-open, cap 8
+    "stop.request": "native_blocking",
+    "workflow.transition": "reconciled",
+    "artifact.created": "reconciled",
+    "job.terminal": "wrapper",
+    "team.member.transition": "wrapper",
+}
+
+# Antigravity 1.1.x documented plugin hooks. UserPromptSubmit is absent, so
+# prompt routing remains unsupported rather than being emulated by PreInvocation.
+ANTIGRAVITY_EVENT_MAP: dict[str, str] = {
+    "prompt.submit": "unsupported",
+    "session.start": "unsupported",
+    "session.end": "unsupported",
+    "tool.pre": "native_blocking",
+    "tool.post": "native_passive",
+    "tool.failure": "native_passive",
+    "permission.request": "unsupported",
+    "subagent.start": "unsupported",
+    "subagent.stop": "unsupported",
+    "compact.pre": "wrapper",
+    "idle": "native_blocking",
     "stop.request": "native_blocking",
     "workflow.transition": "reconciled",
     "artifact.created": "reconciled",
@@ -466,8 +492,13 @@ def inspect_hooks_registry(
             "error": str(exc),
             "note": "hook registry; Grok UserPromptSubmit is not an injector",
         }
+    ag_host = inspect_antigravity_host_manifests(base)
     grok_map = [
-        {"event": event, "grok": cap, "antigravity": "projected"}
+        {
+            "event": event,
+            "grok": cap,
+            "antigravity": ANTIGRAVITY_EVENT_MAP[event],
+        }
         for event, cap in GROK_EVENT_MAP.items()
     ]
     return {
@@ -483,16 +514,74 @@ def inspect_hooks_registry(
         "hook_count": len(registry.hooks),
         "hooks": [hook.to_inspect_row() for hook in registry.hooks],
         "grok_event_map": grok_map,
+        "antigravity_host": ag_host,
         "timeout_kind": TIMEOUT_KIND,
         "security_hook_ids": list(SECURITY_HANDLER_BINDINGS),
         "note": (
             "Grok PreToolUse/Stop may block; SessionStart/SubagentStop are passive; "
             "UserPromptSubmit injection is unsupported. CLI wrapper events "
             "(artifact.created, job.terminal, team.member.transition) use "
-            "emit_wrapper_event with source=wrapper. Antigravity hook files are "
-            "projections only, not live AG evidence. Timeouts are post-hoc after "
+            "emit_wrapper_event with source=wrapper. Root Antigravity hook/MCP "
+            "manifests are bundled and loadable when reported, but installation, "
+            "observation and health require live agy evidence. Timeouts are post-hoc after "
             "the synchronous handler returns. Never sets verified."
         ),
+    }
+
+
+def inspect_antigravity_host_manifests(root: Path | None = None) -> dict[str, Any]:
+    """Validate bundled Agy plugin manifests without claiming host observation."""
+
+    base = Path(root) if root is not None else plugin_root()
+    errors: list[str] = []
+    hooks_path = base / ANTIGRAVITY_HOOKS_RELATIVE
+    mcp_path = base / ANTIGRAVITY_MCP_RELATIVE
+    try:
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        lifecycle = hooks.get("omg-lifecycle") if isinstance(hooks, dict) else None
+        if not isinstance(lifecycle, dict) or lifecycle.get("enabled") is not True:
+            errors.append("hooks.json missing enabled omg-lifecycle")
+        elif set(lifecycle) != {"enabled", "PreToolUse", "PostToolUse", "Stop"}:
+            errors.append("hooks.json contains unsupported lifecycle events")
+        if "UserPromptSubmit" in json.dumps(hooks):
+            errors.append("hooks.json must not invent UserPromptSubmit")
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"hooks.json unreadable ({type(exc).__name__})")
+    try:
+        mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+        servers = mcp.get("mcpServers") if isinstance(mcp, dict) else None
+        server = servers.get("omg-tools") if isinstance(servers, dict) else None
+        if not isinstance(server, dict):
+            errors.append("mcp_config.json missing omg-tools")
+        else:
+            args = server.get("args")
+            if server.get("command") != "python3" or args != [
+                "bin/omg",
+                "tools",
+                "serve",
+                "--stdio",
+                "--capability-mode",
+                "read-only",
+            ]:
+                errors.append("omg-tools must launch the read-only stdio sidecar")
+            env = server.get("env")
+            if not isinstance(env, dict) or env.get("OMG_TOOLS_NETWORK") != "0":
+                errors.append("omg-tools network must default off")
+            if "serverUrl" in server:
+                errors.append("omg-tools must use local stdio, not network transport")
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"mcp_config.json unreadable ({type(exc).__name__})")
+    return {
+        "configured": hooks_path.is_file() and mcp_path.is_file(),
+        "loadable": not errors,
+        "installed": False,
+        "enabled": False,
+        "observed": False,
+        "healthy": False,
+        "verified": False,
+        "errors": errors,
+        "user_prompt_submit": "unsupported",
+        "journal_source": ANTIGRAVITY_JOURNAL_SOURCE,
     }
 
 
@@ -1143,6 +1232,10 @@ def install_antigravity_hook_projection(
 __all__ = [
     "AGGREGATE_BUDGET_MS",
     "ANTIGRAVITY_PROJECTION_ROOT",
+    "ANTIGRAVITY_EVENT_MAP",
+    "ANTIGRAVITY_HOOKS_RELATIVE",
+    "ANTIGRAVITY_JOURNAL_SOURCE",
+    "ANTIGRAVITY_MCP_RELATIVE",
     "BUS_EVENT_TYPES",
     "BUS_SOURCE",
     "CANONICAL_EVENTS",
@@ -1166,6 +1259,7 @@ __all__ = [
     "dispatch",
     "emit_wrapper_event",
     "inspect_hooks_registry",
+    "inspect_antigravity_host_manifests",
     "install_antigravity_hook_projection",
     "load_hooks_registry",
     "plugin_root",
