@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,7 @@ def _run_adapter(event: str, payload: dict, workspace: Path) -> subprocess.Compl
         input=json.dumps(payload),
         text=True,
         capture_output=True,
-        cwd=ROOT,
+        cwd=workspace,
         env=env,
         timeout=10,
         check=False,
@@ -43,12 +44,21 @@ def test_root_antigravity_hooks_manifest_is_live_and_supported_only() -> None:
     assert set(lifecycle) == {"enabled", "PreToolUse", "PostToolUse", "Stop"}
     assert lifecycle["PreToolUse"][0]["matcher"] == "*"
     assert lifecycle["PostToolUse"][0]["matcher"] == "*"
-    commands = json.dumps(payload)
-    assert "antigravity_hook.py PreToolUse" in commands
-    assert "antigravity_hook.py PostToolUse" in commands
-    assert "antigravity_hook.py Stop" in commands
-    assert "UserPromptSubmit" not in commands
-    assert "PreInvocation" not in commands
+    commands = [
+        lifecycle["PreToolUse"][0]["hooks"][0]["command"],
+        lifecycle["PostToolUse"][0]["hooks"][0]["command"],
+        lifecycle["Stop"][0]["command"],
+    ]
+    assert all(
+        "${extensionPath}/hooks/bin/antigravity_hook.py" in command
+        for command in commands
+    )
+    assert commands[0].endswith(" PreToolUse")
+    assert commands[1].endswith(" PostToolUse")
+    assert commands[2].endswith(" Stop")
+    serialized = json.dumps(payload)
+    assert "UserPromptSubmit" not in serialized
+    assert "PreInvocation" not in serialized
 
 
 def test_antigravity_manifest_inspect_and_event_map_are_honest() -> None:
@@ -158,7 +168,7 @@ def test_root_mcp_config_exposes_read_only_offline_tools_sidecar() -> None:
     server = payload["mcpServers"]["omg-tools"]
     assert server["command"] == "python3"
     assert server["args"] == [
-        "bin/omg",
+        "${extensionPath}/bin/omg",
         "tools",
         "serve",
         "--stdio",
@@ -200,7 +210,10 @@ def test_configured_tools_sidecar_stdio_handshake_is_read_only(tmp_path: Path) -
     }
     (tmp_path / "sample.py").write_text("original\n", encoding="utf-8")
     proc = subprocess.run(
-        [server["command"], str(ROOT / server["args"][0]), *server["args"][1:]],
+        [
+            server["command"],
+            *(arg.replace("${extensionPath}", str(ROOT)) for arg in server["args"]),
+        ],
         input=(
             json.dumps(request)
             + "\n"
@@ -225,3 +238,30 @@ def test_configured_tools_sidecar_stdio_handshake_is_read_only(tmp_path: Path) -
     assert "E_READ_ONLY" in replies[2]["result"]["content"][0]["text"]
     assert (tmp_path / "sample.py").read_text(encoding="utf-8") == "original\n"
     assert not (tmp_path / ".omg").exists()
+
+
+def test_hook_manifest_command_resolves_from_foreign_workspace(tmp_path: Path) -> None:
+    config = json.loads((ROOT / "hooks.json").read_text(encoding="utf-8"))
+    command = config["omg-lifecycle"]["PreToolUse"][0]["hooks"][0]["command"]
+    resolved = command.replace("${extensionPath}", str(ROOT))
+    payload = {
+        "workspacePaths": [str(tmp_path)],
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "codex exec unsafe"},
+        },
+    }
+
+    proc = subprocess.run(
+        shlex.split(resolved),
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env={**os.environ, "PWD": str(tmp_path)},
+        timeout=10,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["decision"] == "deny"

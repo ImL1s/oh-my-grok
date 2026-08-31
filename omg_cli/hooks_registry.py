@@ -543,8 +543,28 @@ def inspect_antigravity_host_manifests(root: Path | None = None) -> dict[str, An
             errors.append("hooks.json missing enabled omg-lifecycle")
         elif set(lifecycle) != {"enabled", "PreToolUse", "PostToolUse", "Stop"}:
             errors.append("hooks.json contains unsupported lifecycle events")
-        if "UserPromptSubmit" in json.dumps(hooks):
+        hooks_text = json.dumps(hooks)
+        if "UserPromptSubmit" in hooks_text:
             errors.append("hooks.json must not invent UserPromptSubmit")
+        try:
+            commands = (
+                {
+                    "PreToolUse": lifecycle["PreToolUse"][0]["hooks"][0]["command"],
+                    "PostToolUse": lifecycle["PostToolUse"][0]["hooks"][0]["command"],
+                    "Stop": lifecycle["Stop"][0]["command"],
+                }
+                if isinstance(lifecycle, dict)
+                else {}
+            )
+        except (KeyError, IndexError, TypeError):
+            commands = {}
+        for event in ("PreToolUse", "PostToolUse", "Stop"):
+            expected = (
+                'python3 "${extensionPath}/hooks/bin/antigravity_hook.py" '
+                f"{event}"
+            )
+            if commands.get(event) != expected:
+                errors.append(f"hooks.json {event} command is not extension-anchored")
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"hooks.json unreadable ({type(exc).__name__})")
     try:
@@ -556,7 +576,7 @@ def inspect_antigravity_host_manifests(root: Path | None = None) -> dict[str, An
         else:
             args = server.get("args")
             if server.get("command") != "python3" or args != [
-                "bin/omg",
+                "${extensionPath}/bin/omg",
                 "tools",
                 "serve",
                 "--stdio",

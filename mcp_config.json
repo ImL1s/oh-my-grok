@@ -3,7 +3,7 @@
     "omg-tools": {
       "command": "python3",
       "args": [
-        "bin/omg",
+        "${extensionPath}/bin/omg",
         "tools",
         "serve",
         "--stdio",

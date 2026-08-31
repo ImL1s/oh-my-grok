@@ -43,8 +43,11 @@ manifest. It registers only documented Agy events:
 | `PostToolUse` | `tool.post` / `tool.failure` | Passive, redacted observation; Agy receives `{}`. |
 | `Stop` | `stop.request` | Reuses the bounded autopilot stop gate; canonical `block` becomes Agy `continue`. Otherwise allows stop. |
 
-[`hooks/bin/antigravity_hook.py`](../hooks/bin/antigravity_hook.py) reads no
-transcript and persists no raw tool arguments or errors. Its journal source is
+[`hooks/bin/antigravity_hook.py`](../hooks/bin/antigravity_hook.py) loads no
+workspace-relative code: root `hooks.json` anchors the adapter with
+`${extensionPath}`, so an installed plugin resolves its own final directory
+even when Agy runs from another workspace. It reads no transcript and persists
+no raw tool arguments or errors. Its journal source is
 `antigravity-hook`; rows remain `verified=false`. Malformed/unbound input and
 journal failures fail open. `UserPromptSubmit`, `PreInvocation`, and
 `PostInvocation` are intentionally absent: Agy does not document

@@ -25,7 +25,7 @@ It is **not** Grok-native LSP and **not** a live Antigravity MCP install.
 ## Antigravity plugin registration
 
 The root [`mcp_config.json`](../mcp_config.json) registers `omg-tools` for an
-installed Agy plugin. It launches the bundled `bin/omg tools serve --stdio`
+installed Agy plugin. It launches the bundled `${extensionPath}/bin/omg tools serve --stdio`
 entry point with a fixed `--capability-mode read-only` ceiling and
 `OMG_TOOLS_NETWORK=0`. Clients cannot escalate that server to read-write;
 mutation calls return `E_READ_ONLY`. The server uses local stdio only and
