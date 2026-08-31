@@ -481,7 +481,11 @@ def discover_path_screencapture(
         "screencapture.exe", **which_kw
     )
     if found:
-        return found
+        # A relative PATH entry makes ``shutil.which`` return a relative
+        # executable. Capture later runs with ``cwd=project_root``; freeze the
+        # discovery-working-directory meaning now so the ready probe remains
+        # executable after that cwd change.
+        return os.path.abspath(found)
     try:
         if MACOS_SCREENCAPTURE.is_file():
             return str(MACOS_SCREENCAPTURE)
