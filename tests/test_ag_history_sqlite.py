@@ -1162,6 +1162,31 @@ def test_project_local_db_reports_secure_open_unavailable(
     assert "ag_history_absent" not in json.dumps(result)
 
 
+def test_unsafe_second_index_discards_successful_import(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _summary_db(home)
+    project = tmp_path / "project"
+    local_dir = project / ".antigravity"
+    local_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"private-index")
+    (local_dir / "conversation_summaries.db").symlink_to(outside)
+
+    result = inspect_ag_history(project, home=home)
+
+    assert result["imported"] is False
+    assert result["supported"] is False
+    assert result["live_import"] is False
+    assert result["records"] == []
+    assert result["record_count"] == 0
+    assert result["pin"] == "unsafe_path"
+    dumped = json.dumps(result)
+    assert "RAW PRIVATE TITLE" not in dumped
+    assert "conversation-secret-id" not in dumped
+
+
 def test_fractional_utc_is_excluded_from_whole_second_order(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)

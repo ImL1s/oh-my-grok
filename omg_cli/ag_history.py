@@ -939,7 +939,10 @@ def inspect_ag_history(
         or saw_unsafe
         or saw_corrupt
         or saw_platform
+        or saw_unbounded
     )
+    if not import_ok:
+        records = []
     if import_ok:
         pin = f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"
         reason = "supported_summary_imported"
