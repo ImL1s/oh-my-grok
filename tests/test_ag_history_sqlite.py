@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import omg_cli.ag_history as ag_history
 from omg_cli.ag_history import inspect_ag_history
 
 
@@ -158,6 +162,59 @@ def test_summary_symlink_is_never_followed(tmp_path: Path) -> None:
     assert result["pin"] == "unsafe_path"
 
 
+def test_summary_parent_symlink_is_never_followed(tmp_path: Path) -> None:
+    real_home = tmp_path / "real-home"
+    _summary_db(real_home)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gemini").symlink_to(real_home / ".gemini", target_is_directory=True)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["present"] is True
+    assert result["pin"] == "unsafe_path"
+
+
+def test_live_wal_rows_are_read_without_mutating_database_files(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode = WAL")
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('wal-only', '', '', 3, '2026-08-31T01:00:00Z',
+                       '[]', 'idle', 'antigravity', '', '', '', 0, 0,
+                       '2026-08-31T01:00:00Z', 0, '')"""
+        )
+        writer.commit()
+        wal = Path(f"{db}-wal")
+        assert wal.is_file() and wal.stat().st_size > 0
+        before = {
+            path.name: (path.read_bytes(), os.stat(path).st_mtime_ns)
+            for path in (db, wal)
+        }
+
+        result = inspect_ag_history(tmp_path / "project", home=home)
+
+        assert result["imported"] is True
+        assert result["record_count"] == 2
+        assert any(row["step_count"] == 3 for row in result["records"])
+        after = {
+            path.name: (path.read_bytes(), os.stat(path).st_mtime_ns)
+            for path in (db, wal)
+        }
+        assert after == before
+    finally:
+        writer.close()
+
+
 def test_legacy_version_marker_content_is_never_disclosed(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = home / ".gemini" / "antigravity-cli"
@@ -210,3 +267,30 @@ def test_workspace_uri_import_has_per_row_and_aggregate_bounds(tmp_path: Path) -
     )
     assert 1 < imported_workspace_counts < 171
     assert "private-segment" not in json.dumps(result)
+
+
+def test_workspace_uri_budget_is_shared_across_all_databases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_home = tmp_path / "project-home"
+    project_db = _summary_db(project_home)
+    project_root = tmp_path / "project"
+    local_dir = project_root / ".antigravity"
+    local_dir.mkdir(parents=True)
+    local_db = local_dir / "conversation_summaries.db"
+    local_db.write_bytes(project_db.read_bytes())
+    home = tmp_path / "home"
+    home_db = _summary_db(home)
+    payload = json.dumps(["file:///" + ("x" * 48)])
+    assert len(payload.encode("utf-8")) < 80
+    for db in (local_db, home_db):
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE conversation_summaries SET workspace_uris = ?", (payload,)
+            )
+    monkeypatch.setattr(ag_history, "MAX_WORKSPACE_URI_AGGREGATE_BYTES", 80)
+
+    result = inspect_ag_history(project_root, home=home)
+
+    assert result["record_count"] == 2
+    assert sum(row["workspace_count"] for row in result["records"]) == 1

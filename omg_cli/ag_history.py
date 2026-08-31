@@ -251,22 +251,70 @@ def _public_row(
     return {key: value for key, value in result.items() if value is not None}
 
 
-def _open_summary_db(path: Path) -> sqlite3.Connection:
-    """Open a final-component regular file through SQLite's immutable RO URI."""
+def _safe_path_identity(path: Path) -> tuple[tuple[int, int, int], ...]:
+    """Validate every existing path component and return a stable identity chain."""
 
-    info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    identities: list[tuple[int, int, int]] = []
+    try:
+        for part in absolute.parts[1:]:
+            current /= part
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise AgHistoryError(
+                    "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
+                )
+            identities.append(
+                (int(info.st_dev), int(info.st_ino), stat.S_IFMT(info.st_mode))
+            )
+    except AgHistoryError:
+        raise
+    except OSError as exc:
+        raise AgHistoryError(
+            "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
+        ) from exc
+    if not identities or not stat.S_ISREG(identities[-1][2]):
         raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
-    uri = f"file:{quote(os.path.abspath(os.fspath(path)), safe='/')}?mode=ro&immutable=1"
+    return tuple(identities)
+
+
+def _validate_optional_sqlite_sidecar(path: Path) -> None:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise AgHistoryError(
+            "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
+        ) from exc
+    _safe_path_identity(path)
+
+
+def _open_summary_db(path: Path) -> sqlite3.Connection:
+    """Open a component-safe SQLite database in native read-only mode.
+
+    Unlike immutable mode, mode=ro participates in SQLite's normal WAL
+    snapshot handling and cannot silently ignore committed rows that still
+    live in the host's WAL file.
+    """
+
+    before = _safe_path_identity(path)
+    _validate_optional_sqlite_sidecar(Path(f"{path}-wal"))
+    _validate_optional_sqlite_sidecar(Path(f"{path}-shm"))
+    uri = f"file:{quote(os.path.abspath(os.fspath(path)), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
+    if _safe_path_identity(path) != before:
+        connection.close()
+        raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only = ON")
     return connection
 
 
 def _import_summary_db(
-    path: Path, *, remaining: int
-) -> tuple[int, list[dict[str, Any]]]:
+    path: Path, *, remaining: int, workspace_budget: int
+) -> tuple[int, list[dict[str, Any]], int]:
     with _open_summary_db(path) as connection:
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if user_version != SQLITE_SUMMARY_VERSION:
@@ -307,7 +355,6 @@ def _import_summary_db(
             (MAX_WORKSPACE_URI_CHARS + 1, remaining),
         )
         imported: list[dict[str, Any]] = []
-        workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
         for row in rows:
             raw_workspace = row["workspace_uris_prefix"]
             workspace_bytes = _bounded_int(
@@ -326,7 +373,7 @@ def _import_summary_db(
             if workspace_uris is not None:
                 workspace_budget -= workspace_bytes
             imported.append(_public_row(row, workspace_uris=workspace_uris))
-    return user_version, imported
+    return user_version, imported, workspace_budget
 
 
 def _empty_result() -> dict[str, Any]:
@@ -373,13 +420,16 @@ def inspect_ag_history(
     saw_corrupt = False
     saw_unsafe = False
     saw_unknown = False
+    workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
 
     for path in databases:
         location = {"kind": "sqlite_summary", "name": _SUMMARY_DB}
         locations.append(location)
         try:
-            version, imported = _import_summary_db(
-                path, remaining=max(0, MAX_AG_HISTORY_RECORDS - len(records))
+            version, imported, workspace_budget = _import_summary_db(
+                path,
+                remaining=max(0, MAX_AG_HISTORY_RECORDS - len(records)),
+                workspace_budget=workspace_budget,
             )
         except AgHistoryError as exc:
             if exc.code == "E_AG_HISTORY_PATH":
