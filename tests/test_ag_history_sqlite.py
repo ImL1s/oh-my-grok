@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -850,6 +851,58 @@ def test_declared_rowid_alias_returns_bounded_diagnostic(
     assert "RAW PRIVATE TITLE" not in dumped
     assert "conversation-secret-id" not in dumped
     assert db.read_bytes() == before
+
+
+def test_basic_iso_utc_timestamps_are_excluded_from_canonical_order(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, step_count = ?",
+            ("20260830T230000Z", 1),
+        )
+        conn.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('newer-extended', '', '', 9, '2026-09-01T00:00:00Z',
+                       '[]', 'idle', 'antigravity', '', '', '', 0, 0,
+                       '2026-09-01T00:00:00Z', 0, '')"""
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    steps = [row["step_count"] for row in result["records"]]
+    assert 9 in steps
+    assert 1 not in steps
+
+
+def test_workspace_pass_rejects_changed_source_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    _summary_db(home)
+    real = ag_history._open_summary_db
+    calls = {"n": 0}
+
+    @contextmanager
+    def wrap(path: Path):
+        calls["n"] += 1
+        with real(path) as (connection, identity):
+            if calls["n"] > 1:
+                identity = (identity[0] + 1, *identity[1:])
+            yield connection, identity
+
+    monkeypatch.setattr(ag_history, "_open_summary_db", wrap)
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["pin"] == "unstable_source"
+    assert result["records"] == []
 
 
 def test_offset_timestamps_are_excluded_from_sortable_utc_order(

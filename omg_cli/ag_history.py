@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 from contextlib import contextmanager
@@ -66,6 +67,9 @@ _REQUIRED_SUMMARY_COLUMNS = frozenset(
 # Declaring any of these names shadows SQLite's integer rowid aliases and
 # makes ORDER BY / blobopen rowid resolve to user data instead of the key.
 _ROWID_ALIAS_COLUMNS = frozenset({"rowid", "_rowid_", "oid"})
+_CANONICAL_UTC = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+)
 class AgHistoryError(ValueError):
     """AG history probe failed closed without mutating anything."""
 
@@ -456,7 +460,7 @@ def _descriptor_path(descriptor: int) -> str:
 
 
 @contextmanager
-def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
+def _open_summary_db(path: Path) -> Iterator[tuple[sqlite3.Connection, _FileIdentity]]:
     """Open a pinned source descriptor as immutable SQLite.
 
     A non-empty WAL is skipped explicitly. Native read-only SQLite may write
@@ -496,7 +500,7 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only = ON")
         connection.execute("BEGIN")
-        yield connection
+        yield connection, identity
         if _file_identity(os.fstat(database_fd)) != identity:
             raise AgHistoryError(
                 "Antigravity summary changed while reading",
@@ -547,8 +551,8 @@ def _read_workspace_uris(
 
 def _import_summary_db(
     path: Path, *, remaining: int
-) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
-    with _open_summary_db(path) as connection:
+) -> tuple[int, list[tuple[int, dict[str, Any]]], _FileIdentity]:
+    with _open_summary_db(path) as (connection, identity):
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if user_version != SQLITE_SUMMARY_VERSION:
             raise AgHistoryError(
@@ -573,11 +577,6 @@ def _import_summary_db(
             """EXPLAIN QUERY PLAN
                SELECT rowid
                  FROM conversation_summaries
-                WHERE typeof(last_modified_time) = 'text'
-                  AND (
-                        last_modified_time LIKE '%Z'
-                     OR last_modified_time LIKE '%+00:00'
-                  )
              ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
             (remaining,),
@@ -620,17 +619,15 @@ def _import_summary_db(
                            THEN last_user_input_step_index ELSE -1 END
                         AS last_user_input_step_index
                  FROM conversation_summaries
-                WHERE typeof(last_modified_time) = 'text'
-                  AND (
-                        last_modified_time LIKE '%Z'
-                     OR last_modified_time LIKE '%+00:00'
-                  )
              ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
             (remaining,),
         )
         imported: list[tuple[int, dict[str, Any]]] = []
         for row in rows:
+            raw_modified = row["last_modified_time"]
+            if not isinstance(raw_modified, str) or _CANONICAL_UTC.match(raw_modified) is None:
+                continue
             try:
                 summary_rowid = int(row["summary_rowid"])
             except (TypeError, ValueError, OverflowError) as exc:
@@ -641,7 +638,7 @@ def _import_summary_db(
             imported.append(
                 (summary_rowid, _public_row(row, workspace_uris=None))
             )
-    return user_version, imported
+    return user_version, imported, identity
 
 
 def _empty_result() -> dict[str, Any]:
@@ -693,13 +690,13 @@ def inspect_ag_history(
     saw_changed = False
     saw_platform = False
     saw_unbounded = False
-    pending: list[tuple[Path, int, dict[str, Any]]] = []
+    pending: list[tuple[Path, int, dict[str, Any], _FileIdentity]] = []
 
     for path in databases:
         location = {"kind": "sqlite_summary", "name": _SUMMARY_DB}
         locations.append(location)
         try:
-            version, imported = _import_summary_db(
+            version, imported, source_identity = _import_summary_db(
                 path,
                 remaining=MAX_AG_HISTORY_RECORDS,
             )
@@ -763,7 +760,7 @@ def inspect_ag_history(
         version_label = f"sqlite-summary-v{version}"
         versions.append(version_label)
         location["version"] = version_label
-        pending.extend((path, rowid, row) for rowid, row in imported)
+        pending.extend((path, rowid, row, source_identity) for rowid, row in imported)
 
     pending.sort(
         key=lambda item: str(item[2].get("last_modified_time") or ""),
@@ -771,20 +768,26 @@ def inspect_ag_history(
     )
     pending = pending[:MAX_AG_HISTORY_RECORDS]
     workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
-    by_path: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    by_path: dict[str, list[tuple[int, dict[str, Any], _FileIdentity]]] = {}
     order: list[str] = []
-    for path, rowid, row in pending:
+    for path, rowid, row, source_identity in pending:
         key = os.path.abspath(os.fspath(path))
         if key not in by_path:
             order.append(key)
             by_path[key] = []
-        by_path[key].append((rowid, row))
+        by_path[key].append((rowid, row, source_identity))
     filled: dict[tuple[str, int], dict[str, Any]] = {}
     for key in order:
         path = Path(key)
+        expected_identity = by_path[key][0][2]
         try:
-            with _open_summary_db(path) as connection:
-                for rowid, row in by_path[key]:
+            with _open_summary_db(path) as (connection, identity):
+                if identity != expected_identity:
+                    raise AgHistoryError(
+                        "Antigravity summary changed while reading",
+                        code="E_AG_HISTORY_CHANGED",
+                    )
+                for rowid, row, _identity in by_path[key]:
                     workspace_uris, workspace_budget = _read_workspace_uris(
                         connection,
                         rowid=rowid,
@@ -798,13 +801,24 @@ def inspect_ag_history(
                     filled[(key, rowid)] = {
                         k: v for k, v in updated.items() if v is not None
                     }
-        except AgHistoryError:
-            for rowid, row in by_path[key]:
+        except AgHistoryError as exc:
+            if exc.code == "E_AG_HISTORY_CHANGED":
+                saw_changed = True
+                diagnostics.append(
+                    {"source": _SUMMARY_DB, "reason": "sqlite_source_changed"}
+                )
+                records = []
+                break
+            for rowid, row, _identity in by_path[key]:
                 filled[(key, rowid)] = row
         except (OSError, sqlite3.DatabaseError):
-            for rowid, row in by_path[key]:
+            for rowid, row, _identity in by_path[key]:
                 filled[(key, rowid)] = row
-    records = [filled[(os.path.abspath(os.fspath(path)), rowid)] for path, rowid, _row in pending]
+    else:
+        records = [
+            filled[(os.path.abspath(os.fspath(path)), rowid)]
+            for path, rowid, _row, _identity in pending
+        ]
 
     # Preserve classification for older marker-only layouts without reading
     # transcript-like files inside them.
@@ -818,7 +832,7 @@ def inspect_ag_history(
             versions.append(label)
         saw_unknown = True
 
-    if opened:
+    if opened and not saw_changed:
         pin = f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"
         reason = "supported_summary_imported"
     elif saw_unsafe:
@@ -852,8 +866,8 @@ def inspect_ag_history(
     return {
         "schema_version": AG_HISTORY_SCHEMA,
         "present": bool(databases or legacy_locations),
-        "supported": opened > 0,
-        "imported": opened > 0,
+        "supported": opened > 0 and not saw_changed,
+        "imported": opened > 0 and not saw_changed,
         "mutated": False,
         "read_only": True,
         "pin": pin,
@@ -866,7 +880,7 @@ def inspect_ag_history(
         "content_fields_read": False,
         "raw_content": False,
         "private_content": False,
-        "live_import": opened > 0,
+        "live_import": opened > 0 and not saw_changed,
     }
 
 
