@@ -465,6 +465,35 @@ def test_boolean_schema_version_is_rejected(tmp_path: Path) -> None:
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
 
 
+def test_conflicting_schema_version_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "schema-alias-conflict.json",
+        schemaVersion=1,
+        schema_version=2,
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_conflicting_route_digest_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "route-digest-alias-conflict.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": "review-primary-example",
+                "routeDigest": "a" * 64,
+                "route_digest": "b" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
 def test_claimed_sentinel_is_not_a_supported_version(tmp_path: Path) -> None:
     inspect = _write_inspect(
         tmp_path / "claimed.json",

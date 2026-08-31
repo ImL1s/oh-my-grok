@@ -74,17 +74,31 @@ _BOUNDED_ENV_KEYS: Final[frozenset[str]] = frozenset(
         "FAKE_GROK_ECHO_PROMPT",
     }
 )
+_AUTH_ENV_KEYS: Final[frozenset[str]] = frozenset(
+    {"GROK_API_KEY", "XAI_API_KEY", "OMG_GROK_API_KEY"}
+)
 
 
-def _bounded_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+def _bounded_env(
+    extra: Mapping[str, str] | None = None,
+    *,
+    include_auth: bool = False,
+) -> dict[str, str]:
+    """Build a narrow process environment.
+
+    Authentication is opt-in so identity/version probes never receive live
+    provider credentials. Only the actual provider run enables it.
+    """
+
+    allowed = _BOUNDED_ENV_KEYS if include_auth else _BOUNDED_ENV_KEYS - _AUTH_ENV_KEYS
     env: dict[str, str] = {}
-    for key in _BOUNDED_ENV_KEYS:
+    for key in allowed:
         val = os.environ.get(key)
         if val is not None:
             env[key] = val
     if extra:
         for key, val in extra.items():
-            if key in _BOUNDED_ENV_KEYS:
+            if key in allowed:
                 env[key] = val
     return env
 
@@ -238,7 +252,7 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
     try:
         proc = run_provider_process(
             argv,
-            env=_bounded_env(request.env),
+            env=_bounded_env(request.env, include_auth=True),
             timeout_s=float(request.timeout_s),
             max_output_bytes=request.max_output_bytes or DEFAULT_RUN_MAX_OUTPUT_BYTES,
             cancel_event=request.cancel_event,
