@@ -1144,6 +1144,26 @@ def _atomic_nofollow_write(path: Path, data: bytes) -> None:
 
 
 _FRONTMATTER_VALUE_MAX = 64
+_FRONTMATTER_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_YAML_DOUBLE_KEY_ESCAPES = {
+    "0": "\0",
+    "a": "\a",
+    "b": "\b",
+    "t": "\t",
+    "n": "\n",
+    "v": "\v",
+    "f": "\f",
+    "r": "\r",
+    "e": "\x1b",
+    " ": " ",
+    '"': '"',
+    "/": "/",
+    "\\": "\\",
+    "N": "\u0085",
+    "_": "\u00a0",
+    "L": "\u2028",
+    "P": "\u2029",
+}
 
 
 def strip_markdown_frontmatter(text: str) -> str:
@@ -1154,6 +1174,54 @@ def strip_markdown_frontmatter(text: str) -> str:
     if len(parts) >= 3:
         return parts[2].strip()
     return text.strip()
+
+
+def _decode_double_quoted_yaml_key(value: str, *, agent_id: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        escape = value[index]
+        if escape in _YAML_DOUBLE_KEY_ESCAPES:
+            decoded.append(_YAML_DOUBLE_KEY_ESCAPES[escape])
+            index += 1
+            continue
+        digits = {"x": 2, "u": 4, "U": 8}.get(escape)
+        if digits is None:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        start = index + 1
+        stop = start + digits
+        token = value[start:stop]
+        if len(token) != digits or re.fullmatch(r"[0-9A-Fa-f]+", token) is None:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        try:
+            decoded.append(chr(int(token, 16)))
+        except (OverflowError, ValueError) as exc:
+            raise AgentsCatalogError(
+                f"{agent_id}: malformed YAML frontmatter key"
+            ) from exc
+        index = stop
+    return "".join(decoded)
+
+
+def _semantic_frontmatter_key(raw_key: str, *, agent_id: str) -> str:
+    key = raw_key.strip()
+    if len(key) >= 2 and key[0] == key[-1] == "'":
+        key = key[1:-1].replace("''", "'")
+    elif len(key) >= 2 and key[0] == key[-1] == '"':
+        key = _decode_double_quoted_yaml_key(key[1:-1], agent_id=agent_id)
+    elif key[:1] in {"'", '"'} or key[-1:] in {"'", '"'}:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+    if _FRONTMATTER_KEY_RE.fullmatch(key) is None:
+        raise AgentsCatalogError(f"{agent_id}: unsupported YAML frontmatter key")
+    return key
 
 
 def _parse_agent_frontmatter(
@@ -1184,16 +1252,7 @@ def _parse_agent_frontmatter(
         if ":" not in line:
             raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
         key, raw_value = line.split(":", 1)
-        key = key.strip()
-        if not key:
-            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
-        if (
-            len(key) >= 2
-            and key[0] == key[-1]
-            and key[0] in {"'", '"'}
-            and key[1:-1] == "tools"
-        ):
-            key = "tools"
+        key = _semantic_frontmatter_key(key, agent_id=agent_id)
         scalar = raw_value.strip()
         if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
             scalar = scalar[1:-1]
@@ -1284,9 +1343,13 @@ def antigravity_tools_for(record: AgentRecord) -> tuple[str, ...]:
 
 
 def _is_top_level_frontmatter_key(line: str, *, key: str) -> bool:
-    escaped = re.escape(key)
-    pattern = r"(?:%s|'%s'|\"%s\")\s*:.*" % (escaped, escaped, escaped)
-    return re.fullmatch(pattern, line) is not None
+    if line[:1].isspace() or ":" not in line:
+        return False
+    raw_key, _raw_value = line.split(":", 1)
+    try:
+        return _semantic_frontmatter_key(raw_key, agent_id="agent") == key
+    except AgentsCatalogError:
+        return False
 
 
 def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] | None:
