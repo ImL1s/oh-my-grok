@@ -1255,6 +1255,12 @@ def antigravity_tools_for(record: AgentRecord) -> tuple[str, ...]:
     return tuple(tools)
 
 
+def _is_top_level_frontmatter_key(line: str, *, key: str) -> bool:
+    escaped = re.escape(key)
+    pattern = r"(?:%s|'%s'|\"%s\")\s*:.*" % (escaped, escaped, escaped)
+    return re.fullmatch(pattern, line) is not None
+
+
 def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] | None:
     """Read one top-level YAML list from fenced agent frontmatter."""
 
@@ -1271,12 +1277,14 @@ def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] 
     starts = [
         index
         for index, line in enumerate(lines[1:end], start=1)
-        if line == f"{key}:"
+        if _is_top_level_frontmatter_key(line, key=key)
     ]
     if len(starts) > 1:
         raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter {key} keys")
     if not starts:
         return None
+    if lines[starts[0]] != f"{key}:":
+        raise AgentsCatalogError(f"{agent_id}: malformed frontmatter {key} list")
     start = starts[0] + 1
     values: list[str] = []
     for line in lines[start:end]:
@@ -1307,7 +1315,7 @@ def render_antigravity_agent_tools(record: AgentRecord, source_text: str) -> str
 
     blocks: list[tuple[int, int]] = []
     for index in range(1, end):
-        if re.fullmatch(r"tools\s*:.*", lines[index]):
+        if _is_top_level_frontmatter_key(lines[index], key="tools"):
             block_end = index + 1
             while block_end < end and lines[block_end].startswith((" ", "\t")):
                 block_end += 1
