@@ -10,12 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import stat
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import quote
 
 
@@ -62,9 +62,6 @@ _REQUIRED_SUMMARY_COLUMNS = frozenset(
         "app_data_dir",
     }
 )
-_SAFE_LABEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,64}$")
-
-
 class AgHistoryError(ValueError):
     """AG history probe failed closed without mutating anything."""
 
@@ -175,12 +172,6 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int, fallback: int) -> in
     return max(minimum, min(parsed, maximum))
 
 
-def _safe_label(value: object) -> str | None:
-    if not isinstance(value, str) or not _SAFE_LABEL.fullmatch(value):
-        return None
-    return value
-
-
 def _safe_timestamp(value: object) -> str | None:
     if not isinstance(value, str) or len(value) > 64:
         return None
@@ -241,9 +232,11 @@ def _public_row(
         ),
         "last_modified_time": _safe_timestamp(row["last_modified_time"]),
         "last_user_input_time": _safe_timestamp(row["last_user_input_time"]),
-        "status": _safe_label(row["status"]),
-        "source": _safe_label(row["source"]),
-        "agent_name": _safe_label(row["agent_name"]),
+        "status_hash": _hash_descriptor(row["status"], namespace="ag-status"),
+        "source_hash": _hash_descriptor(row["source"], namespace="ag-source"),
+        "agent_name_hash": _hash_descriptor(
+            row["agent_name"], namespace="ag-agent-name"
+        ),
         "killed": bool(row["killed"]),
         "workspace_count": workspace_count,
         "workspace_hashes": workspace_hashes,
@@ -251,66 +244,196 @@ def _public_row(
     return {key: value for key, value in result.items() if value is not None}
 
 
-def _safe_path_identity(path: Path) -> tuple[tuple[int, int, int], ...]:
-    """Validate every existing path component and return a stable identity chain."""
+_FileIdentity = tuple[int, int, int, int, int, int, int]
 
+
+def _file_identity(info: os.stat_result) -> _FileIdentity:
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        stat.S_IFMT(info.st_mode),
+        int(info.st_nlink),
+        int(info.st_size),
+        int(info.st_mtime_ns),
+        int(info.st_ctime_ns),
+    )
+
+
+def _descriptor_open_ready() -> bool:
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and bool(os.supports_dir_fd)
+        and os.open in os.supports_dir_fd
+    )
+
+
+def _open_summary_parent(path: Path) -> tuple[list[int], int, str]:
+    """Pin every POSIX ancestor with ``openat`` and ``O_NOFOLLOW``.
+
+    Python's sqlite3 API accepts paths, not Windows handles.  Rather than
+    validate a Windows junction and then race a second pathname open, the
+    importer fails closed on hosts without POSIX descriptor-relative opens.
+    """
+
+    if not _descriptor_open_ready():
+        raise AgHistoryError(
+            "secure Antigravity SQLite open is unavailable",
+            code="E_AG_HISTORY_PLATFORM",
+        )
     absolute = Path(os.path.abspath(os.fspath(path)))
-    current = Path(absolute.anchor)
-    identities: list[tuple[int, int, int]] = []
+    parts = absolute.parts
+    if len(parts) < 2 or not absolute.name:
+        raise AgHistoryError(
+            "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
+        )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
     try:
-        for part in absolute.parts[1:]:
-            current /= part
-            info = current.lstat()
-            if stat.S_ISLNK(info.st_mode):
-                raise AgHistoryError(
-                    "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
-                )
-            identities.append(
-                (int(info.st_dev), int(info.st_ino), stat.S_IFMT(info.st_mode))
-            )
-    except AgHistoryError:
-        raise
+        current = os.open(absolute.anchor, directory_flags)
+        descriptors.append(current)
+        for part in parts[1:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            descriptors.append(current)
+        return descriptors, current, parts[-1]
     except OSError as exc:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
         raise AgHistoryError(
             "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
         ) from exc
-    if not identities or not stat.S_ISREG(identities[-1][2]):
-        raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
-    return tuple(identities)
 
 
-def _validate_optional_sqlite_sidecar(path: Path) -> None:
+def _probe_sidecar(parent_fd: int, name: str) -> bool:
+    """Return whether a regular SQLite sidecar exists without following it."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     try:
-        path.lstat()
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
-        return
+        return False
     except OSError as exc:
         raise AgHistoryError(
             "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
         ) from exc
-    _safe_path_identity(path)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise AgHistoryError(
+                "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
+            )
+        return True
+    finally:
+        os.close(descriptor)
 
 
-def _open_summary_db(path: Path) -> sqlite3.Connection:
-    """Open a component-safe SQLite database in native read-only mode.
+def _assert_leaf_identity(parent_fd: int, name: str, expected: _FileIdentity) -> None:
+    """Prove the pinned inode is still published at its original leaf name."""
 
-    Unlike immutable mode, mode=ro participates in SQLite's normal WAL
-    snapshot handling and cannot silently ignore committed rows that still
-    live in the host's WAL file.
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise AgHistoryError(
+            "Antigravity summary path changed while reading",
+            code="E_AG_HISTORY_CHANGED",
+        ) from exc
+    try:
+        if _file_identity(os.fstat(descriptor)) != expected:
+            raise AgHistoryError(
+                "Antigravity summary path changed while reading",
+                code="E_AG_HISTORY_CHANGED",
+            )
+    finally:
+        os.close(descriptor)
+
+
+def _descriptor_path(descriptor: int) -> str:
+    for root in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(root):
+            return f"{root}/{descriptor}"
+    raise AgHistoryError(
+        "secure Antigravity SQLite descriptor path is unavailable",
+        code="E_AG_HISTORY_PLATFORM",
+    )
+
+
+@contextmanager
+def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a pinned source descriptor as immutable SQLite.
+
+    Active WAL/SHM state is skipped explicitly. Native read-only SQLite may
+    write reader marks into the host ``-shm`` file, while immutable mode
+    intentionally ignores WAL.  Failing closed is therefore the only stdlib
+    sqlite3 option that is both honest and source-non-mutating.
     """
 
-    before = _safe_path_identity(path)
-    _validate_optional_sqlite_sidecar(Path(f"{path}-wal"))
-    _validate_optional_sqlite_sidecar(Path(f"{path}-shm"))
-    uri = f"file:{quote(os.path.abspath(os.fspath(path)), safe='/')}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
-    if _safe_path_identity(path) != before:
-        connection.close()
-        raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only = ON")
-    connection.execute("BEGIN")
-    return connection
+    descriptors, parent_fd, name = _open_summary_parent(path)
+    database_fd: int | None = None
+    connection: sqlite3.Connection | None = None
+    wal_name = f"{name}-wal"
+    shm_name = f"{name}-shm"
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        try:
+            database_fd = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise AgHistoryError(
+                "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
+            ) from exc
+        before = os.fstat(database_fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise AgHistoryError(
+                "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
+            )
+        identity = _file_identity(before)
+        if _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(parent_fd, shm_name):
+            raise AgHistoryError(
+                "active Antigravity WAL state cannot be imported without mutation",
+                code="E_AG_HISTORY_WAL_ACTIVE",
+            )
+        descriptor_path = _descriptor_path(database_fd)
+        uri = f"file:{quote(descriptor_path, safe='/')}?mode=ro&immutable=1"
+        connection = sqlite3.connect(uri, uri=True)
+        if _file_identity(os.fstat(database_fd)) != identity:
+            raise AgHistoryError(
+                "Antigravity summary changed while opening",
+                code="E_AG_HISTORY_CHANGED",
+            )
+        sidecar_present = _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(
+            parent_fd, shm_name
+        )
+        _assert_leaf_identity(parent_fd, name, identity)
+        if sidecar_present:
+            raise AgHistoryError(
+                "active Antigravity WAL state cannot be imported without mutation",
+                code="E_AG_HISTORY_WAL_ACTIVE",
+            )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        yield connection
+        if _file_identity(os.fstat(database_fd)) != identity:
+            raise AgHistoryError(
+                "Antigravity summary changed while reading",
+                code="E_AG_HISTORY_CHANGED",
+            )
+        sidecar_present = _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(
+            parent_fd, shm_name
+        )
+        _assert_leaf_identity(parent_fd, name, identity)
+        if sidecar_present:
+            raise AgHistoryError(
+                "active Antigravity WAL state cannot be imported without mutation",
+                code="E_AG_HISTORY_WAL_ACTIVE",
+            )
+    finally:
+        if connection is not None:
+            connection.close()
+        if database_fd is not None:
+            os.close(database_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _import_summary_db(
@@ -439,6 +562,9 @@ def inspect_ag_history(
     saw_corrupt = False
     saw_unsafe = False
     saw_unknown = False
+    saw_busy = False
+    saw_changed = False
+    saw_platform = False
     workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
 
     for path in databases:
@@ -455,6 +581,27 @@ def inspect_ag_history(
                 saw_unsafe = True
                 diagnostics.append(
                     {"source": _SUMMARY_DB, "reason": "unsafe_path_skipped"}
+                )
+            elif exc.code == "E_AG_HISTORY_WAL_ACTIVE":
+                saw_busy = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "live_wal_readonly_unsupported",
+                    }
+                )
+            elif exc.code == "E_AG_HISTORY_CHANGED":
+                saw_changed = True
+                diagnostics.append(
+                    {"source": _SUMMARY_DB, "reason": "sqlite_source_changed"}
+                )
+            elif exc.code == "E_AG_HISTORY_PLATFORM":
+                saw_platform = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "secure_sqlite_open_unavailable",
+                    }
                 )
             else:
                 saw_unknown = True
@@ -493,6 +640,15 @@ def inspect_ag_history(
     elif saw_unsafe:
         pin = "unsafe_path"
         reason = "ag_history_path_rejected"
+    elif saw_busy:
+        pin = "active_wal"
+        reason = "ag_history_live_wal_skipped"
+    elif saw_changed:
+        pin = "unstable_source"
+        reason = "ag_history_source_changed"
+    elif saw_platform:
+        pin = "unsupported_platform"
+        reason = "ag_history_secure_open_unavailable"
     elif saw_corrupt:
         pin = "corrupt"
         reason = "ag_history_corrupt_skipped"

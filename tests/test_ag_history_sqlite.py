@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -96,6 +97,8 @@ def test_imports_supported_summary_db_without_private_content(tmp_path: Path) ->
     assert row["step_count"] == 12
     assert row["workspace_count"] == 1
     assert row["external_id_hash"] != "conversation-secret-id"
+    assert set(row) >= {"status_hash", "source_hash", "agent_name_hash"}
+    assert not ({"status", "source", "agent_name"} & set(row))
     dumped = json.dumps(result)
     for private in (
         "RAW PRIVATE TITLE",
@@ -176,7 +179,7 @@ def test_summary_parent_symlink_is_never_followed(tmp_path: Path) -> None:
     assert result["pin"] == "unsafe_path"
 
 
-def test_live_wal_rows_are_read_without_mutating_database_files(tmp_path: Path) -> None:
+def test_live_wal_is_skipped_without_mutating_database_files(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)
     writer = sqlite3.connect(db)
@@ -195,24 +198,208 @@ def test_live_wal_rows_are_read_without_mutating_database_files(tmp_path: Path) 
         )
         writer.commit()
         wal = Path(f"{db}-wal")
+        shm = Path(f"{db}-shm")
         assert wal.is_file() and wal.stat().st_size > 0
+        assert shm.is_file() and shm.stat().st_size > 0
         before = {
-            path.name: (path.read_bytes(), os.stat(path).st_mtime_ns)
-            for path in (db, wal)
+            path.name: (
+                path.read_bytes(),
+                os.stat(path).st_size,
+                os.stat(path).st_mode,
+                os.stat(path).st_mtime_ns,
+                os.stat(path).st_ctime_ns,
+            )
+            for path in (db, wal, shm)
         }
 
         result = inspect_ag_history(tmp_path / "project", home=home)
 
-        assert result["imported"] is True
-        assert result["record_count"] == 2
-        assert any(row["step_count"] == 3 for row in result["records"])
+        assert result["imported"] is False
+        assert result["record_count"] == 0
+        assert result["pin"] == "active_wal"
+        assert result["reason"] == "ag_history_live_wal_skipped"
+        assert result["diagnostics"] == [
+            {
+                "source": "conversation_summaries.db",
+                "reason": "live_wal_readonly_unsupported",
+            }
+        ]
         after = {
-            path.name: (path.read_bytes(), os.stat(path).st_mtime_ns)
-            for path in (db, wal)
+            path.name: (
+                path.read_bytes(),
+                os.stat(path).st_size,
+                os.stat(path).st_mode,
+                os.stat(path).st_mtime_ns,
+                os.stat(path).st_ctime_ns,
+            )
+            for path in (db, wal, shm)
         }
         assert after == before
     finally:
         writer.close()
+
+
+def test_custom_summary_labels_are_hashed_not_disclosed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    secret = "customer-acme-secret"
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE conversation_summaries SET status = ?, source = ?, agent_name = ?",
+            (secret, secret, secret),
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    row = result["records"][0]
+    assert secret not in json.dumps(result)
+    assert not ({"status", "source", "agent_name"} & set(row))
+    assert row["status_hash"] != row["source_hash"]
+    assert row["source_hash"] != row["agent_name_hash"]
+
+
+def test_sqlite_sidecar_symlink_is_rejected(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    target = tmp_path / "outside-wal"
+    target.write_bytes(b"private")
+    Path(f"{db}-wal").symlink_to(target)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["pin"] == "unsafe_path"
+    assert result["diagnostics"] == [
+        {"source": "conversation_summaries.db", "reason": "unsafe_path_skipped"}
+    ]
+
+
+def test_source_change_during_read_discards_all_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    original = ag_history._public_row
+
+    def _row_then_change(
+        row: sqlite3.Row, *, workspace_uris: str | None
+    ) -> dict[str, Any]:
+        public = original(row, workspace_uris=workspace_uris)
+        info = db.stat()
+        with db.open("r+b") as stream:
+            stream.seek(68)
+            current = stream.read(1)
+            assert current
+            stream.seek(68)
+            stream.write(bytes([current[0] ^ 1]))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.utime(db, ns=(info.st_atime_ns, info.st_mtime_ns))
+        assert db.stat().st_size == info.st_size
+        assert db.stat().st_mtime_ns == info.st_mtime_ns
+        return public
+
+    monkeypatch.setattr(ag_history, "_public_row", _row_then_change)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["record_count"] == 0
+    assert result["pin"] == "unstable_source"
+    assert result["reason"] == "ag_history_source_changed"
+    assert result["diagnostics"] == [
+        {"source": "conversation_summaries.db", "reason": "sqlite_source_changed"}
+    ]
+
+
+def test_rotated_database_with_active_wal_discards_all_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    assert not Path(f"{db}-wal").exists()
+    rotated = db.with_name("rotated.db")
+    original = ag_history._public_row
+    writers: list[sqlite3.Connection] = []
+
+    def _row_then_rotate(
+        row: sqlite3.Row, *, workspace_uris: str | None
+    ) -> dict[str, Any]:
+        public = original(row, workspace_uris=workspace_uris)
+        db.rename(rotated)
+        writer = sqlite3.connect(rotated)
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            "UPDATE conversation_summaries SET step_count = step_count + 1"
+        )
+        writer.commit()
+        assert Path(f"{rotated}-wal").is_file()
+        writers.append(writer)
+        return public
+
+    monkeypatch.setattr(ag_history, "_public_row", _row_then_rotate)
+    try:
+        result = inspect_ag_history(tmp_path / "project", home=home)
+    finally:
+        for writer in writers:
+            writer.close()
+
+    assert result["imported"] is False
+    assert result["record_count"] == 0
+    assert result["pin"] == "unstable_source"
+    assert result["diagnostics"] == [
+        {"source": "conversation_summaries.db", "reason": "sqlite_source_changed"}
+    ]
+
+
+def test_wal_appearing_during_read_discards_all_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    original = ag_history._public_row
+
+    def _row_then_create_wal(
+        row: sqlite3.Row, *, workspace_uris: str | None
+    ) -> dict[str, Any]:
+        public = original(row, workspace_uris=workspace_uris)
+        Path(f"{db}-wal").write_bytes(b"active")
+        return public
+
+    monkeypatch.setattr(ag_history, "_public_row", _row_then_create_wal)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["record_count"] == 0
+    assert result["pin"] == "active_wal"
+    assert result["diagnostics"] == [
+        {
+            "source": "conversation_summaries.db",
+            "reason": "live_wal_readonly_unsupported",
+        }
+    ]
+
+
+def test_secure_descriptor_open_unavailable_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    _summary_db(home)
+    monkeypatch.setattr(ag_history, "_descriptor_open_ready", lambda: False)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["pin"] == "unsupported_platform"
+    assert result["diagnostics"] == [
+        {
+            "source": "conversation_summaries.db",
+            "reason": "secure_sqlite_open_unavailable",
+        }
+    ]
 
 
 def test_legacy_version_marker_content_is_never_disclosed(tmp_path: Path) -> None:
