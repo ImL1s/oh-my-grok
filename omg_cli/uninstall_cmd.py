@@ -966,6 +966,8 @@ def _run_uninstall_locked(
     # `uninstalled` receipt alongside a journal that will restore the install.
     if durable_grok_tx.is_file():
         durable_grok_tx.unlink()
+        if durable_grok_tx.parent.is_dir():
+            _fsync_parent(durable_grok_tx.parent)
 
     if agy_home_for_finalize is not None:
         from omg_cli.antigravity_install import finalize_owned_uninstall

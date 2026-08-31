@@ -38,7 +38,9 @@ from omg_cli.install_manifest import (
     load_manifest,
     path_is_under,
     persist_manifest,
+    project_manifest_path,
     upsert_manifest_artifacts,
+    user_manifest_path,
     user_store,
 )
 from omg_cli.project_root import path_is_under as resolved_path_is_under
@@ -872,6 +874,19 @@ def plan_owned_uninstall(
     uninstall_roots.append(ag_plugin)
     uninstall_tuple = tuple(uninstall_roots)
     allowed_global_ids = frozenset({"user.grok.hook", "user.grok.rules"})
+    planned_plugin_references: set[str] = set()
+    for _scope, doc, _root in documents:
+        if not any(
+            isinstance(row, dict) and str(row.get("id") or "") == "user.ag.plugin"
+            for row in (doc.get("artifacts") or [])
+        ):
+            continue
+        if _scope == "user":
+            planned_plugin_references.add(str(user_manifest_path().absolute()))
+        elif _root is not None:
+            planned_plugin_references.add(
+                str(project_manifest_path(Path(_root)).absolute())
+            )
     remove: list[dict[str, Any]] = []
     remove_external: list[dict[str, Any]] = []
     release_external_references: list[dict[str, Any]] = []
@@ -931,8 +946,6 @@ def plan_owned_uninstall(
                 )
                 continue
             if ident == "user.ag.plugin":
-                from omg_cli.install_manifest import project_manifest_path, user_manifest_path
-
                 reference_path = (
                     user_manifest_path()
                     if _scope == "user"
@@ -981,13 +994,20 @@ def plan_owned_uninstall(
                         expected_mcp_registry_identity=mcp_registry_identity,
                     )
                 )
+                receipt_refs = {
+                    str(item) for item in references if isinstance(item, str)
+                }
+                covers_all_owners = bool(receipt_refs) and (
+                    receipt_refs <= planned_plugin_references
+                )
                 central_reference_authorizes = bool(
-                    str(reference_path) in references and len(set(references)) == 1
+                    str(reference_path) in references
+                    and (len(set(references)) == 1 or covers_all_owners)
                 )
                 if (
-                    _scope == "project"
-                    and str(reference_path) in references
+                    str(reference_path) in references
                     and len(set(references)) > 1
+                    and not covers_all_owners
                     and isinstance(registry_identity, str)
                     and isinstance(mcp_registry_identity, str)
                     and actual_digest == claimed
@@ -1021,6 +1041,10 @@ def plan_owned_uninstall(
                     )
                 ):
                     preserve.append({"id": ident, "path": str(target), "reason": "hash-drift"})
+                    continue
+                if any(
+                    str(existing.get("path")) == str(target) for existing in remove_external
+                ):
                     continue
                 remove_external.append(
                     {

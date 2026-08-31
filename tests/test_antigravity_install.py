@@ -506,6 +506,50 @@ def test_user_manifest_centrally_owns_and_uninstalls_antigravity_plugin(
     assert not (home / ".gemini/config/plugins/oh-my-grok").exists()
 
 
+def test_user_uninstall_preserves_plugin_when_project_reference_remains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="user",
+        project_root=None,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=project,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    from omg_cli.install_migrate import plan_owned_uninstall
+
+    plan = plan_owned_uninstall(project_root=None, include_user_manifest=True)
+    assert plan["remove_external"] == []
+    assert len(plan["release_external_references"]) == 1
+    assert (
+        run_uninstall(
+            yes=True,
+            include_user_manifest=True,
+            project_root=None,
+            home=home / ".grok",
+        )
+        == 0
+    )
+    assert (home / ".gemini/config/plugins/oh-my-grok").is_dir()
+    receipt = load_ownership_receipt(home)
+    assert receipt is not None
+    assert receipt["references"] == [
+        str((project / ".omg/install/manifest.json").absolute())
+    ]
+
+
 def test_manifest_preserves_drifted_antigravity_plugin_on_uninstall(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1073,7 +1117,7 @@ def test_registry_directory_occupant_is_rejected_before_snapshot(
 def test_uninstall_plan_omits_reference_releases_when_removing_plugin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _install_fake_agy(tmp_path, monkeypatch)
+    home = _install_fake_agy(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     run_scoped_setup(
@@ -1098,8 +1142,19 @@ def test_uninstall_plan_omits_reference_releases_when_removing_plugin(
         project_root=project,
         include_user_manifest=True,
     )
-    assert plan["remove_external"]
+    assert len(plan["remove_external"]) == 1
     assert plan["release_external_references"] == []
+    assert (
+        run_uninstall(
+            yes=True,
+            include_user_manifest=True,
+            project_root=project,
+            home=home / ".grok",
+        )
+        == 0
+    )
+    assert not (home / ".gemini/config/plugins/oh-my-grok").exists()
+    assert load_ownership_receipt(home) is None
 
 
 def test_unreceipted_exact_import_is_refused(

@@ -541,6 +541,34 @@ def test_receipt_owned_uninstall_preserves_user_rules_and_project_state(tmp_path
     assert run_uninstall(yes=True, runner=host, home=grok_home) == 0
 
 
+def test_receipt_uninstall_fsyncs_journal_parent_after_unlink(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    host = _InstalledHost()
+    install_package(
+        ROOT,
+        home=home,
+        grok_home=grok_home,
+        runner=host,
+        doctor_probe=_doctor_ok,
+        mode="development",
+    )
+    journal_parent = grok_home / "omg"
+    synced: list[Path] = []
+    real = __import__("omg_cli.uninstall_cmd", fromlist=["_fsync_parent"])._fsync_parent
+
+    def capture(path: Path) -> None:
+        synced.append(path)
+        real(path)
+
+    monkeypatch.setattr("omg_cli.uninstall_cmd._fsync_parent", capture)
+    assert run_uninstall(yes=True, runner=host, home=grok_home) == 0
+    assert journal_parent in synced
+    assert not (journal_parent / "uninstall-current.json").exists()
+
+
 def test_receipt_uninstall_refuses_drifted_managed_guidance_before_host_mutation(
     tmp_path,
     monkeypatch,
