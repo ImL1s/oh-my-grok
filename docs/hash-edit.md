@@ -9,8 +9,9 @@ A caller may claim the hash-anchored protocol was used only after
 `apply_hash_edit` returns a `HashEditApplyResultV1` (including via
 `omg edit apply`). Constructing that dataclass by hand is not proof.
 
-Refs #76. This slice does not close the issue: there is still no
-`omo.edit.hash_anchored` host parity.
+The shipped CLI/library surfaces satisfy issue #76's documented acceptance
+criteria. Host-native intercept parity remains explicitly out of scope: only
+edits that pass this protocol may claim hash anchoring.
 
 ## Surfaces
 
