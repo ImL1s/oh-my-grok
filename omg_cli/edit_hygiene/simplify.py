@@ -54,7 +54,6 @@ from omg_cli.jobs.ownership import (
     child_identities,
     merge_identity,
     probe_identity_liveness,
-    same_occupant,
 )
 from omg_cli.jobs.runtime import (
     absorb_live_job_identities,
@@ -684,6 +683,34 @@ def _absorb_runner_children(
     absorb_live_job_identities(identities)
 
 
+def _new_supervisor_children(
+    children: Sequence[ProcessIdentity],
+    *,
+    preexisting_identities: Mapping[int, ProcessIdentity],
+) -> tuple[ProcessIdentity, ...]:
+    """Return only children that were not present before this job started.
+
+    A preexisting child without a start fingerprint cannot later be proven to
+    belong to this job. Keep its PID tainted for the lifetime of the proposal
+    instead of refreshing it into a signal-eligible job identity. Fingerprinted
+    children remain excluded only while the observed fingerprint still matches;
+    a verified PID reuse is eligible to be captured as a new job child.
+    """
+    discovered: list[ProcessIdentity] = []
+    for child in children:
+        previous = preexisting_identities.get(child.pid)
+        if previous is None:
+            discovered.append(child)
+            continue
+        if (
+            previous.pid_starttime is not None
+            and child.pid_starttime is not None
+            and child.pid_starttime != previous.pid_starttime
+        ):
+            discovered.append(child)
+    return tuple(discovered)
+
+
 def _cancel_simplify_job(
     root: Path,
     job_id: str,
@@ -885,10 +912,8 @@ def _propose_with_grok(
                     assignment,
                 )
             supervisor_pid = os.getpid()
-            preexisting_children = {
-                child.pid: child
-                for child in child_identities(supervisor_pid)
-                if isinstance(child.pid_starttime, str) and child.pid_starttime
+            preexisting_identities = {
+                child.pid: child for child in child_identities(supervisor_pid)
             }
             started = start_job(
                 root,
@@ -925,10 +950,10 @@ def _propose_with_grok(
             def _absorb_supervisor_children() -> None:
                 if not runner_pids:
                     return
-                for child in child_identities(supervisor_pid):
-                    old = preexisting_children.get(child.pid)
-                    if old is not None and same_occupant(old, child):
-                        continue
+                for child in _new_supervisor_children(
+                    child_identities(supervisor_pid),
+                    preexisting_identities=preexisting_identities,
+                ):
                     merge_identity(captured, child)
 
             def _on_poll(_wait_record: object) -> None:
@@ -1351,6 +1376,7 @@ def run_simplify(
         )
 
     # Mutating path: descriptors provided.
+    assert apply_edits_path is not None
     for rel in kept:
         assert_mutative_edit_allowed(root, rel, run_id=run_id, task_id=task_id)
         resolve_workspace_file(root, rel)

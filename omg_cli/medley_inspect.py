@@ -129,6 +129,11 @@ def load_inspect_document(
         )
     try:
         raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise MedleyInspectError(
+            "inspect file is not valid UTF-8",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        ) from exc
     except OSError as exc:
         raise MedleyInspectError(
             f"inspect file unreadable: {exc}",
@@ -153,7 +158,14 @@ def load_inspect_document(
             f"unsupported inspect schema {schema!r}",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    version = payload.get("schemaVersion", payload.get("schema_version", 1))
+    version = _consistent_int_alias(payload, "schemaVersion", "schema_version")
+    if version is False:
+        raise MedleyInspectError(
+            "schema version aliases must agree and be integers",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    if version is None:
+        version = 1
     if type(version) is not int or version != 1:
         raise MedleyInspectError(
             f"incompatible inspect schema_version {version!r}",
@@ -175,9 +187,14 @@ def load_inspect_document(
                 "capability row must be an object",
                 code="E_MEDLEY_INSPECT_SCHEMA",
             )
-        cap_id = str(item.get("capability_id") or item.get("capabilityId") or "").strip()
+        cap_id = _consistent_string_alias(item, "capability_id", "capabilityId")
         state = str(item.get("state") or "").strip()
-        if not cap_id or not state:
+        if cap_id is False:
+            raise MedleyInspectError(
+                "capability_id aliases must agree",
+                code="E_MEDLEY_INSPECT_SCHEMA",
+            )
+        if not isinstance(cap_id, str) or not cap_id or not state:
             raise MedleyInspectError(
                 "capability row needs capability_id and state",
                 code="E_MEDLEY_INSPECT_SCHEMA",
@@ -305,7 +322,10 @@ def receipt_for_policy(
             continue
         consumer = consumer or ""
         row_digest = _consistent_string_alias(
-            row, "consumerPolicyDigest", "consumer_policy_digest"
+            row,
+            "consumerPolicyDigest",
+            "consumer_policy_digest",
+            case_insensitive=True,
         )
         if row_digest is False:
             continue
@@ -323,7 +343,7 @@ def receipt_for_policy(
         if not id_match and not agent_match:
             continue
         if want_digest:
-            if not row_digest or row_digest != want_digest:
+            if not row_digest or row_digest != want_digest.lower():
                 continue
         matches.append(dict(row))
     if not matches:
@@ -380,23 +400,35 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
             f"unsupported receipt schema {schema!r}",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    selected = (
-        item.get("selectedCatalogId")
-        or item.get("selected_catalog_id")
-        or item.get("selected_model_ref")
+    selected = _consistent_string_alias(
+        item,
+        "selectedCatalogId",
+        "selected_catalog_id",
+        "selected_model_ref",
     )
-    if _nonempty_string(selected) is None:
+    if selected is False:
+        raise MedleyInspectError(
+            "selected catalog id aliases must agree",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    if selected is None:
         raise MedleyInspectError(
             "receipt needs a selected catalog id",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    digest = (
-        item.get("routeDigest")
-        or item.get("route_digest")
-        or item.get("route_receipt_digest")
+    digest_text = _consistent_string_alias(
+        item,
+        "routeDigest",
+        "route_digest",
+        "route_receipt_digest",
+        case_insensitive=True,
     )
-    digest_text = _nonempty_string(digest)
-    if digest_text is None or not _DIGEST_RE.fullmatch(digest_text):
+    if digest_text is False:
+        raise MedleyInspectError(
+            "receipt digest aliases must agree",
+            code="E_MEDLEY_INSPECT_SCHEMA",
+        )
+    if not isinstance(digest_text, str) or not _DIGEST_RE.fullmatch(digest_text):
         raise MedleyInspectError(
             "receipt digest must be a 64-char hex SHA-256",
             code="E_MEDLEY_INSPECT_SCHEMA",
@@ -407,14 +439,30 @@ def _validated_receipt(item: Mapping[str, Any]) -> dict[str, Any]:
             "receipt attempt must be a positive integer",
             code="E_MEDLEY_INSPECT_SCHEMA",
         )
-    return dict(item)
+    canonical = dict(item)
+    for key in (
+        "selectedCatalogId",
+        "selected_catalog_id",
+        "selected_model_ref",
+        "routeDigest",
+        "route_digest",
+        "route_receipt_digest",
+    ):
+        canonical.pop(key, None)
+    canonical["selected_catalog_id"] = selected
+    canonical["route_receipt_digest"] = digest_text
+    return canonical
 
 
 def _normalized_secret_key(key: str) -> str:
     return key.strip().lower().replace("-", "_")
 
 
-def _consistent_string_alias(row: Mapping[str, Any], *keys: str) -> str | None | bool:
+def _consistent_string_alias(
+    row: Mapping[str, Any],
+    *keys: str,
+    case_insensitive: bool = False,
+) -> str | None | bool:
     """Return the agreed nonempty string, ``None`` if absent, or ``False`` if aliases disagree."""
     values: list[str] = []
     for key in keys:
@@ -423,7 +471,26 @@ def _consistent_string_alias(row: Mapping[str, Any], *keys: str) -> str | None |
         text = _nonempty_string(row.get(key))
         if text is None:
             return False
-        values.append(text)
+        values.append(text.lower() if case_insensitive else text)
+    unique = set(values)
+    if not unique:
+        return None
+    if len(unique) != 1:
+        return False
+    return values[0]
+
+
+def _consistent_int_alias(row: Mapping[str, Any], *keys: str) -> int | None | bool:
+    """Return one agreed integer, ``None`` if absent, or ``False`` if invalid."""
+
+    values: list[int] = []
+    for key in keys:
+        if key not in row:
+            continue
+        value = row.get(key)
+        if type(value) is not int:
+            return False
+        values.append(value)
     unique = set(values)
     if not unique:
         return None

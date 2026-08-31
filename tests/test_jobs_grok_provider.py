@@ -28,6 +28,54 @@ def test_job_provider_registry_includes_grok() -> None:
     assert meta.requires_preflight is True
 
 
+def test_grok_bounded_env_preserves_only_supported_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omg_cli.jobs.grok import _bounded_env
+
+    supported = {
+        "GROK_API_KEY": "grok-secret",
+        "XAI_API_KEY": "xai-secret",
+        "OMG_GROK_API_KEY": "omg-secret",
+    }
+    for key, value in supported.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-leak")
+
+    env = _bounded_env(include_auth=True)
+
+    assert {key: env[key] for key in supported} == supported
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_grok_version_probe_does_not_receive_auth_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omg_cli.jobs.grok import probe_version
+
+    captured = tmp_path / "probe-env.txt"
+    binary = tmp_path / "grok"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        f"Path({str(captured)!r}).write_text('|'.join("
+        "f\"{key}={os.environ.get(key, '')}\" for key in "
+        "('GROK_API_KEY', 'XAI_API_KEY', 'OMG_GROK_API_KEY')), encoding='utf-8')\n"
+        "print('1.2.3')\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("GROK_API_KEY", "grok-secret")
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setenv("OMG_GROK_API_KEY", "omg-secret")
+
+    assert probe_version(str(binary)).as_tuple() == (1, 2, 3)
+    assert captured.read_text(encoding="utf-8") == (
+        "GROK_API_KEY=|XAI_API_KEY=|OMG_GROK_API_KEY="
+    )
+
+
 def test_grok_preflight_rejects_missing_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

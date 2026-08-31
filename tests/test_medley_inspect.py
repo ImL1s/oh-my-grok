@@ -84,6 +84,16 @@ def test_missing_inspect_file_fail_closes(tmp_path: Path) -> None:
     assert inspect_source_for(None) == INSPECT_SOURCE_ABSENT
 
 
+def test_invalid_utf8_is_wrapped_as_inspect_error(tmp_path: Path) -> None:
+    inspect = tmp_path / "invalid-utf8.json"
+    inspect.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
 def test_inspect_negotiates_medley_caps(tmp_path: Path) -> None:
     inspect = _write_inspect(tmp_path / "inspect.json")
     snap, doc = resolve_host_snapshot(inspect_path=inspect)
@@ -109,6 +119,46 @@ def test_inspect_negotiates_medley_caps(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_conflicting_capability_id_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "capability-aliases.json",
+        capabilities=[
+            {
+                "capability_id": "medley.native-route-receipt.v1",
+                "capabilityId": "medley.native-exact-model.v1",
+                "state": "supported",
+                "version": "v1",
+            }
+        ],
+        receipts=[],
+    )
+
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_conflicting_selected_model_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "selected-model-aliases.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selectedCatalogId": "review-primary-example",
+                "selected_catalog_id": "review-fallback-example",
+                "route_digest": "a" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
 
 
 def test_inspect_secret_is_rejected(tmp_path: Path) -> None:
@@ -413,6 +463,55 @@ def test_boolean_schema_version_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(MedleyInspectError) as exc:
         resolve_host_snapshot(inspect_path=inspect)
     assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_conflicting_schema_version_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "schema-alias-conflict.json",
+        schemaVersion=1,
+        schema_version=2,
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_conflicting_route_digest_aliases_are_rejected(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "route-digest-alias-conflict.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": "review-primary-example",
+                "routeDigest": "a" * 64,
+                "route_digest": "b" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+    with pytest.raises(MedleyInspectError) as exc:
+        resolve_host_snapshot(inspect_path=inspect)
+    assert exc.value.code == "E_MEDLEY_INSPECT_SCHEMA"
+
+
+def test_equivalent_route_digest_aliases_ignore_hex_case(tmp_path: Path) -> None:
+    inspect = _write_inspect(
+        tmp_path / "route-digest-alias-case.json",
+        receipts=[
+            {
+                "schema": "medley.native-route-receipt.v1",
+                "selected_catalog_id": "review-primary-example",
+                "routeDigest": "A" * 64,
+                "route_digest": "a" * 64,
+                "attempt": 1,
+            }
+        ],
+    )
+
+    _snapshot, document = resolve_host_snapshot(inspect_path=inspect)
+
+    assert document is not None
+    assert document.receipts[0]["route_receipt_digest"] == "a" * 64
 
 
 def test_claimed_sentinel_is_not_a_supported_version(tmp_path: Path) -> None:
