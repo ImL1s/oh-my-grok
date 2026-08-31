@@ -327,6 +327,25 @@ def _probe_sidecar(parent_fd: int, name: str) -> bool:
         os.close(descriptor)
 
 
+def _assert_no_active_sqlite_sidecars(
+    parent_fd: int, *, database_name: str
+) -> None:
+    """Reject SQLite states that immutable reads cannot safely observe."""
+
+    if _probe_sidecar(parent_fd, f"{database_name}-journal"):
+        raise AgHistoryError(
+            "active Antigravity rollback journal cannot be imported safely",
+            code="E_AG_HISTORY_JOURNAL_ACTIVE",
+        )
+    if _probe_sidecar(parent_fd, f"{database_name}-wal") or _probe_sidecar(
+        parent_fd, f"{database_name}-shm"
+    ):
+        raise AgHistoryError(
+            "active Antigravity WAL state cannot be imported without mutation",
+            code="E_AG_HISTORY_WAL_ACTIVE",
+        )
+
+
 def _assert_leaf_identity(parent_fd: int, name: str, expected: _FileIdentity) -> None:
     """Prove the pinned inode is still published at its original leaf name."""
 
@@ -371,8 +390,6 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
     descriptors, parent_fd, name = _open_summary_parent(path)
     database_fd: int | None = None
     connection: sqlite3.Connection | None = None
-    wal_name = f"{name}-wal"
-    shm_name = f"{name}-shm"
     try:
         flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
         try:
@@ -387,11 +404,7 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
                 "unsafe Antigravity summary path", code="E_AG_HISTORY_PATH"
             )
         identity = _file_identity(before)
-        if _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(parent_fd, shm_name):
-            raise AgHistoryError(
-                "active Antigravity WAL state cannot be imported without mutation",
-                code="E_AG_HISTORY_WAL_ACTIVE",
-            )
+        _assert_no_active_sqlite_sidecars(parent_fd, database_name=name)
         descriptor_path = _descriptor_path(database_fd)
         uri = f"file:{quote(descriptor_path, safe='/')}?mode=ro&immutable=1"
         connection = sqlite3.connect(uri, uri=True)
@@ -400,15 +413,8 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
                 "Antigravity summary changed while opening",
                 code="E_AG_HISTORY_CHANGED",
             )
-        sidecar_present = _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(
-            parent_fd, shm_name
-        )
         _assert_leaf_identity(parent_fd, name, identity)
-        if sidecar_present:
-            raise AgHistoryError(
-                "active Antigravity WAL state cannot be imported without mutation",
-                code="E_AG_HISTORY_WAL_ACTIVE",
-            )
+        _assert_no_active_sqlite_sidecars(parent_fd, database_name=name)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only = ON")
         connection.execute("BEGIN")
@@ -418,15 +424,8 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
                 "Antigravity summary changed while reading",
                 code="E_AG_HISTORY_CHANGED",
             )
-        sidecar_present = _probe_sidecar(parent_fd, wal_name) or _probe_sidecar(
-            parent_fd, shm_name
-        )
         _assert_leaf_identity(parent_fd, name, identity)
-        if sidecar_present:
-            raise AgHistoryError(
-                "active Antigravity WAL state cannot be imported without mutation",
-                code="E_AG_HISTORY_WAL_ACTIVE",
-            )
+        _assert_no_active_sqlite_sidecars(parent_fd, database_name=name)
     finally:
         if connection is not None:
             connection.close()
@@ -455,6 +454,28 @@ def _import_summary_db(
                 "unsupported Antigravity conversation_summaries shape",
                 code="E_AG_HISTORY_VERSION",
             )
+        order_plan = connection.execute(
+            """EXPLAIN QUERY PLAN
+               SELECT rowid
+                 FROM conversation_summaries
+             ORDER BY last_modified_time DESC, rowid DESC
+                LIMIT ?""",
+            (remaining,),
+        ).fetchall()
+        plan_details = [str(row[3]).upper() for row in order_plan]
+        indexed_order = any(
+            "CONVERSATION_SUMMARIES" in detail
+            and (
+                "USING INDEX" in detail
+                or "USING COVERING INDEX" in detail
+            )
+            for detail in plan_details
+        )
+        if not indexed_order or any("TEMP B-TREE" in detail for detail in plan_details):
+            raise AgHistoryError(
+                "Antigravity summary ordering is not resource bounded",
+                code="E_AG_HISTORY_UNBOUNDED_QUERY",
+            )
         # Never add title, preview, app_data_dir, task details, or transcript
         # fields to this SELECT.  The privacy boundary is enforced at source.
         rows = connection.execute(
@@ -475,7 +496,7 @@ def _import_summary_db(
                         AS last_user_input_time,
                       last_user_input_step_index
                  FROM conversation_summaries
-             ORDER BY last_modified_time DESC, conversation_id ASC
+             ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
             (remaining,),
         )
@@ -563,8 +584,10 @@ def inspect_ag_history(
     saw_unsafe = False
     saw_unknown = False
     saw_busy = False
+    saw_journal = False
     saw_changed = False
     saw_platform = False
+    saw_unbounded = False
     workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
 
     for path in databases:
@@ -590,6 +613,14 @@ def inspect_ag_history(
                         "reason": "live_wal_readonly_unsupported",
                     }
                 )
+            elif exc.code == "E_AG_HISTORY_JOURNAL_ACTIVE":
+                saw_journal = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "live_journal_readonly_unsupported",
+                    }
+                )
             elif exc.code == "E_AG_HISTORY_CHANGED":
                 saw_changed = True
                 diagnostics.append(
@@ -601,6 +632,14 @@ def inspect_ag_history(
                     {
                         "source": _SUMMARY_DB,
                         "reason": "secure_sqlite_open_unavailable",
+                    }
+                )
+            elif exc.code == "E_AG_HISTORY_UNBOUNDED_QUERY":
+                saw_unbounded = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "unbounded_sqlite_query_plan",
                     }
                 )
             else:
@@ -643,12 +682,18 @@ def inspect_ag_history(
     elif saw_busy:
         pin = "active_wal"
         reason = "ag_history_live_wal_skipped"
+    elif saw_journal:
+        pin = "active_journal"
+        reason = "ag_history_live_journal_skipped"
     elif saw_changed:
         pin = "unstable_source"
         reason = "ag_history_source_changed"
     elif saw_platform:
         pin = "unsupported_platform"
         reason = "ag_history_secure_open_unavailable"
+    elif saw_unbounded:
+        pin = "unbounded_query"
+        reason = "ag_history_unbounded_query_skipped"
     elif saw_corrupt:
         pin = "corrupt"
         reason = "ag_history_corrupt_skipped"

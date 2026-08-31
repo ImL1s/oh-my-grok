@@ -43,6 +43,8 @@ def _summary_db(home: Path) -> Path:
               last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
               app_data_dir TEXT NOT NULL DEFAULT ''
             );
+            CREATE INDEX idx_conversation_summaries_last_modified_time
+              ON conversation_summaries(last_modified_time);
             """
         )
         conn.execute(
@@ -237,6 +239,80 @@ def test_live_wal_is_skipped_without_mutating_database_files(tmp_path: Path) -> 
         assert after == before
     finally:
         writer.close()
+
+
+def test_live_rollback_journal_is_skipped_without_reading_uncommitted_data(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode = DELETE")
+        writer.execute("PRAGMA cache_size = 1")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "UPDATE conversation_summaries SET step_count = 9999999"
+        )
+        journal = Path(f"{db}-journal")
+        assert journal.is_file() and journal.stat().st_size > 0
+        before = {
+            path.name: (
+                path.read_bytes(),
+                os.stat(path).st_size,
+                os.stat(path).st_mode,
+                os.stat(path).st_mtime_ns,
+                os.stat(path).st_ctime_ns,
+            )
+            for path in (db, journal)
+        }
+
+        result = inspect_ag_history(tmp_path / "project", home=home)
+
+        assert result["imported"] is False
+        assert result["record_count"] == 0
+        assert result["pin"] == "active_journal"
+        assert result["reason"] == "ag_history_live_journal_skipped"
+        assert result["diagnostics"] == [
+            {
+                "source": "conversation_summaries.db",
+                "reason": "live_journal_readonly_unsupported",
+            }
+        ]
+        after = {
+            path.name: (
+                path.read_bytes(),
+                os.stat(path).st_size,
+                os.stat(path).st_mode,
+                os.stat(path).st_mtime_ns,
+                os.stat(path).st_ctime_ns,
+            )
+            for path in (db, journal)
+        }
+        assert after == before
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_summary_query_requires_a_bounded_ordering_index(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        connection.execute("DROP INDEX idx_conversation_summaries_last_modified_time")
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["record_count"] == 0
+    assert result["pin"] == "unbounded_query"
+    assert result["reason"] == "ag_history_unbounded_query_skipped"
+    assert result["diagnostics"] == [
+        {
+            "source": "conversation_summaries.db",
+            "reason": "unbounded_sqlite_query_plan",
+        }
+    ]
 
 
 def test_custom_summary_labels_are_hashed_not_disclosed(tmp_path: Path) -> None:
