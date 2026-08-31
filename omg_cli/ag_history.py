@@ -27,6 +27,7 @@ SUPPORTED_AG_HISTORY_VERSIONS: frozenset[str] = frozenset(
 MAX_AG_HISTORY_RECORDS = 200
 MAX_WORKSPACE_URI_CHARS = 8_192
 MAX_WORKSPACE_URI_AGGREGATE_BYTES = 1_048_576
+_MAX_WORKSPACE_URI_UTF8_BYTES = MAX_WORKSPACE_URI_CHARS * 4
 
 _PROJECT_MARKERS = (
     ".antigravity",
@@ -327,12 +328,40 @@ def _probe_sidecar(parent_fd: int, name: str) -> bool:
         os.close(descriptor)
 
 
+def _probe_rollback_journal(parent_fd: int, name: str) -> bool:
+    """Reject live/ambiguous journals but allow a proven PERSIST tombstone."""
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise AgHistoryError(
+            "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise AgHistoryError(
+                "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
+            )
+        if info.st_size == 0:
+            return False
+        header = os.read(descriptor, 28)
+        if len(header) == 28 and header == b"\0" * 28:
+            return False
+        return True
+    finally:
+        os.close(descriptor)
+
+
 def _assert_no_active_sqlite_sidecars(
     parent_fd: int, *, database_name: str
 ) -> None:
     """Reject SQLite states that immutable reads cannot safely observe."""
 
-    if _probe_sidecar(parent_fd, f"{database_name}-journal"):
+    if _probe_rollback_journal(parent_fd, f"{database_name}-journal"):
         raise AgHistoryError(
             "active Antigravity rollback journal cannot be imported safely",
             code="E_AG_HISTORY_JOURNAL_ACTIVE",
@@ -435,6 +464,38 @@ def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
             os.close(descriptor)
 
 
+def _read_workspace_uris(
+    connection: sqlite3.Connection, *, rowid: int, workspace_budget: int
+) -> tuple[str | None, int]:
+    """Read one TEXT cell incrementally without materializing oversized values."""
+
+    if workspace_budget <= 0:
+        return None, workspace_budget
+    try:
+        blob = connection.blobopen(
+            "conversation_summaries", "workspace_uris", rowid, readonly=True
+        )
+    except sqlite3.Error:
+        return None, workspace_budget
+    try:
+        size = len(blob)
+        if size > workspace_budget or size > _MAX_WORKSPACE_URI_UTF8_BYTES:
+            return None, workspace_budget
+        raw = blob.read(size)
+    finally:
+        blob.close()
+    remaining = workspace_budget - len(raw)
+    if len(raw) != size:
+        return None, remaining
+    try:
+        candidate = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, remaining
+    if len(candidate) > MAX_WORKSPACE_URI_CHARS:
+        return None, remaining
+    return candidate, remaining
+
+
 def _import_summary_db(
     path: Path, *, remaining: int, workspace_budget: int
 ) -> tuple[int, list[dict[str, Any]], int]:
@@ -483,8 +544,6 @@ def _import_summary_db(
                       substr(conversation_id, 1, 4096) AS conversation_id,
                       step_count,
                       substr(last_modified_time, 1, 128) AS last_modified_time,
-                      length(workspace_uris) AS workspace_uris_chars,
-                      length(CAST(workspace_uris AS BLOB)) AS workspace_uris_bytes,
                       substr(status, 1, 128) AS status,
                       substr(source, 1, 128) AS source,
                       substr(project_id, 1, 4096) AS project_id,
@@ -502,39 +561,11 @@ def _import_summary_db(
         )
         imported: list[dict[str, Any]] = []
         for row in rows:
-            workspace_chars = _bounded_int(
-                row["workspace_uris_chars"],
-                minimum=0,
-                maximum=MAX_WORKSPACE_URI_CHARS + 1,
-                fallback=MAX_WORKSPACE_URI_CHARS + 1,
+            workspace_uris, workspace_budget = _read_workspace_uris(
+                connection,
+                rowid=int(row["summary_rowid"]),
+                workspace_budget=workspace_budget,
             )
-            workspace_bytes = _bounded_int(
-                row["workspace_uris_bytes"],
-                minimum=0,
-                maximum=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
-                fallback=MAX_WORKSPACE_URI_AGGREGATE_BYTES + 1,
-            )
-            workspace_uris: str | None = None
-            if (
-                workspace_budget > 0
-                and workspace_chars <= MAX_WORKSPACE_URI_CHARS
-                and workspace_bytes <= workspace_budget
-            ):
-                workspace_row = connection.execute(
-                    """SELECT workspace_uris
-                         FROM conversation_summaries
-                        WHERE rowid = ?""",
-                    (row["summary_rowid"],),
-                ).fetchone()
-                candidate = workspace_row[0] if workspace_row is not None else None
-                if (
-                    isinstance(candidate, str)
-                    and len(candidate) <= MAX_WORKSPACE_URI_CHARS
-                    and len(candidate.encode("utf-8")) <= workspace_budget
-                ):
-                    workspace_uris = candidate
-            if workspace_uris is not None:
-                workspace_budget -= workspace_bytes
             imported.append(_public_row(row, workspace_uris=workspace_uris))
     return user_version, imported, workspace_budget
 

@@ -295,6 +295,78 @@ def test_live_rollback_journal_is_skipped_without_reading_uncommitted_data(
         writer.close()
 
 
+def test_inactive_persistent_journal_is_imported_without_mutation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA journal_mode = PERSIST").fetchone()[0] == "persist"
+        connection.execute("UPDATE conversation_summaries SET step_count = 13")
+    journal = Path(f"{db}-journal")
+    assert journal.is_file() and journal.stat().st_size > 0
+    assert journal.read_bytes()[:28] == b"\0" * 28
+    before = {
+        path.name: (
+            path.read_bytes(),
+            os.stat(path).st_size,
+            os.stat(path).st_mode,
+            os.stat(path).st_mtime_ns,
+            os.stat(path).st_ctime_ns,
+        )
+        for path in (db, journal)
+    }
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    assert result["records"][0]["step_count"] == 13
+    after = {
+        path.name: (
+            path.read_bytes(),
+            os.stat(path).st_size,
+            os.stat(path).st_mode,
+            os.stat(path).st_mtime_ns,
+            os.stat(path).st_ctime_ns,
+        )
+        for path in (db, journal)
+    }
+    assert after == before
+
+
+def test_workspace_blob_budget_rejects_oversized_cell_without_reading_it() -> None:
+    class OversizedBlob:
+        def __len__(self) -> int:
+            return 81
+
+        def read(self, _size: int) -> bytes:
+            raise AssertionError("oversized workspace cell must not be read")
+
+        def close(self) -> None:
+            return None
+
+    class FakeConnection:
+        def blobopen(
+            self, table: str, column: str, rowid: int, *, readonly: bool
+        ) -> OversizedBlob:
+            assert (table, column, rowid, readonly) == (
+                "conversation_summaries",
+                "workspace_uris",
+                7,
+                True,
+            )
+            return OversizedBlob()
+
+    value, remaining = ag_history._read_workspace_uris(
+        FakeConnection(),  # type: ignore[arg-type]
+        rowid=7,
+        workspace_budget=80,
+    )
+
+    assert value is None
+    assert remaining == 80
+
+
 def test_summary_query_requires_a_bounded_ordering_index(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)
