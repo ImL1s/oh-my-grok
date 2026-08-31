@@ -74,9 +74,9 @@ def test_ask_agy_success_uses_adapter(
     body = result.artifact.read_text(encoding="utf-8")
     assert "echo:hello" in body
     assert calls, "ProviderAdapter.run must be invoked"
-    assert "--print" in result.argv
-    assert result.argv[-2] == "--"
-    assert result.argv[-1] == "hello"
+    assert result.argv[-1] == "--print=hello"
+    assert sum(arg.startswith("--print=") for arg in result.argv) == 1
+    assert "--" not in result.argv
     assert run_ask_cli("agy", "hello", root=tmp_path, timeout=5.0) == 0
 
 
@@ -187,19 +187,21 @@ def test_ask_agy_dry_run_no_exec(
     assert result.dry_run is True
     assert result.exit_code == 0
     assert ran["n"] == 0
-    assert "--print" in result.argv
-    assert result.argv[-1] == "preview"
+    assert result.argv[-1] == "--print=preview"
+    assert sum(arg.startswith("--print=") for arg in result.argv) == 1
 
 
-def test_ask_agy_prompt_is_single_argv_element_after_ddash(
+def test_ask_agy_prompt_is_single_print_assignment(
     fake_agy_path: Path, tmp_path: Path
 ) -> None:
-    """Injection regression: multi-token prompt stays one argv element after --."""
-    evil = "a; rm -rf / # && echo pwned"
+    """Injection regression: leading-dash prompt stays one argv assignment."""
+    evil = "--danger a; rm -rf / # && echo pwned"
     result = run_ask("agy", evil, root=tmp_path, timeout=5.0)
     assert result.exit_code == 0
-    assert result.argv[-2] == "--"
-    assert result.argv[-1] == evil
+    assert result.argv[-1] == f"--print={evil}"
+    assert sum(arg.startswith("--print=") for arg in result.argv) == 1
+    assert evil not in result.argv
+    assert "--" not in result.argv
     assert all(isinstance(a, str) for a in result.argv)
 
 
