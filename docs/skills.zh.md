@@ -566,9 +566,13 @@ Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subag
 
 机器可读插件 agent 目录：[`agents/catalog.json`](../agents/catalog.json)
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 检视）。
+`scripts/generate_agents_catalog.py --check` 也会检查可安装的 `agents/*.md`
+内 Agy `tools:` 是否漂移。工具清单由同一份目录权限推导：只读角色只有读取／搜索工具，
+读写角色才有编辑与 `run_command`，且只有读写视觉实现者有 `generate_image`。
 agent frontmatter 若省略、使用 snake_case 别名（`capability_mode` / `permission_mode`），或与目录的 `capabilityMode` / `permissionMode` 不一致则 fail-closed。Agent markdown 以 `O_NOFOLLOW|O_NONBLOCK`（POSIX）或 Windows `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` 打开并从 pinned handle 读取。
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
-下的 Antigravity `agent.md` **只是投影** — 不是已安装的 AG 插件，也不是 live AG 证据。
+下的 Antigravity `agent.md` **只是投影** — 不是已安装的 AG 插件，也不是 live AG 证据；
+可安装的 dual-host 定义是根目录的 `agents/*.md`。
 团队路由地板仍在 `omg_cli/team/roles.py`。Dual-host model policy（#131）透过
 `agents/model_policies.json` 与 `omg agents list|explain` 消费此目录
 （Grok baseline 已出货；可选 Medley inspect 经 `--host-inspect` / `OMG_MEDLEY_INSPECT`；inspect 缺席时 `attempt` 为 null 且不尝试 Medley #18 fallback；live spawn/TUI 仍为 Refs）。

@@ -46,6 +46,27 @@ CATALOG_RELATIVE = "agents/catalog.json"
 YAML_RELATIVE = "agents/catalog.yaml"
 ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/agents"
 
+# Antigravity CLI custom agents are discovered directly from ``agents/*.md``
+# when this repository is installed as a plugin. Unlike Grok, Agy grants only
+# the tools named in frontmatter. Keep these profiles derived from the canonical
+# capability/category catalog so read-only roles cannot inherit mutation tools.
+ANTIGRAVITY_READ_TOOLS = (
+    "find_by_name",
+    "grep_search",
+    "view_file",
+    "list_dir",
+    "read_url_content",
+    "search_web",
+)
+ANTIGRAVITY_WRITE_TOOLS = (
+    "multi_replace_file_content",
+    "replace_file_content",
+    "write_to_file",
+    "run_command",
+    "notebook_edit",
+)
+ANTIGRAVITY_VISUAL_WRITE_TOOLS = ("generate_image",)
+
 ALLOWED_CAPABILITY_MODES = frozenset({"read-only", "read-write"})
 FORBIDDEN_CAPABILITY_MODES = frozenset({"execute", "all"})
 ALLOWED_PERMISSION_MODES = frozenset({"default", "plan"})
@@ -1220,6 +1241,119 @@ def _yaml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+def antigravity_tools_for(record: AgentRecord) -> tuple[str, ...]:
+    """Return the least-privilege Agy tool profile for one catalog record."""
+
+    tools = list(ANTIGRAVITY_READ_TOOLS)
+    if record.capability_mode == "read-write":
+        tools.extend(ANTIGRAVITY_WRITE_TOOLS)
+        if "visual-engineering" in record.categories:
+            tools.extend(ANTIGRAVITY_VISUAL_WRITE_TOOLS)
+    return tuple(tools)
+
+
+def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] | None:
+    """Read one top-level YAML list from fenced agent frontmatter."""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{agent_id}: missing YAML frontmatter")
+    try:
+        end = next(
+            index for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration as exc:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter") from exc
+    start = None
+    for index, line in enumerate(lines[1:end], start=1):
+        if line == f"{key}:":
+            start = index + 1
+            break
+    if start is None:
+        return None
+    values: list[str] = []
+    for line in lines[start:end]:
+        if not line.startswith((" ", "\t")):
+            break
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not stripped.startswith("- ") or not stripped[2:].strip():
+            raise AgentsCatalogError(f"{agent_id}: malformed frontmatter {key} list")
+        values.append(stripped[2:].strip())
+    return tuple(values)
+
+
+def render_antigravity_agent_tools(record: AgentRecord, source_text: str) -> str:
+    """Insert/replace the Agy ``tools`` list while preserving agent content."""
+
+    lines = source_text.replace("\r\n", "\n").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{record.id}: missing YAML frontmatter")
+    try:
+        end = next(
+            index for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration as exc:
+        raise AgentsCatalogError(f"{record.id}: malformed YAML frontmatter") from exc
+
+    block_start = None
+    block_end = None
+    for index in range(1, end):
+        if lines[index] == "tools:":
+            block_start = index
+            block_end = index + 1
+            while block_end < end and lines[block_end].startswith((" ", "\t")):
+                block_end += 1
+            break
+    if block_start is None:
+        block_start = end
+        block_end = end
+
+    block = ["tools:", *(f"  - {tool}" for tool in antigravity_tools_for(record))]
+    rendered = lines[:block_start] + block + lines[block_end:]
+    return "\n".join(rendered) + "\n"
+
+
+def check_antigravity_agent_tools(root: Path) -> list[str]:
+    """Report installable Agy tool frontmatter drift from the catalog."""
+
+    errors: list[str] = []
+    catalog = load_agents_catalog(root, require_projections=False, pin_files=False)
+    for record in catalog.agents:
+        path = root / record.file
+        try:
+            text = path.read_text(encoding="utf-8")
+            actual = _frontmatter_list(text, key="tools", agent_id=record.id)
+        except (OSError, UnicodeDecodeError, AgentsCatalogError) as exc:
+            errors.append(f"{record.file}: {exc}")
+            continue
+        expected = antigravity_tools_for(record)
+        if actual != expected:
+            errors.append(f"stale {record.file} Antigravity tools")
+    return errors
+
+
+def write_antigravity_agent_tools(root: Path) -> list[str]:
+    """Synchronize Agy tools in installable root agent frontmatter."""
+
+    catalog = load_agents_catalog(root, require_projections=False, pin_files=False)
+    written: list[str] = []
+    for record in catalog.agents:
+        path = root / record.file
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise AgentsCatalogError(f"cannot read agent {record.file}: {exc}") from exc
+        rendered = render_antigravity_agent_tools(record, source)
+        if source.replace("\r\n", "\n") != rendered:
+            _atomic_write_text(path, rendered)
+            written.append(record.file)
+    return written
+
+
 def render_antigravity_agent_md(record: AgentRecord, source_text: str) -> str:
     """Render a static AG ``agent.md`` projection (not an install)."""
     body = strip_markdown_frontmatter(source_text)
@@ -1411,11 +1545,13 @@ __all__ = [
     "READ_ONLY_TIERS",
     "SCHEMA",
     "YAML_RELATIVE",
+    "antigravity_tools_for",
     "antigravity_projection_relative",
     "assert_agent_capability",
     "canonical_catalog_json",
     "catalog_path",
     "check_antigravity_projections",
+    "check_antigravity_agent_tools",
     "check_catalog_yaml",
     "inspect_agents_catalog",
     "json_document_from_yaml",
@@ -1430,6 +1566,7 @@ __all__ = [
     "resolve_category",
     "strip_markdown_frontmatter",
     "write_antigravity_projections",
+    "write_antigravity_agent_tools",
     "write_catalog_json_from_yaml",
     "yaml_catalog_path",
 ]

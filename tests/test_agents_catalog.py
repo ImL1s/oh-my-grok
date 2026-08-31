@@ -21,6 +21,8 @@ from omg_cli.agents_catalog import (
     HostProjection,
     YAML_RELATIVE,
     assert_agent_capability,
+    antigravity_tools_for,
+    check_antigravity_agent_tools,
     check_antigravity_projections,
     inspect_agents_catalog,
     load_agents_catalog,
@@ -31,6 +33,7 @@ from omg_cli.agents_catalog import (
     render_handoff,
     resolve_category,
     write_antigravity_projections,
+    write_antigravity_agent_tools,
     _read_plugin_regular_text,
 )
 from omg_cli.catalog_yaml import dump_yaml, parse_yaml
@@ -430,6 +433,53 @@ def test_plugin_orchestrator_frontmatter_matches_catalog() -> None:
     text = (ROOT / "agents" / "omg-orchestrator.md").read_text(encoding="utf-8")
     assert "capabilityMode: read-write" in text
     assert catalog.by_id()["omg-orchestrator"].capability_mode == "read-write"
+
+
+def test_antigravity_tool_profiles_are_catalog_driven_and_fail_closed() -> None:
+    catalog = load_agents_catalog(ROOT)
+
+    executor = antigravity_tools_for(catalog.by_id()["omg-executor"])
+    assert "write_to_file" in executor
+    assert "replace_file_content" in executor
+    assert "run_command" in executor
+
+    verifier = antigravity_tools_for(catalog.by_id()["omg-verifier"])
+    assert "view_file" in verifier
+    assert "grep_search" in verifier
+    assert "write_to_file" not in verifier
+    assert "replace_file_content" not in verifier
+    assert "run_command" not in verifier
+
+    designer = antigravity_tools_for(catalog.by_id()["omg-designer"])
+    assert "generate_image" in designer
+    vision = antigravity_tools_for(catalog.by_id()["omg-vision"])
+    assert "generate_image" not in vision
+
+
+def test_installed_agent_frontmatter_has_current_antigravity_tools() -> None:
+    assert check_antigravity_agent_tools(ROOT) == []
+
+
+def test_antigravity_agent_tool_writer_repairs_drift(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+
+    assert check_antigravity_agent_tools(tmp_path) == [
+        "stale agents/omg-executor.md Antigravity tools"
+    ]
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    assert check_antigravity_agent_tools(tmp_path) == []
+    text = (tmp_path / "agents" / "omg-executor.md").read_text(encoding="utf-8")
+    assert "tools:\n  - find_by_name" in text
+    assert "  - write_to_file\n" in text
+    assert "  - run_command\n" in text
 
 
 def test_inspect_payload_never_claims_verified() -> None:

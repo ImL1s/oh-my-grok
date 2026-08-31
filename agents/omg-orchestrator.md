@@ -5,6 +5,18 @@ promptMode: extend
 permissionMode: default
 capabilityMode: read-write
 agentsMd: true
+tools:
+  - find_by_name
+  - grep_search
+  - view_file
+  - list_dir
+  - read_url_content
+  - search_web
+  - multi_replace_file_content
+  - replace_file_content
+  - write_to_file
+  - run_command
+  - notebook_edit
 ---
 
 # omg-orchestrator — Coordinate, do not bulk-implement

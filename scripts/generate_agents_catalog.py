@@ -23,10 +23,12 @@ if str(ROOT) not in sys.path:
 
 from omg_cli.agents_catalog import (  # noqa: E402
     AgentsCatalogError,
+    check_antigravity_agent_tools,
     check_antigravity_projections,
     check_catalog_yaml,
     plugin_root,
     write_antigravity_projections,
+    write_antigravity_agent_tools,
     write_catalog_json_from_yaml,
 )
 
@@ -43,7 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     root = (args.root or plugin_root()).resolve()
     try:
         if args.check:
-            errors = check_catalog_yaml(root) + check_antigravity_projections(root)
+            errors = (
+                check_catalog_yaml(root)
+                + check_antigravity_agent_tools(root)
+                + check_antigravity_projections(root)
+            )
             if errors:
                 print("agents catalog drift:", file=sys.stderr)
                 for item in errors:
@@ -53,10 +59,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         written_json = write_catalog_json_from_yaml(root)
         print(written_json)
+        agent_files = write_antigravity_agent_tools(root)
+        for rel in agent_files:
+            print(rel)
         written = write_antigravity_projections(root)
         for rel in written:
             print(rel)
-        print(f"wrote {written_json} and {len(written)} projection file(s)")
+        print(
+            f"wrote {written_json}, synchronized {len(agent_files)} installable "
+            f"agent file(s), and {len(written)} projection file(s)"
+        )
         return 0
     except AgentsCatalogError as exc:
         print(f"generate agents catalog: {exc}", file=sys.stderr)
