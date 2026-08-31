@@ -355,6 +355,9 @@ def test_memory_layers_and_ag_history_and_retain_dry_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _project(tmp_path, monkeypatch)
+    # The explicit ag-history command now probes Antigravity's one documented
+    # summary index under HOME.  Keep this absence assertion hermetic.
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     rc = main(["--json", "memory", "layers"])
     assert rc == 0
     layers = _domain(_out(capsys))
