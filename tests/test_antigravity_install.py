@@ -1041,6 +1041,29 @@ def test_undo_committed_restore_refuses_foreign_post_state(
     assert json.loads((target / "plugin.json").read_text())["version"] == "foreign"
 
 
+def test_locked_restore_refuses_foreign_plugin_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    recovery = home / ".gemini/config/.omg-transactions/install-crash"
+    persist_recovery_snapshot(recovery, home=home)
+    digest = _package_digest(ROOT)
+    assert digest is not None
+    _mark_recovery_phase(recovery, "installing_plugin", intended_plugin_digest=digest)
+    subprocess.run(["agy", "plugin", "install", str(ROOT)], check=True)
+    target = installed_plugin_path(home)
+    skill = next((target / "skills").rglob("SKILL.md"))
+    skill.write_text(skill.read_text(encoding="utf-8") + "\n# foreign replacement\n", encoding="utf-8")
+    (home / ".gemini/config/import_manifest.json").write_text(
+        json.dumps({"imports": [{"name": "oh-my-grok", "source": "foreign", "components": []}]}),
+        encoding="utf-8",
+    )
+    live_digest = _package_digest(target)
+    assert live_digest not in {None, digest}
+    assert restore_recovery_snapshot(recovery, lock_held=True) is False
+    assert "# foreign replacement" in skill.read_text(encoding="utf-8")
+
+
 def test_plan_resumes_uncommitted_uninstall_journal_when_plugin_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

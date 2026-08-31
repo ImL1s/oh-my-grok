@@ -1095,10 +1095,6 @@ def restore_recovery_snapshot(
     *,
     runner: Callable[..., Any] = subprocess.run,
     lock_held: bool = False,
-    expected_current: tuple[
-        tuple[str | None, str | None, str | None], dict[str, str | None]
-    ]
-    | None = None,
     undo_committed: bool = False,
 ) -> bool:
     try:
@@ -1221,12 +1217,6 @@ def restore_recovery_snapshot(
                     for name in previous_files
                 )
             )
-            locked_intermediate_match = bool(
-                lock_held
-                and expected_current is not None
-                and current == expected_current[0]
-                and current_files == expected_current[1]
-            )
             phase = raw.get("phase")
             intended_digest = raw.get("intended_plugin_digest")
             phase_order = {
@@ -1317,7 +1307,6 @@ def restore_recovery_snapshot(
             elif not (
                 sealed_match
                 or mixed_recovery_match
-                or locked_intermediate_match
                 or write_ahead_intermediate_match
                 or rollback_in_progress_match
                 or incomplete_fresh_install
@@ -1420,19 +1409,10 @@ def uninstall_owned_plugin(
             return False
 
         def rollback_current() -> bool:
-            expected_current = (
-                (
-                    _package_digest(installed_plugin_path(home)),
-                    plugin_registry_identity(runner=runner, home=home),
-                    mcp_registry_identity(home),
-                ),
-                _registry_file_identities(home),
-            )
             return restore_recovery_snapshot(
                 recovery_dir,
                 runner=runner,
                 lock_held=True,
-                expected_current=expected_current,
             )
 
         if not resuming:
@@ -1671,19 +1651,10 @@ def _replace_plugin_transactionally(
             "registry_refreshed": True,
         }
     except Exception:
-        current_state = (
-            (
-                _package_digest(destination),
-                plugin_registry_identity(runner=runner, home=home),
-                mcp_registry_identity(home),
-            ),
-            _registry_file_identities(home),
-        )
         if not restore_recovery_snapshot(
             recovery_dir,
             runner=runner,
             lock_held=True,
-            expected_current=current_state,
         ):
             raise AntigravityInstallError(
                 "Antigravity registry refresh failed and durable rollback failed"
