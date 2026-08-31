@@ -455,7 +455,7 @@ def _live_agent_smoke(*, runner: Callable[..., Any], home: Path | None) -> tuple
         ],
         runner=runner,
         home=home,
-        timeout=30,
+        timeout=45,
     )
     if int(getattr(result, "returncode", 1)) != 0:
         return False, False
@@ -822,6 +822,10 @@ def _registry_snapshot(home: Path | None) -> dict[Path, tuple[bool, bytes]]:
     ):
         if path.is_symlink():
             raise AntigravityInstallError("Antigravity registry path is a symlink")
+        if os.path.lexists(path) and not path.is_file():
+            raise AntigravityInstallError(
+                "Antigravity registry path is not a regular file"
+            )
         snapshots[path] = (
             path.is_file(),
             read_managed_regular_bytes(path) if path.is_file() else b"",

@@ -1037,6 +1037,39 @@ def test_plan_resumes_uncommitted_uninstall_journal_when_plugin_absent(
     assert all(row.get("reason") != "hash-drift" for row in plan.get("preserve") or [])
 
 
+def test_live_probe_subprocess_timeout_exceeds_print_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    from omg_cli.antigravity_install import _live_agent_smoke
+
+    seen: dict[str, object] = {}
+
+    def runner(argv, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        seen["print_timeout"] = argv[argv.index("--print-timeout") + 1]
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    invoked, completed = _live_agent_smoke(runner=runner, home=home)
+    assert invoked is False
+    assert completed is False
+    assert seen["print_timeout"] == "30s"
+    assert isinstance(seen["timeout"], (int, float))
+    assert seen["timeout"] > 30
+
+
+def test_registry_directory_occupant_is_rejected_before_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    mcp = home / ".gemini/config/mcp_config.json"
+    mcp.parent.mkdir(parents=True, exist_ok=True)
+    mcp.mkdir()
+    with pytest.raises(AntigravityInstallError, match="regular file"):
+        persist_recovery_snapshot(tmp_path / "project/.omg/install/tx/dir-occupant")
+    assert mcp.is_dir()
+
+
 def test_uninstall_plan_omits_reference_releases_when_removing_plugin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
