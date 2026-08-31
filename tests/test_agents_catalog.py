@@ -528,9 +528,6 @@ def test_antigravity_tool_writer_repairs_inline_and_spaced_declarations(
     )
     _stub_agent(tmp_path, "omg-executor", mode="read-write")
     _write_catalog(tmp_path, [entry])
-    record = load_agents_catalog(
-        tmp_path, require_projections=False
-    ).by_id()["omg-executor"]
     path = tmp_path / "agents" / "omg-executor.md"
     text = path.read_text(encoding="utf-8").replace(
         "---\n# omg-executor",
@@ -543,7 +540,8 @@ def test_antigravity_tool_writer_repairs_inline_and_spaced_declarations(
     with pytest.raises(AgentsCatalogError, match="duplicate frontmatter"):
         check_antigravity_agent_tools(tmp_path)
 
-    repaired = render_antigravity_agent_tools(record, text)
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    repaired = path.read_text(encoding="utf-8")
 
     assert repaired.count("\ntools:\n") == 1
     assert "tools: [" not in repaired
@@ -552,7 +550,6 @@ def test_antigravity_tool_writer_repairs_inline_and_spaced_declarations(
     assert '"tools"' not in repaired
     assert "run_command" not in repaired
     assert "generate_image" not in repaired
-    path.write_text(repaired, encoding="utf-8")
     assert check_antigravity_agent_tools(tmp_path) == []
 
 
@@ -582,14 +579,10 @@ def test_quoted_antigravity_tool_key_is_a_semantic_duplicate(
     )
     path.write_text(ambiguous, encoding="utf-8")
 
-    errors = check_antigravity_agent_tools(tmp_path)
-    assert len(errors) == 1
-    assert "duplicate frontmatter tools keys" in errors[0]
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
+        load_agents_catalog(tmp_path, require_projections=False, pin_files=False)
 
-    path.write_text(
-        render_antigravity_agent_tools(record, ambiguous),
-        encoding="utf-8",
-    )
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
     assert check_antigravity_agent_tools(tmp_path) == []
 
 

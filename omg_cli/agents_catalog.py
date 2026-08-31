@@ -1187,6 +1187,13 @@ def _parse_agent_frontmatter(
         key = key.strip()
         if not key:
             raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        if (
+            len(key) >= 2
+            and key[0] == key[-1]
+            and key[0] in {"'", '"'}
+            and key[1:-1] == "tools"
+        ):
+            key = "tools"
         scalar = raw_value.strip()
         if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
             scalar = scalar[1:-1]
