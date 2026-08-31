@@ -65,6 +65,8 @@ def test_packaged_install_contains_canonical_parity_inventory() -> None:
     from omg_cli.setup_cmd import SHIPPING_ROOTS, compute_package_identity
 
     assert "docs/parity" in SHIPPING_ROOTS
+    assert "hooks.json" in SHIPPING_ROOTS
+    assert "mcp_config.json" in SHIPPING_ROOTS
     inventory_path = ROOT / "docs" / "parity" / "omg-parity.json"
     assert inventory_path.is_file()
     identity = compute_package_identity(ROOT)

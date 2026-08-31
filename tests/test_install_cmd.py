@@ -814,6 +814,10 @@ def test_upgrade_from_legacy_package_missing_docs_parity_succeeds(
 
     assert "docs/parity" in SHIPPING_ROOTS
     assert "docs/parity" in LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS
+    assert "hooks.json" in SHIPPING_ROOTS
+    assert "hooks.json" in LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS
+    assert "mcp_config.json" in SHIPPING_ROOTS
+    assert "mcp_config.json" in LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS
 
     home = tmp_path / "home"
     grok_home = tmp_path / "grok"

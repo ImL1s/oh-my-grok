@@ -49,6 +49,8 @@ _SEMVER_RE = re.compile(
 # recursively with symlinks rejected and byte/mode inventory sorted by UTF-8.
 SHIPPING_ROOTS = (
     "plugin.json",
+    "hooks.json",
+    "mcp_config.json",
     ".mcp.json",
     ".lsp.json",
     "pyproject.toml",
@@ -69,7 +71,9 @@ SHIPPING_ROOTS = (
 # Roots required for packages being installed, but older managed installs may
 # lack them. Prior-plugin identity / rollback staging tolerates these missing;
 # the candidate package under install is still validated against full SHIPPING_ROOTS.
-LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS = frozenset({"docs/parity"})
+LEGACY_TOLERATED_MISSING_SHIPPING_ROOTS = frozenset(
+    {"docs/parity", "hooks.json", "mcp_config.json"}
+)
 _IGNORED_PACKAGE_NAMES = {"__pycache__", ".DS_Store"}
 _IGNORED_PACKAGE_SUFFIXES = {".pyc", ".pyo"}
 
@@ -210,24 +214,24 @@ def _refresh_owned_hook_identities(
     keeping the old receipt would treat the repaired wrapper as foreign drift.
     """
     identities: dict[str, str] = {}
-    for path in (hook_json, hook_wrapper, hook_py):
+    for hook_path in (hook_json, hook_wrapper, hook_py):
         try:
-            if path.is_file() and not path.is_symlink():
-                identities[str(path)] = _sha256_file(path)
+            if hook_path.is_file() and not hook_path.is_symlink():
+                identities[str(hook_path)] = _sha256_file(hook_path)
         except OSError:
             continue
     refreshed = [dict(row) for row in owned]
     seen: set[str] = set()
     for row in refreshed:
-        path = str(row.get("path") or "")
-        if path in identities:
-            row["identity"] = identities[path]
+        receipt_path = str(row.get("path") or "")
+        if receipt_path in identities:
+            row["identity"] = identities[receipt_path]
             row["kind"] = "global_hook"
-            seen.add(path)
-    for path, ident in identities.items():
-        if path not in seen:
+            seen.add(receipt_path)
+    for identity_path, ident in identities.items():
+        if identity_path not in seen:
             refreshed.append(
-                {"path": path, "kind": "global_hook", "identity": ident}
+                {"path": identity_path, "kind": "global_hook", "identity": ident}
             )
     return refreshed
 

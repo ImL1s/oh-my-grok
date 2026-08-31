@@ -48,6 +48,8 @@ def test_archive_contains_shipping_prefix_and_plugin(tmp_path: Path) -> None:
         names = tar.getnames()
     assert f"{prefix}/" in names or any(n.startswith(f"{prefix}/") for n in names)
     assert f"{prefix}/plugin.json" in names
+    assert f"{prefix}/hooks.json" in names
+    assert f"{prefix}/mcp_config.json" in names
     assert f"{prefix}/omg_cli/__init__.py" in names
     # No secrets / vcs noise
     joined = "\n".join(names)

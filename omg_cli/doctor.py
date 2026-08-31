@@ -1324,6 +1324,8 @@ def check_hooks_registry() -> SoftResult:
         )
         if not payload.get("ok"):
             return (name, "warn", detail + f"; {payload.get('error')}")
+        if ag.get("configured") is not True or ag.get("loadable") is not True:
+            return (name, "warn", detail + "; Antigravity host manifests unavailable")
         return (name, "ok", detail)
     except Exception as exc:
         return (name, "warn", f"hooks registry probe failed ({type(exc).__name__})")
