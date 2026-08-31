@@ -307,6 +307,8 @@ def _listed_imports(
     except json.JSONDecodeError as exc:
         raise AntigravityInstallError("Antigravity plugin list was malformed") from exc
     rows = payload.get("imports") if isinstance(payload, dict) else None
+    if rows is None:
+        return []
     if not isinstance(rows, list):
         raise AntigravityInstallError("Antigravity plugin list lacked imports")
     return [row for row in rows if isinstance(row, dict)]
@@ -839,6 +841,8 @@ def _owned_json_row(body: bytes, *, filename: str) -> Any:
         raise AntigravityInstallError(f"Antigravity {filename} registry is malformed")
     if filename == "import_manifest.json":
         rows = payload.get("imports", [])
+        if rows is None:
+            rows = []
         if not isinstance(rows, list):
             raise AntigravityInstallError("Antigravity imports registry is malformed")
         matches = [
@@ -862,6 +866,8 @@ def _payload_without_owned_row(payload: Any, *, filename: str) -> dict[str, Any]
         raise AntigravityInstallError(f"Antigravity {filename} registry is malformed")
     if filename == "import_manifest.json":
         rows = stripped.get("imports", [])
+        if rows is None:
+            rows = []
         if not isinstance(rows, list):
             raise AntigravityInstallError("Antigravity imports registry is malformed")
         stripped["imports"] = [

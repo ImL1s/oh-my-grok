@@ -59,7 +59,7 @@ args = sys.argv[1:]
 def rows():
     if not manifest.is_file():
         return []
-    return json.loads(manifest.read_text()).get("imports", [])
+    return json.loads(manifest.read_text()).get("imports", []) or []
 
 if args[:2] == ["plugin", "validate"]:
     target = Path(args[2])
@@ -94,7 +94,7 @@ if args[:3] == ["plugin", "uninstall", "oh-my-grok"]:
     if destination.exists():
         shutil.rmtree(destination)
     config.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"imports": []}))
+    manifest.write_text(json.dumps({"imports": None}))
     sys.exit(0)
 if args[:3] == ["mcp", "remove", "omg-tools"]:
     payload = json.loads(mcp_settings.read_text()) if mcp_settings.is_file() else {"mcpServers": {}}
