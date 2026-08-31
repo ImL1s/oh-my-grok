@@ -1,19 +1,30 @@
-"""Read-only Antigravity (AG) history importer stub (#74).
+"""Read-only Antigravity conversation-summary importer (#74).
 
-Never mutates AG-owned files. Never fabricates a live import. Absence pins
-``unsupported``; an unknown schema pins ``unknown_version``.
+Only Antigravity's bounded ``conversation_summaries`` index is opened.  Per-
+conversation databases, titles, previews, prompts, responses, tool output, and
+application data directories are deliberately never queried.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import sqlite3
+import stat
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 AG_HISTORY_SCHEMA = 1
-SUPPORTED_AG_HISTORY_VERSIONS: frozenset[str] = frozenset()
+SQLITE_SUMMARY_VERSION = 1
+SUPPORTED_AG_HISTORY_VERSIONS: frozenset[str] = frozenset(
+    {f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"}
+)
+MAX_AG_HISTORY_RECORDS = 200
 
 _PROJECT_MARKERS = (
     ".antigravity",
@@ -28,6 +39,28 @@ _VERSION_FILES = (
     "manifest.json",
     "package.json",
 )
+_SUMMARY_DB = "conversation_summaries.db"
+_REQUIRED_SUMMARY_COLUMNS = frozenset(
+    {
+        "conversation_id",
+        "title",
+        "preview",
+        "step_count",
+        "last_modified_time",
+        "workspace_uris",
+        "status",
+        "source",
+        "project_id",
+        "agent_name",
+        "parent_conversation_id",
+        "nesting_depth",
+        "killed",
+        "last_user_input_time",
+        "last_user_input_step_index",
+        "app_data_dir",
+    }
+)
+_SAFE_LABEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,64}$")
 
 
 class AgHistoryError(ValueError):
@@ -50,17 +83,16 @@ def _existing_dir(path: Path) -> Path | None:
 
 
 def _candidate_dirs(project_root: Path, *, home: Path) -> list[Path]:
+    """Return legacy/version-marker directories without following symlinks."""
+
     found: list[Path] = []
-    seen: set[Path] = set()
+    seen: set[str] = set()
 
     def _add(raw: Path) -> None:
         existing = _existing_dir(raw)
         if existing is None:
             return
-        try:
-            key = existing.resolve()
-        except OSError:
-            return
+        key = os.path.abspath(os.fspath(existing))
         if key in seen:
             return
         seen.add(key)
@@ -72,10 +104,39 @@ def _candidate_dirs(project_root: Path, *, home: Path) -> list[Path]:
         os.environ.get("ANTIGRAVITY_HISTORY") or os.environ.get("AG_HISTORY_DIR") or ""
     ).strip()
     if env_dir:
-        _add(Path(env_dir).expanduser())
-    # Home profile dirs are not scanned unless pointed at via env — a project
-    # CLI must not inspect AG-owned files outside the project by default.
-    _ = home
+        candidate = Path(env_dir).expanduser()
+        if candidate.name != _SUMMARY_DB:
+            _add(candidate)
+    # The explicit ``session ag-history`` command may inspect this one pinned,
+    # documented host index.  No other home directory is scanned.
+    _add(home / ".gemini" / "antigravity-cli")
+    return found
+
+
+def _candidate_summary_dbs(project_root: Path, *, home: Path) -> list[Path]:
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(raw: Path) -> None:
+        key = os.path.abspath(os.fspath(raw))
+        if key in seen:
+            return
+        try:
+            raw.lstat()
+        except OSError:
+            return
+        seen.add(key)
+        found.append(raw)
+
+    for directory in _candidate_dirs(project_root, home=home):
+        _add(directory / _SUMMARY_DB)
+    env_dir = (
+        os.environ.get("ANTIGRAVITY_HISTORY") or os.environ.get("AG_HISTORY_DIR") or ""
+    ).strip()
+    if env_dir:
+        candidate = Path(env_dir).expanduser()
+        _add(candidate if candidate.name == _SUMMARY_DB else candidate / _SUMMARY_DB)
+    _add(home / ".gemini" / "antigravity-cli" / _SUMMARY_DB)
     return found
 
 
@@ -106,74 +167,282 @@ def _read_version_label(directory: Path) -> str | None:
     return None
 
 
+def _hash_descriptor(value: object, *, namespace: str) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    digest = hashlib.sha256(f"{namespace}\0{value}".encode("utf-8")).hexdigest()
+    return digest[:20]
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return max(minimum, min(parsed, maximum))
+
+
+def _safe_label(value: object) -> str | None:
+    if not isinstance(value, str) or not _SAFE_LABEL.fullmatch(value):
+        return None
+    return value
+
+
+def _safe_timestamp(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _workspace_descriptors(value: object) -> tuple[int, list[str]]:
+    if not isinstance(value, str) or len(value) > 1_000_000:
+        return 0, []
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, RecursionError):
+        parsed = [value] if value else []
+    if not isinstance(parsed, list):
+        return 0, []
+    fingerprints = [
+        digest
+        for item in parsed[:32]
+        if (digest := _hash_descriptor(item, namespace="ag-workspace")) is not None
+    ]
+    return min(len(parsed), 32), fingerprints
+
+
+def _public_row(row: sqlite3.Row) -> dict[str, Any]:
+    workspace_count, workspace_hashes = _workspace_descriptors(row["workspace_uris"])
+    result: dict[str, Any] = {
+        "provider": "antigravity",
+        "provenance": "antigravity_conversation_summaries",
+        "external_id_hash": _hash_descriptor(
+            row["conversation_id"], namespace="ag-conversation"
+        ),
+        "parent_id_hash": _hash_descriptor(
+            row["parent_conversation_id"], namespace="ag-conversation"
+        ),
+        "project_id_hash": _hash_descriptor(row["project_id"], namespace="ag-project"),
+        "step_count": _bounded_int(
+            row["step_count"], minimum=0, maximum=10_000_000, fallback=0
+        ),
+        "nesting_depth": _bounded_int(
+            row["nesting_depth"], minimum=0, maximum=1_000, fallback=0
+        ),
+        "last_user_input_step_index": _bounded_int(
+            row["last_user_input_step_index"],
+            minimum=-1,
+            maximum=10_000_000,
+            fallback=-1,
+        ),
+        "last_modified_time": _safe_timestamp(row["last_modified_time"]),
+        "last_user_input_time": _safe_timestamp(row["last_user_input_time"]),
+        "status": _safe_label(row["status"]),
+        "source": _safe_label(row["source"]),
+        "agent_name": _safe_label(row["agent_name"]),
+        "killed": bool(row["killed"]),
+        "workspace_count": workspace_count,
+        "workspace_hashes": workspace_hashes,
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def _open_summary_db(path: Path) -> sqlite3.Connection:
+    """Open a final-component regular file through SQLite's immutable RO URI."""
+
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise AgHistoryError("unsafe Antigravity summary path", code="E_AG_HISTORY_PATH")
+    uri = f"file:{quote(os.path.abspath(os.fspath(path)), safe='/')}?mode=ro&immutable=1"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    return connection
+
+
+def _import_summary_db(
+    path: Path, *, remaining: int
+) -> tuple[int, list[dict[str, Any]]]:
+    with _open_summary_db(path) as connection:
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if user_version != SQLITE_SUMMARY_VERSION:
+            raise AgHistoryError(
+                f"unsupported Antigravity summary schema {user_version}",
+                code="E_AG_HISTORY_VERSION",
+            )
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(conversation_summaries)")
+        }
+        if not _REQUIRED_SUMMARY_COLUMNS.issubset(columns):
+            raise AgHistoryError(
+                "unsupported Antigravity conversation_summaries shape",
+                code="E_AG_HISTORY_VERSION",
+            )
+        # Never add title, preview, app_data_dir, task details, or transcript
+        # fields to this SELECT.  The privacy boundary is enforced at source.
+        rows = connection.execute(
+            """SELECT substr(conversation_id, 1, 4096) AS conversation_id,
+                      step_count,
+                      substr(last_modified_time, 1, 128) AS last_modified_time,
+                      substr(workspace_uris, 1, 1000001) AS workspace_uris,
+                      substr(status, 1, 128) AS status,
+                      substr(source, 1, 128) AS source,
+                      substr(project_id, 1, 4096) AS project_id,
+                      substr(agent_name, 1, 128) AS agent_name,
+                      substr(parent_conversation_id, 1, 4096)
+                        AS parent_conversation_id,
+                      nesting_depth, killed,
+                      substr(last_user_input_time, 1, 128)
+                        AS last_user_input_time,
+                      last_user_input_step_index
+                 FROM conversation_summaries
+             ORDER BY last_modified_time DESC, conversation_id ASC
+                LIMIT ?""",
+            (remaining,),
+        ).fetchall()
+    return user_version, [_public_row(row) for row in rows]
+
+
+def _empty_result() -> dict[str, Any]:
+    return {
+        "schema_version": AG_HISTORY_SCHEMA,
+        "present": False,
+        "supported": False,
+        "imported": False,
+        "mutated": False,
+        "read_only": True,
+        "pin": "unsupported",
+        "reason": "ag_history_absent",
+        "locations": [],
+        "versions": [],
+        "record_count": 0,
+        "records": [],
+        "diagnostics": [],
+        "content_fields_read": False,
+        "raw_content": False,
+        "private_content": False,
+        "live_import": False,
+    }
+
+
 def inspect_ag_history(
     project_root: Path | str,
     *,
     home: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Probe AG history locations without reading conversation bodies."""
+    """Import bounded descriptors from supported AG summary indexes, read-only."""
 
     root = Path(project_root)
     home_path = Path(home) if home is not None else Path.home()
-    locations = _candidate_dirs(root, home=home_path)
-    if not locations:
-        return {
-            "schema_version": AG_HISTORY_SCHEMA,
-            "present": False,
-            "supported": False,
-            "imported": False,
-            "mutated": False,
-            "pin": "unsupported",
-            "reason": "ag_history_absent",
-            "locations": [],
-            "live_import": False,
-        }
+    databases = _candidate_summary_dbs(root, home=home_path)
+    legacy_locations = _candidate_dirs(root, home=home_path)
+    if not databases and not legacy_locations:
+        return _empty_result()
 
+    records: list[dict[str, Any]] = []
+    locations: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
     versions: list[str] = []
-    public_locations: list[dict[str, Any]] = []
-    for directory in locations:
+    opened = 0
+    saw_corrupt = False
+    saw_unsafe = False
+    saw_unknown = False
+
+    for path in databases:
+        location = {"kind": "sqlite_summary", "name": _SUMMARY_DB}
+        locations.append(location)
+        try:
+            version, imported = _import_summary_db(
+                path, remaining=max(0, MAX_AG_HISTORY_RECORDS - len(records))
+            )
+        except AgHistoryError as exc:
+            if exc.code == "E_AG_HISTORY_PATH":
+                saw_unsafe = True
+                diagnostics.append(
+                    {"source": _SUMMARY_DB, "reason": "unsafe_path_skipped"}
+                )
+            else:
+                saw_unknown = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "unsupported_schema_version",
+                    }
+                )
+            continue
+        except (OSError, sqlite3.DatabaseError):
+            saw_corrupt = True
+            diagnostics.append({"source": _SUMMARY_DB, "reason": "sqlite_read_failed"})
+            continue
+        opened += 1
+        version_label = f"sqlite-summary-v{version}"
+        versions.append(version_label)
+        location["version"] = version_label
+        records.extend(imported)
+
+    # Preserve classification for older marker-only layouts without reading
+    # transcript-like files inside them.
+    database_parents = {os.path.abspath(os.fspath(path.parent)) for path in databases}
+    for directory in legacy_locations:
+        if os.path.abspath(os.fspath(directory)) in database_parents:
+            continue
         label = _read_version_label(directory)
+        locations.append({"kind": "directory", "name": directory.name, "version": label})
         if label:
             versions.append(label)
-        public_locations.append(
-            {
-                "kind": "directory",
-                "name": directory.name,
-                "version": label,
-            }
-        )
+        saw_unknown = True
 
-    unique_versions = tuple(dict.fromkeys(versions))
-    known = bool(unique_versions) and all(
-        item in SUPPORTED_AG_HISTORY_VERSIONS for item in unique_versions
-    )
-    if known:
-        pin = "unsupported"
-        reason = "import_not_implemented"
-    elif unique_versions:
+    if opened:
+        pin = f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"
+        reason = "supported_summary_imported"
+    elif saw_unsafe:
+        pin = "unsafe_path"
+        reason = "ag_history_path_rejected"
+    elif saw_corrupt:
+        pin = "corrupt"
+        reason = "ag_history_corrupt_skipped"
+    elif saw_unknown:
         pin = "unknown_version"
         reason = "ag_history_version_unclassified"
     else:
-        pin = "unknown_version"
-        reason = "ag_history_present_unversioned"
+        pin = "unsupported"
+        reason = "ag_history_absent"
 
     return {
         "schema_version": AG_HISTORY_SCHEMA,
-        "present": True,
-        "supported": False,
-        "imported": False,
+        "present": bool(databases or legacy_locations),
+        "supported": opened > 0,
+        "imported": opened > 0,
         "mutated": False,
+        "read_only": True,
         "pin": pin,
         "reason": reason,
-        "versions": list(unique_versions),
-        "locations": public_locations,
-        "live_import": False,
+        "versions": list(dict.fromkeys(versions)),
+        "locations": locations,
+        "record_count": len(records),
+        "records": records,
+        "diagnostics": diagnostics,
+        "content_fields_read": False,
+        "raw_content": False,
+        "private_content": False,
+        "live_import": opened > 0,
     }
 
 
 __all__ = [
     "AG_HISTORY_SCHEMA",
     "AgHistoryError",
+    "MAX_AG_HISTORY_RECORDS",
     "SUPPORTED_AG_HISTORY_VERSIONS",
     "inspect_ag_history",
 ]
