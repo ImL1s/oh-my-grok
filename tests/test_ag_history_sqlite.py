@@ -1085,6 +1085,56 @@ def test_workspace_budget_is_spent_only_on_retained_records(
     assert result["records"][0]["workspace_count"] == 1
 
 
+def test_workspace_budget_is_spent_in_global_pending_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    newest = json.dumps(["file:///" + ("n" * 20)])
+    middle = json.dumps(["file:///" + ("m" * 30)])
+    oldest = json.dumps(["file:///" + ("o" * 30)])
+    newest_bytes = len(newest.encode("utf-8"))
+    middle_bytes = len(middle.encode("utf-8"))
+    oldest_bytes = len(oldest.encode("utf-8"))
+    budget = newest_bytes + middle_bytes + 5
+    assert newest_bytes + oldest_bytes <= budget
+    assert newest_bytes + oldest_bytes + middle_bytes > budget
+    monkeypatch.setattr(ag_history, "MAX_AG_HISTORY_RECORDS", 3)
+    monkeypatch.setattr(ag_history, "MAX_WORKSPACE_URI_AGGREGATE_BYTES", budget)
+    project_root = tmp_path / "project"
+    local_dir = project_root / ".antigravity"
+    local_dir.mkdir(parents=True)
+    local_db = local_dir / "conversation_summaries.db"
+    local_db.write_bytes(_summary_db(tmp_path / "project-home").read_bytes())
+    with sqlite3.connect(local_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, workspace_uris = ?, step_count = ?",
+            ("2026-08-31T12:00:00Z", newest, 1),
+        )
+        conn.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('oldest', '', '', 3, '2026-08-31T10:00:00Z',
+                       ?, 'idle', 'antigravity', '', '', '', 0, 0,
+                       '2026-08-31T10:00:00Z', 0, '')""",
+            (oldest,),
+        )
+    home = tmp_path / "home"
+    home_db = _summary_db(home)
+    with sqlite3.connect(home_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, workspace_uris = ?, step_count = ?",
+            ("2026-08-31T11:00:00Z", middle, 2),
+        )
+
+    result = inspect_ag_history(project_root, home=home)
+
+    assert result["record_count"] == 3
+    assert [row["step_count"] for row in result["records"]] == [1, 2, 3]
+    assert [row["workspace_count"] for row in result["records"]] == [1, 1, 0]
+
+
 def test_newest_records_are_merged_across_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

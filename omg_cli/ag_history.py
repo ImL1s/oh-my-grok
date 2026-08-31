@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import stat
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -831,89 +831,91 @@ def inspect_ag_history(
     )
     pending = pending[:MAX_AG_HISTORY_RECORDS]
     workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
-    by_path: dict[str, list[tuple[int, dict[str, Any], _FileIdentity]]] = {}
-    order: list[str] = []
-    for path, rowid, row, source_identity in pending:
-        key = os.path.abspath(os.fspath(path))
-        if key not in by_path:
-            order.append(key)
-            by_path[key] = []
-        by_path[key].append((rowid, row, source_identity))
     filled: dict[tuple[str, int], dict[str, Any]] = {}
-    for key in order:
-        path = Path(key)
-        expected_identity = by_path[key][0][2]
-        try:
-            with _open_summary_db(path) as (connection, identity):
-                if identity != expected_identity:
-                    raise AgHistoryError(
-                        "Antigravity summary changed while reading",
-                        code="E_AG_HISTORY_CHANGED",
+    opened_by_path: dict[str, tuple[sqlite3.Connection, _FileIdentity]] = {}
+    try:
+        with ExitStack() as stack:
+            for path, rowid, row, source_identity in pending:
+                key = os.path.abspath(os.fspath(path))
+                cached = opened_by_path.get(key)
+                if cached is None:
+                    connection, identity = stack.enter_context(
+                        _open_summary_db(Path(key))
                     )
-                for rowid, row, _identity in by_path[key]:
-                    workspace_uris, workspace_budget = _read_workspace_uris(
-                        connection,
-                        rowid=rowid,
-                        workspace_budget=workspace_budget,
-                    )
-                    count, hashes = _workspace_descriptors(workspace_uris)
-                    updated = dict(row)
-                    updated["workspace_count"] = count
-                    if hashes:
-                        updated["workspace_hashes"] = hashes
-                    filled[(key, rowid)] = {
-                        k: v for k, v in updated.items() if v is not None
-                    }
-        except AgHistoryError as exc:
-            if exc.code == "E_AG_HISTORY_PATH":
-                saw_unsafe = True
-                diagnostics.append(
-                    {"source": _SUMMARY_DB, "reason": "unsafe_path_skipped"}
+                    if identity != source_identity:
+                        raise AgHistoryError(
+                            "Antigravity summary changed while reading",
+                            code="E_AG_HISTORY_CHANGED",
+                        )
+                    opened_by_path[key] = (connection, identity)
+                else:
+                    connection, identity = cached
+                    if identity != source_identity:
+                        raise AgHistoryError(
+                            "Antigravity summary changed while reading",
+                            code="E_AG_HISTORY_CHANGED",
+                        )
+                workspace_uris, workspace_budget = _read_workspace_uris(
+                    connection,
+                    rowid=rowid,
+                    workspace_budget=workspace_budget,
                 )
-            elif exc.code == "E_AG_HISTORY_WAL_ACTIVE":
-                saw_busy = True
-                diagnostics.append(
-                    {
-                        "source": _SUMMARY_DB,
-                        "reason": "live_wal_readonly_unsupported",
-                    }
-                )
-            elif exc.code == "E_AG_HISTORY_JOURNAL_ACTIVE":
-                saw_journal = True
-                diagnostics.append(
-                    {
-                        "source": _SUMMARY_DB,
-                        "reason": "live_journal_readonly_unsupported",
-                    }
-                )
-            elif exc.code == "E_AG_HISTORY_CHANGED":
-                saw_changed = True
-                diagnostics.append(
-                    {"source": _SUMMARY_DB, "reason": "sqlite_source_changed"}
-                )
-            elif exc.code == "E_AG_HISTORY_PLATFORM":
-                saw_platform = True
-                diagnostics.append(
-                    {
-                        "source": _SUMMARY_DB,
-                        "reason": "secure_sqlite_open_unavailable",
-                    }
-                )
-            else:
-                saw_unknown = True
-                diagnostics.append(
-                    {
-                        "source": _SUMMARY_DB,
-                        "reason": "unsupported_schema_version",
-                    }
-                )
-            records = []
-            break
-        except (OSError, sqlite3.DatabaseError):
-            saw_corrupt = True
-            diagnostics.append({"source": _SUMMARY_DB, "reason": "sqlite_read_failed"})
-            records = []
-            break
+                count, hashes = _workspace_descriptors(workspace_uris)
+                updated = dict(row)
+                updated["workspace_count"] = count
+                if hashes:
+                    updated["workspace_hashes"] = hashes
+                filled[(key, rowid)] = {
+                    k: v for k, v in updated.items() if v is not None
+                }
+    except AgHistoryError as exc:
+        if exc.code == "E_AG_HISTORY_PATH":
+            saw_unsafe = True
+            diagnostics.append(
+                {"source": _SUMMARY_DB, "reason": "unsafe_path_skipped"}
+            )
+        elif exc.code == "E_AG_HISTORY_WAL_ACTIVE":
+            saw_busy = True
+            diagnostics.append(
+                {
+                    "source": _SUMMARY_DB,
+                    "reason": "live_wal_readonly_unsupported",
+                }
+            )
+        elif exc.code == "E_AG_HISTORY_JOURNAL_ACTIVE":
+            saw_journal = True
+            diagnostics.append(
+                {
+                    "source": _SUMMARY_DB,
+                    "reason": "live_journal_readonly_unsupported",
+                }
+            )
+        elif exc.code == "E_AG_HISTORY_CHANGED":
+            saw_changed = True
+            diagnostics.append(
+                {"source": _SUMMARY_DB, "reason": "sqlite_source_changed"}
+            )
+        elif exc.code == "E_AG_HISTORY_PLATFORM":
+            saw_platform = True
+            diagnostics.append(
+                {
+                    "source": _SUMMARY_DB,
+                    "reason": "secure_sqlite_open_unavailable",
+                }
+            )
+        else:
+            saw_unknown = True
+            diagnostics.append(
+                {
+                    "source": _SUMMARY_DB,
+                    "reason": "unsupported_schema_version",
+                }
+            )
+        records = []
+    except (OSError, sqlite3.DatabaseError):
+        saw_corrupt = True
+        diagnostics.append({"source": _SUMMARY_DB, "reason": "sqlite_read_failed"})
+        records = []
     else:
         records = [
             filled[(os.path.abspath(os.fspath(path)), rowid)]
