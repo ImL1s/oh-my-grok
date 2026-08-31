@@ -690,9 +690,7 @@ def _run_uninstall_locked(
                 recovery = (
                     config_root(agy_home_for_finalize) / ".omg-transactions" / "agy-uninstall"
                 )
-                if not restore_recovery_snapshot(
-                    recovery, runner=runner, home=agy_home_for_finalize
-                ):
+                if not restore_recovery_snapshot(recovery, runner=runner):
                     failures.append("agy-restore")
             except Exception as exc:  # noqa: BLE001
                 failures.append(f"agy:{type(exc).__name__}")
