@@ -746,9 +746,17 @@ def _assert_snapshot_safe(root: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
     try:
         os.fsync(directory_fd)
+    except OSError:
+        if os.name != "nt":
+            raise
     finally:
         os.close(directory_fd)
 
@@ -1221,7 +1229,6 @@ def restore_recovery_snapshot(
                 and current_target_state == "present"
                 and isinstance(current[1], str)
                 and isinstance(listed, dict)
-                and set(listed) == {"name", "source", "components"}
                 and listed.get("name") == PLUGIN_NAME
                 and listed.get("source") == "antigravity"
                 and {str(item) for item in listed.get("components", [])}

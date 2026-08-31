@@ -705,6 +705,26 @@ def test_incomplete_fresh_install_tree_is_removed_on_recovery(
     assert leftovers == []
 
 
+def test_recovery_allows_host_imported_at_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    backup = tmp_path / "project/.omg/install/tx/imported-at"
+    persist_recovery_snapshot(backup)
+    digest = _package_digest(ROOT)
+    assert digest is not None
+    subprocess.run(["agy", "plugin", "install", str(ROOT)], check=True)
+    subprocess.run(["agy", "plugin", "enable", "oh-my-grok"], check=True)
+    _mark_recovery_phase(backup, "registering_mcp", intended_plugin_digest=digest)
+    manifest_path = home / ".gemini/config/import_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["imports"][0]["importedAt"] = "2026-08-31T00:00:00Z"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert restore_recovery_snapshot(backup) is True
+    assert not installed_plugin_path(home).exists()
+
+
 def test_recovery_resumes_after_one_registry_row_was_already_restored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

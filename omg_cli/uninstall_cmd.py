@@ -32,6 +32,23 @@ def _bytes_identity(content: bytes | None) -> str | None:
     return hashlib.sha256(content).hexdigest() if content is not None else None
 
 
+def _fsync_parent(path: Path) -> None:
+    """Best-effort parent directory fsync; required on POSIX, ignored on Windows."""
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        if os.name != "nt":
+            raise
+    finally:
+        os.close(directory_fd)
+
+
 def _expected_rules_post(content: bytes | None) -> bytes | None:
     if content is None:
         return None
@@ -208,11 +225,7 @@ def _recover_durable_grok_uninstall(
                 return False
         path.unlink()
         if path.parent.is_dir():
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _fsync_parent(path.parent)
         return True
     except Exception:  # noqa: BLE001 - malformed recovery must fail closed
         return False
@@ -257,11 +270,7 @@ def _restore_managed_files(snapshots: list[_ManagedFileSnapshot]) -> None:
                     raise OSError(f"managed path became a directory: {snapshot.path}")
                 snapshot.path.unlink()
                 if snapshot.path.parent.is_dir():
-                    directory_fd = os.open(snapshot.path.parent, os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    _fsync_parent(snapshot.path.parent)
             continue
         snapshot.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = snapshot.path.with_name(
@@ -280,11 +289,7 @@ def _restore_managed_files(snapshots: list[_ManagedFileSnapshot]) -> None:
                 os.fsync(stream.fileno())
             temporary.chmod(snapshot.mode)
             os.replace(temporary, snapshot.path)
-            directory_fd = os.open(snapshot.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _fsync_parent(snapshot.path.parent)
         finally:
             try:
                 temporary.unlink(missing_ok=True)
