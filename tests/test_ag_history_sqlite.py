@@ -516,6 +516,34 @@ def test_dynamic_numeric_blobs_are_rejected_inside_sqlite(
     assert row["last_user_input_step_index"] == -1
 
 
+def test_oversized_string_blobs_are_omitted_without_materializing_them(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            """UPDATE conversation_summaries
+                  SET conversation_id = zeroblob(65536),
+                      status = zeroblob(65536),
+                      source = zeroblob(65536),
+                      project_id = zeroblob(65536),
+                      agent_name = zeroblob(65536),
+                      parent_conversation_id = zeroblob(65536)"""
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    assert result["record_count"] == 1
+    dumped = json.dumps(result)
+    assert "RAW PRIVATE TITLE" not in dumped
+    row = result["records"][0]
+    assert "external_id_hash" not in row
+    assert "status_hash" not in row
+    assert row["last_modified_time"] == "2026-08-31T00:00:00Z"
+
+
 @pytest.mark.parametrize("suffix", ["-wal", "-shm"])
 def test_sqlite_sidecar_symlink_is_rejected(tmp_path: Path, suffix: str) -> None:
     home = tmp_path / "home"

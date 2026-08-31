@@ -16,7 +16,7 @@ import stat
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 from urllib.parse import quote
 
 
@@ -256,7 +256,7 @@ def _workspace_descriptors(value: object) -> tuple[int, list[str]]:
 
 
 def _public_row(
-    row: sqlite3.Row, *, workspace_uris: str | None
+    row: Mapping[str, Any], *, workspace_uris: str | None
 ) -> dict[str, Any]:
     workspace_count, workspace_hashes = _workspace_descriptors(workspace_uris)
     result: dict[str, Any] = {
@@ -549,6 +549,47 @@ def _read_workspace_uris(
     return candidate, remaining
 
 
+_TEXT_COLUMN_LIMITS = (
+    ("conversation_id", 4096),
+    ("last_modified_time", 128),
+    ("status", 128),
+    ("source", 128),
+    ("project_id", 4096),
+    ("agent_name", 128),
+    ("parent_conversation_id", 4096),
+    ("last_user_input_time", 128),
+)
+
+
+def _read_bounded_text(
+    connection: sqlite3.Connection, *, column: str, rowid: int, max_chars: int
+) -> str:
+    """Read one TEXT/BLOB cell incrementally; oversized storage is omitted."""
+
+    try:
+        blob = connection.blobopen(
+            "conversation_summaries", column, rowid, readonly=True
+        )
+    except sqlite3.Error:
+        return ""
+    try:
+        size = len(blob)
+        if size > max_chars * 4:
+            return ""
+        raw = blob.read(size)
+    finally:
+        blob.close()
+    if len(raw) != size:
+        return ""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+    if len(text) > max_chars:
+        return ""
+    return text
+
+
 def _import_summary_db(
     path: Path, *, remaining: int
 ) -> tuple[int, list[tuple[int, dict[str, Any]]], _FileIdentity]:
@@ -597,24 +638,17 @@ def _import_summary_db(
             )
         # Never add title, preview, app_data_dir, task details, or transcript
         # fields to this SELECT.  The privacy boundary is enforced at source.
+        # String cells are not projected here: substr() materializes the whole
+        # dynamically typed value first, so oversized TEXT/BLOB storage is
+        # read incrementally through blobopen after this bounded LIMIT.
         rows = connection.execute(
             """SELECT rowid AS summary_rowid,
-                      substr(conversation_id, 1, 4096) AS conversation_id,
                       CASE WHEN typeof(step_count) = 'integer'
                            THEN step_count ELSE 0 END AS step_count,
-                      substr(last_modified_time, 1, 128) AS last_modified_time,
-                      substr(status, 1, 128) AS status,
-                      substr(source, 1, 128) AS source,
-                      substr(project_id, 1, 4096) AS project_id,
-                      substr(agent_name, 1, 128) AS agent_name,
-                      substr(parent_conversation_id, 1, 4096)
-                        AS parent_conversation_id,
                       CASE WHEN typeof(nesting_depth) = 'integer'
                            THEN nesting_depth ELSE 0 END AS nesting_depth,
                       CASE WHEN typeof(killed) = 'integer'
                            THEN killed ELSE 0 END AS killed,
-                      substr(last_user_input_time, 1, 128)
-                        AS last_user_input_time,
                       CASE WHEN typeof(last_user_input_step_index) = 'integer'
                            THEN last_user_input_step_index ELSE -1 END
                         AS last_user_input_step_index
@@ -627,14 +661,6 @@ def _import_summary_db(
         imported: list[tuple[int, dict[str, Any]]] = []
         skipped = 0
         for row in fetched:
-            raw_modified = row["last_modified_time"]
-            if (
-                not isinstance(raw_modified, str)
-                or _CANONICAL_UTC.match(raw_modified) is None
-                or _safe_timestamp(raw_modified) is None
-            ):
-                skipped += 1
-                continue
             try:
                 summary_rowid = int(row["summary_rowid"])
             except (TypeError, ValueError, OverflowError) as exc:
@@ -642,8 +668,33 @@ def _import_summary_db(
                     "unsupported Antigravity conversation_summaries rowid",
                     code="E_AG_HISTORY_VERSION",
                 ) from exc
+            texts = {
+                column: _read_bounded_text(
+                    connection,
+                    column=column,
+                    rowid=summary_rowid,
+                    max_chars=max_chars,
+                )
+                for column, max_chars in _TEXT_COLUMN_LIMITS
+            }
+            raw_modified = texts["last_modified_time"]
+            if (
+                not isinstance(raw_modified, str)
+                or _CANONICAL_UTC.match(raw_modified) is None
+                or _safe_timestamp(raw_modified) is None
+            ):
+                skipped += 1
+                continue
+            public = {
+                "summary_rowid": summary_rowid,
+                "step_count": row["step_count"],
+                "nesting_depth": row["nesting_depth"],
+                "killed": row["killed"],
+                "last_user_input_step_index": row["last_user_input_step_index"],
+                **texts,
+            }
             imported.append(
-                (summary_rowid, _public_row(row, workspace_uris=None))
+                (summary_rowid, _public_row(public, workspace_uris=None))
             )
         if skipped and len(fetched) == remaining:
             raise AgHistoryError(
