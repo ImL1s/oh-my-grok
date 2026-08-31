@@ -162,10 +162,29 @@ def test_fingerprintless_preexisting_child_is_never_job_owned() -> None:
 
     discovered = _new_supervisor_children(
         [fingerprintless, actual_job_child],
-        preexisting_pids={fingerprintless.pid},
+        preexisting_identities={fingerprintless.pid: fingerprintless},
     )
 
     assert discovered == (actual_job_child,)
+
+
+def test_fingerprinted_preexisting_child_is_reconsidered_only_after_pid_reuse() -> None:
+    from omg_cli.edit_hygiene.simplify import _new_supervisor_children
+    from omg_cli.jobs.ownership import ProcessIdentity
+
+    previous = ProcessIdentity(pid=101, pgid=101, pid_starttime="start:old")
+    same = ProcessIdentity(pid=101, pgid=999, pid_starttime="start:old")
+    unproven = ProcessIdentity(pid=101, pgid=202, pid_starttime=None)
+    reused = ProcessIdentity(pid=101, pgid=202, pid_starttime="start:new")
+
+    assert _new_supervisor_children(
+        [same, unproven],
+        preexisting_identities={previous.pid: previous},
+    ) == ()
+    assert _new_supervisor_children(
+        [reused],
+        preexisting_identities={previous.pid: previous},
+    ) == (reused,)
 
 
 def test_simplify_enable_without_provider_is_assignment(
