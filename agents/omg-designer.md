@@ -19,7 +19,6 @@ tools:
   - multi_replace_file_content
   - replace_file_content
   - write_to_file
-  - run_command
   - notebook_edit
   - generate_image
 ---

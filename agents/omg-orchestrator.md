@@ -15,8 +15,8 @@ tools:
   - multi_replace_file_content
   - replace_file_content
   - write_to_file
-  - run_command
   - notebook_edit
+  - run_command
 ---
 
 # omg-orchestrator — Coordinate, do not bulk-implement

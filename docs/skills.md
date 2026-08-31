@@ -709,8 +709,9 @@ Machine-readable plugin agent catalog: [`agents/catalog.yaml`](../agents/catalog
 `--check` on `scripts/generate_agents_catalog.py` fails on JSON/projection
 drift and on installable `agents/*.md` Agy `tools:` drift. Those tool lists
 are derived from the same catalog posture: read-only roles receive only
-read/search tools, read-write roles receive edit plus `run_command`, and only
-read-write visual implementers receive `generate_image`. Load fail-closes when
+read/search tools, read-write roles receive edit tools, only the orchestrator
+receives `run_command`, and only read-write visual implementers receive
+`generate_image`. Load fail-closes when
 an agent's frontmatter omits,
 uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults

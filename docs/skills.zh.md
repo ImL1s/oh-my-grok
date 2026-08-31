@@ -568,7 +568,7 @@ Workflow plan 不会启动外部 CLI。Leader 应使用 Grok 原生 `spawn_subag
 （loader `omg_cli/agents_catalog.py`；用 `omg capabilities` 的 `agents_catalog` 检视）。
 `scripts/generate_agents_catalog.py --check` 也会检查可安装的 `agents/*.md`
 内 Agy `tools:` 是否漂移。工具清单由同一份目录权限推导：只读角色只有读取／搜索工具，
-读写角色才有编辑与 `run_command`，且只有读写视觉实现者有 `generate_image`。
+读写角色有编辑工具，只有 orchestrator 有 `run_command`，且只有读写视觉实现者有 `generate_image`。
 agent frontmatter 若省略、使用 snake_case 别名（`capability_mode` / `permission_mode`），或与目录的 `capabilityMode` / `permissionMode` 不一致则 fail-closed。Agent markdown 以 `O_NOFOLLOW|O_NONBLOCK`（POSIX）或 Windows `CreateFileW` / `NtCreateFile` `FILE_FLAG_OPEN_REPARSE_POINT` 打开并从 pinned handle 读取。
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 下的 Antigravity `agent.md` **只是投影** — 不是已安装的 AG 插件，也不是 live AG 证据；

@@ -29,6 +29,7 @@ from omg_cli.agents_catalog import (
     load_yaml_catalog_document,
     lookup_agent,
     plugin_root,
+    render_antigravity_agent_tools,
     render_antigravity_projections,
     render_handoff,
     resolve_category,
@@ -441,7 +442,11 @@ def test_antigravity_tool_profiles_are_catalog_driven_and_fail_closed() -> None:
     executor = antigravity_tools_for(catalog.by_id()["omg-executor"])
     assert "write_to_file" in executor
     assert "replace_file_content" in executor
-    assert "run_command" in executor
+    assert "run_command" not in executor
+
+    orchestrator = antigravity_tools_for(catalog.by_id()["omg-orchestrator"])
+    assert "write_to_file" in orchestrator
+    assert "run_command" in orchestrator
 
     verifier = antigravity_tools_for(catalog.by_id()["omg-verifier"])
     assert "view_file" in verifier
@@ -479,7 +484,42 @@ def test_antigravity_agent_tool_writer_repairs_drift(tmp_path: Path) -> None:
     text = (tmp_path / "agents" / "omg-executor.md").read_text(encoding="utf-8")
     assert "tools:\n  - find_by_name" in text
     assert "  - write_to_file\n" in text
-    assert "  - run_command\n" in text
+    assert "  - run_command\n" not in text
+
+
+def test_duplicate_antigravity_tool_blocks_fail_closed_and_are_repaired(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    record = load_agents_catalog(
+        tmp_path, require_projections=False
+    ).by_id()["omg-executor"]
+    path = tmp_path / "agents" / "omg-executor.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "---\n# omg-executor",
+        "tools:\n  - view_file\ntools:\n  - run_command\n---\n# omg-executor",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
+        check_antigravity_agent_tools(tmp_path)
+
+    path.write_text(
+        render_antigravity_agent_tools(record, text),
+        encoding="utf-8",
+    )
+    repaired = path.read_text(encoding="utf-8")
+    assert repaired.count("\ntools:\n") == 1
+    assert "run_command" not in repaired
+    assert check_antigravity_agent_tools(tmp_path) == []
 
 
 def test_inspect_payload_never_claims_verified() -> None:

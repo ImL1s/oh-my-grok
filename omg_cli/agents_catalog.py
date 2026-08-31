@@ -62,9 +62,9 @@ ANTIGRAVITY_WRITE_TOOLS = (
     "multi_replace_file_content",
     "replace_file_content",
     "write_to_file",
-    "run_command",
     "notebook_edit",
 )
+ANTIGRAVITY_ORCHESTRATOR_TOOLS = ("run_command",)
 ANTIGRAVITY_VISUAL_WRITE_TOOLS = ("generate_image",)
 
 ALLOWED_CAPABILITY_MODES = frozenset({"read-only", "read-write"})
@@ -1247,6 +1247,8 @@ def antigravity_tools_for(record: AgentRecord) -> tuple[str, ...]:
     tools = list(ANTIGRAVITY_READ_TOOLS)
     if record.capability_mode == "read-write":
         tools.extend(ANTIGRAVITY_WRITE_TOOLS)
+        if record.tier == "orchestrator":
+            tools.extend(ANTIGRAVITY_ORCHESTRATOR_TOOLS)
         if "visual-engineering" in record.categories:
             tools.extend(ANTIGRAVITY_VISUAL_WRITE_TOOLS)
     return tuple(tools)
@@ -1265,13 +1267,16 @@ def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] 
         )
     except StopIteration as exc:
         raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter") from exc
-    start = None
-    for index, line in enumerate(lines[1:end], start=1):
-        if line == f"{key}:":
-            start = index + 1
-            break
-    if start is None:
+    starts = [
+        index
+        for index, line in enumerate(lines[1:end], start=1)
+        if line == f"{key}:"
+    ]
+    if len(starts) > 1:
+        raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter {key} keys")
+    if not starts:
         return None
+    start = starts[0] + 1
     values: list[str] = []
     for line in lines[start:end]:
         if not line.startswith((" ", "\t")):
@@ -1299,21 +1304,19 @@ def render_antigravity_agent_tools(record: AgentRecord, source_text: str) -> str
     except StopIteration as exc:
         raise AgentsCatalogError(f"{record.id}: malformed YAML frontmatter") from exc
 
-    block_start = None
-    block_end = None
+    blocks: list[tuple[int, int]] = []
     for index in range(1, end):
         if lines[index] == "tools:":
-            block_start = index
             block_end = index + 1
             while block_end < end and lines[block_end].startswith((" ", "\t")):
                 block_end += 1
-            break
-    if block_start is None:
-        block_start = end
-        block_end = end
+            blocks.append((index, block_end))
+    block_start = blocks[0][0] if blocks else end
+    for start, stop in reversed(blocks):
+        del lines[start:stop]
 
     block = ["tools:", *(f"  - {tool}" for tool in antigravity_tools_for(record))]
-    rendered = lines[:block_start] + block + lines[block_end:]
+    rendered = lines[:block_start] + block + lines[block_start:]
     return "\n".join(rendered) + "\n"
 
 
