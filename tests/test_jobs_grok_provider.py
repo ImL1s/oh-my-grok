@@ -60,7 +60,7 @@ def test_grok_version_probe_does_not_receive_auth_secrets(
         "import os\n"
         "from pathlib import Path\n"
         f"Path({str(captured)!r}).write_text('|'.join("
-        "f'{key}={os.environ.get(key, \'\')}' for key in "
+        "f\"{key}={os.environ.get(key, '')}\" for key in "
         "('GROK_API_KEY', 'XAI_API_KEY', 'OMG_GROK_API_KEY')), encoding='utf-8')\n"
         "print('1.2.3')\n",
         encoding="utf-8",
