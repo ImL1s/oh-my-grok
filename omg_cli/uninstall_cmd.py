@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 from typing import NamedTuple
@@ -25,6 +28,196 @@ class _PluginSnapshot(NamedTuple):
     inventory: list[dict]
 
 
+def _bytes_identity(content: bytes | None) -> str | None:
+    return hashlib.sha256(content).hexdigest() if content is not None else None
+
+
+def _expected_rules_post(content: bytes | None) -> bytes | None:
+    if content is None:
+        return None
+    from omg_cli.guidance import _extract_managed_block
+
+    text = content.decode("utf-8")
+    span = _extract_managed_block(text)
+    if span is None:
+        return content
+    remainder = (text[: span[0]] + text[span[1] :]).strip()
+    return (remainder + "\n").encode("utf-8") if remainder else None
+
+
+def _write_durable_grok_uninstall(
+    path: Path,
+    *,
+    managed: list[_ManagedFileSnapshot],
+    rules: Path,
+    plugin: _PluginSnapshot,
+    stage: Path,
+    pointers: dict[Path, str],
+    receipt_path: Path,
+    receipt_hash: str,
+) -> None:
+    rows = []
+    for row in managed:
+        post = _expected_rules_post(row.content) if row.path == rules else None
+        rows.append(
+            {
+                "path": str(row.path),
+                "content": base64.b64encode(row.content).decode() if row.content is not None else None,
+                "mode": row.mode,
+                "prior_sha256": _bytes_identity(row.content),
+                "post_sha256": _bytes_identity(post),
+            }
+        )
+    payload = {
+        "schema": "omg-grok-uninstall/v1",
+        "managed": rows,
+        "plugin": {
+            **plugin._asdict(),
+            "path": str(plugin.path) if plugin.path is not None else None,
+        },
+        "stage": str(stage),
+        "receipt_path": str(receipt_path),
+        "receipt_hash": receipt_hash,
+        "pointers": {str(key): value for key, value in pointers.items()},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or (os.path.lexists(path) and not path.is_file()):
+        raise OSError("durable Grok journal path is unsafe")
+    body = json.dumps(payload, sort_keys=True).encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
+def _recover_durable_grok_uninstall(
+    path: Path, *, runner, grok_home: Path, expected_paths: set[Path]
+) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return not os.path.lexists(path)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("schema") != "omg-grok-uninstall/v1":
+            return False
+        receipt_path = Path(raw["receipt_path"])
+        receipts_root = (grok_home / "omg" / "receipts").absolute()
+        if (
+            receipt_path.is_symlink()
+            or receipt_path.parent.absolute() != receipts_root
+            or not receipt_path.is_file()
+        ):
+            return False
+        from omg_cli.setup_cmd import read_install_receipt
+
+        receipt = read_install_receipt(receipt_path)
+        if receipt.get("receipt_hash") != raw.get("receipt_hash"):
+            return False
+        stage = Path(raw["stage"])
+        if (
+            str(stage.absolute()) != str(receipt["installed"]["stage_realpath"])
+            or not stage.is_dir()
+            or stage.is_symlink()
+        ):
+            return False
+        managed: list[_ManagedFileSnapshot] = []
+        for row in raw["managed"]:
+            target = Path(row["path"])
+            if target not in expected_paths or target.is_symlink():
+                return False
+            content = base64.b64decode(row["content"]) if row["content"] is not None else None
+            if _bytes_identity(content) != row["prior_sha256"]:
+                return False
+            current_file = target.is_file() and not target.is_symlink()
+            current_absent = not os.path.lexists(target)
+            if not current_file and not current_absent:
+                return False
+            current_id = _bytes_identity(target.read_bytes() if current_file else None)
+            current_mode = (target.stat().st_mode & 0o777) if current_file else None
+            current_kind = "file" if current_file else "absent"
+            prior_kind = "file" if row["prior_sha256"] is not None else "absent"
+            post_kind = "file" if row["post_sha256"] is not None else "absent"
+            allowed = {
+                (prior_kind, row["prior_sha256"], row["mode"] if prior_kind == "file" else None),
+                (post_kind, row["post_sha256"], row["mode"] if post_kind == "file" else None),
+            }
+            if (current_kind, current_id, current_mode) not in allowed:
+                return False
+            managed.append(_ManagedFileSnapshot(target, content, row["mode"]))
+        pointers = {Path(key): value for key, value in raw["pointers"].items()}
+        for pointer, expected in pointers.items():
+            if pointer not in expected_paths:
+                return False
+            if os.path.lexists(pointer) and (
+                not pointer.is_symlink() or os.readlink(pointer) != expected
+            ):
+                return False
+        plugin_raw = raw["plugin"]
+        plugin = _PluginSnapshot(
+            bool(plugin_raw["present"]),
+            Path(plugin_raw["path"]) if plugin_raw["path"] else None,
+            bool(plugin_raw["enabled"]),
+            plugin_raw["digest"],
+            plugin_raw["inventory"],
+        )
+        allowed_plugin_paths = {
+            str(stage.absolute()),
+            str(Path(str(receipt["installed"]["plugin_realpath"])).absolute()),
+        }
+        if (
+            not plugin.present
+            or plugin.path is None
+            or str(plugin.path.absolute()) not in allowed_plugin_paths
+            or plugin.digest != receipt["installed"]["package_digest"]
+            or plugin.inventory != receipt["installed"].get("inventory", [])
+        ):
+            return False
+        receipt_pointer = grok_home / "omg" / "current-receipt"
+        expected_receipt_link = pointers.get(receipt_pointer)
+        if expected_receipt_link is None:
+            return False
+        linked_receipt = (receipt_pointer.parent / expected_receipt_link).resolve()
+        if linked_receipt != receipt_path.resolve():
+            return False
+        current_plugin = _snapshot_plugin(runner, grok_home=grok_home)
+        if current_plugin.present and current_plugin != plugin:
+            return False
+        if not current_plugin.present and plugin.present:
+            _restore_plugin(runner, plugin, grok_home=grok_home, source=stage)
+        _restore_managed_files(managed)
+        for pointer, expected in pointers.items():
+            if not os.path.lexists(pointer):
+                _restore_exact_symlink(pointer, expected)
+        if _snapshot_plugin(runner, grok_home=grok_home) != plugin:
+            return False
+        for row in managed:
+            current = row.path.read_bytes() if row.path.is_file() else None
+            if current != row.content:
+                return False
+        path.unlink()
+        if path.parent.is_dir():
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        return True
+    except Exception:  # noqa: BLE001 - malformed recovery must fail closed
+        return False
+
+
 def _snapshot_managed_files(paths: tuple[Path, ...]) -> list[_ManagedFileSnapshot]:
     """Capture receipt-owned regular files for all-or-prior removal rollback."""
     snapshots: list[_ManagedFileSnapshot] = []
@@ -37,11 +230,18 @@ def _snapshot_managed_files(paths: tuple[Path, ...]) -> list[_ManagedFileSnapsho
             raise OSError(f"managed path is not a regular file: {path}")
         content = path.read_bytes()
         after = path.lstat()
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_mode,
+        ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
             after.st_mtime_ns,
+            after.st_mode,
         ):
             raise OSError(f"managed path changed while snapshotting: {path}")
         snapshots.append(_ManagedFileSnapshot(path, content, before.st_mode & 0o777))
@@ -56,17 +256,35 @@ def _restore_managed_files(snapshots: list[_ManagedFileSnapshot]) -> None:
                 if snapshot.path.is_dir() and not snapshot.path.is_symlink():
                     raise OSError(f"managed path became a directory: {snapshot.path}")
                 snapshot.path.unlink()
+                if snapshot.path.parent.is_dir():
+                    directory_fd = os.open(snapshot.path.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
             continue
         snapshot.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = snapshot.path.with_name(
             f".{snapshot.path.name}.uninstall-rollback-{uuid.uuid4().hex}"
         )
         try:
-            temporary.write_bytes(snapshot.content)
             if snapshot.mode is None:  # pragma: no cover - NamedTuple invariant
                 raise OSError("managed file snapshot has no mode")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(temporary, flags, snapshot.mode)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(snapshot.content)
+                stream.flush()
+                os.fsync(stream.fileno())
             temporary.chmod(snapshot.mode)
             os.replace(temporary, snapshot.path)
+            directory_fd = os.open(snapshot.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             try:
                 temporary.unlink(missing_ok=True)
@@ -229,7 +447,7 @@ def _owned_plan_has_hook_artifact(owned_plan: dict) -> bool:
     return False
 
 
-def run_uninstall(
+def _run_uninstall_locked(
     *,
     yes: bool = False,
     runner=subprocess.run,
@@ -255,6 +473,15 @@ def run_uninstall(
     store = gh / "omg"
     current = store / "current"
     receipt_pointer = store / "current-receipt"
+    durable_grok_tx = store / "uninstall-current.json"
+    if os.path.lexists(durable_grok_tx) and not _recover_durable_grok_uninstall(
+        durable_grok_tx,
+        runner=runner,
+        grok_home=gh,
+        expected_paths={hook, hook_wrapper, hook_py, rules, link, current, receipt_pointer},
+    ):
+        print("omg uninstall: durable Grok recovery failed; evidence preserved", file=sys.stderr)
+        return 1
 
     receipt_path: Path | None = None
     receipt: dict | None = None
@@ -454,6 +681,68 @@ def run_uninstall(
         print(f"omg uninstall: {reason}{suffix}", file=sys.stderr)
         return 1
 
+    # 1. Remove manifest-owned Agy before any Grok mutation. Its committed
+    # durable marker remains until the whole cross-runtime uninstall completes.
+    agy_home_for_finalize: Path | None = None
+    # Manifest-owned exact Agy import, then unchanged regular files.  The
+    # plugin is removed only through the host CLI and only when its package
+    # digest still matches the manifest.
+    if owned_plan.get("has_manifest"):
+        external = owned_plan.get("remove_external") or []
+        if external:
+            if len(external) != 1:
+                print(
+                    "omg uninstall: ambiguous Antigravity ownership; plugin preserved",
+                    file=sys.stderr,
+                )
+                return rollback("ambiguous Antigravity ownership")
+            external_row = external[0]
+            target = Path(str(external_row.get("path") or ""))
+            try:
+                agy_home = target.parents[3]
+                expected_digest = str(external_row["content_hash"])
+                expected_registry = str(external_row["registry_identity"])
+                expected_mcp_registry = str(external_row["mcp_registry_identity"])
+                from omg_cli.antigravity_install import (
+                    uninstall_owned_plugin,
+                )
+
+                agy_home_for_finalize = agy_home
+                removed = uninstall_owned_plugin(
+                    expected_digest=expected_digest,
+                    expected_registry_identity=expected_registry,
+                    expected_mcp_registry_identity=expected_mcp_registry,
+                    runner=runner,
+                    home=agy_home,
+                    retain_committed=True,
+                )
+            except (OSError, KeyError, IndexError, ValueError):
+                removed = False
+            if not removed:
+                print(
+                    "omg uninstall: Antigravity plugin changed before locked uninstall; preserved",
+                    file=sys.stderr,
+                )
+                return rollback("Antigravity locked uninstall failed")
+            print("omg uninstall: removed manifest-owned Antigravity plugin")
+
+    if (
+        receipt is not None
+        and receipt_path is not None
+        and plugin_snapshot is not None
+        and verified_stage is not None
+    ):
+        _write_durable_grok_uninstall(
+            durable_grok_tx,
+            managed=managed_snapshots,
+            rules=rules,
+            plugin=plugin_snapshot,
+            stage=verified_stage,
+            pointers=pointer_targets,
+            receipt_path=receipt_path,
+            receipt_hash=str(receipt["receipt_hash"]),
+        )
+
     # 1. grok plugin uninstall.  Receipt-backed failure is hard; legacy remains
     # visible best-effort for compatibility with old local installs.
     try:
@@ -583,8 +872,10 @@ def run_uninstall(
     else:
         print(f"omg uninstall: CLI link absent ({link})")
 
-    # 5. Receipt-owned pointers and immutable stage.  Historical receipts stay
+    # 6. Receipt-owned pointers and immutable stage.  Historical receipts stay
     # for audit; an immutable `uninstalled` receipt records the terminal action.
+    stage_to_cleanup: Path | None = None
+    terminal_receipt_material: dict | None = None
     if receipt is not None and receipt_path is not None:
         if verified_stage is None:  # pragma: no cover - guarded by receipt
             return rollback("verified stage missing")
@@ -610,7 +901,7 @@ def run_uninstall(
         except OSError as exc:
             return rollback(f"managed pointer removal failed ({type(exc).__name__})")
         try:
-            from omg_cli.setup_cmd import _receipt_material, _write_install_receipt
+            from omg_cli.setup_cmd import _receipt_material
 
             source = {
                 "root_realpath": receipt["source"]["package_realpath"],
@@ -643,93 +934,102 @@ def run_uninstall(
                     }
                 ],
             )
-            terminal, _data = _write_install_receipt(store / "receipts", material)
-            print(f"omg uninstall: wrote immutable terminal receipt {terminal}")
+            terminal_receipt_material = material
         except Exception as exc:  # noqa: BLE001
             return rollback(f"terminal receipt failed ({type(exc).__name__})")
-        if stage.is_dir():
-            for path in sorted(stage.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-                try:
-                    path.chmod(0o700 if path.is_dir() else 0o600)
-                except OSError:
-                    pass
-            stage.chmod(0o700)
-            import shutil
+        stage_to_cleanup = stage
 
-            try:
-                shutil.rmtree(stage)
-            except OSError as exc:
-                # The uninstall transaction is already durably complete.  Keep
-                # the now-unreferenced stage for a later safe cleanup rather
-                # than claiming a rollback that cannot reconstruct partial bytes.
-                print(
-                    f"omg uninstall: immutable stage cleanup deferred ({type(exc).__name__})",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"omg uninstall: removed immutable stage {stage}")
+    # Commit the destructive transaction before emitting the append-only audit
+    # receipt. A crash can therefore omit the audit row, but can never leave an
+    # `uninstalled` receipt alongside a journal that will restore the install.
+    if durable_grok_tx.is_file():
+        durable_grok_tx.unlink()
 
-    # 6. Manifest-owned exact Agy import, then unchanged regular files.  The
-    # plugin is removed only through the host CLI and only when its package
-    # digest still matches the manifest.
+    if agy_home_for_finalize is not None:
+        from omg_cli.antigravity_install import finalize_owned_uninstall
+
+        if not finalize_owned_uninstall(home=agy_home_for_finalize):
+            print(
+                "omg uninstall: runtimes removed, but Antigravity transaction "
+                "cleanup remains recoverable",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Idempotent post-commit cleanup. It must not be inside the Grok rollback
+    # window: these manifest files and shared global references are governed by
+    # their own exact-CAS logic and are not represented by the Grok journal.
     if owned_plan.get("has_manifest"):
-        external = owned_plan.get("remove_external") or []
-        if external:
-            if len(external) != 1:
-                print(
-                    "omg uninstall: ambiguous Antigravity ownership; plugin preserved",
-                    file=sys.stderr,
-                )
-                return 1
-            external_row = external[0]
-            target = Path(str(external_row.get("path") or ""))
-            try:
-                agy_home = target.parents[3]
-                expected_digest = str(external_row["content_hash"])
-                expected_registry = str(external_row["registry_identity"])
-                from omg_cli.antigravity_install import (
-                    clear_ownership_receipt,
-                    probe_plugin,
-                    uninstall_owned_plugin,
-                )
-
-                removed = uninstall_owned_plugin(
-                    expected_digest=expected_digest,
-                    expected_registry_identity=expected_registry,
-                    runner=runner,
-                    home=agy_home,
-                )
-            except (OSError, KeyError, IndexError, ValueError):
-                removed = False
-            if not removed:
-                print(
-                    "omg uninstall: Antigravity plugin changed before locked uninstall; preserved",
-                    file=sys.stderr,
-                )
-                return 1
-            if probe_plugin(runner=runner, home=agy_home).get("installed"):
-                print(
-                    "omg uninstall: Antigravity plugin still discovered after uninstall",
-                    file=sys.stderr,
-                )
-                return 1
-            if not clear_ownership_receipt(
-                expected_digest=expected_digest,
-                expected_registry_identity=expected_registry,
-                home=agy_home,
-            ):
-                print(
-                    "omg uninstall: Antigravity ownership receipt changed; plugin removed but receipt preserved",
-                    file=sys.stderr,
-                )
-                return 1
-            print("omg uninstall: removed manifest-owned Antigravity plugin")
         applied = apply_owned_uninstall(owned_plan)
+        if applied.get("ok") is not True:
+            print(
+                "omg uninstall: runtimes removed, but manifest/reference cleanup "
+                "remains recoverable",
+                file=sys.stderr,
+            )
+            return 1
         for path in applied.get("removed") or []:
             print(f"omg uninstall: removed manifest-owned {path}")
         for path in applied.get("preserved") or []:
             print(f"omg uninstall: preserved {path}")
 
+    if terminal_receipt_material is not None:
+        try:
+            from omg_cli.setup_cmd import _write_install_receipt
+
+            terminal, _data = _write_install_receipt(
+                store / "receipts", terminal_receipt_material
+            )
+            print(f"omg uninstall: wrote immutable terminal receipt {terminal}")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"omg uninstall: terminal audit receipt failed ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return 1
+    if stage_to_cleanup is not None and stage_to_cleanup.is_dir():
+        for path in sorted(stage_to_cleanup.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            try:
+                path.chmod(0o700 if path.is_dir() else 0o600)
+            except OSError:
+                pass
+        stage_to_cleanup.chmod(0o700)
+        import shutil
+
+        try:
+            shutil.rmtree(stage_to_cleanup)
+        except OSError as exc:
+            print(
+                f"omg uninstall: immutable stage cleanup deferred ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+        else:
+            print(f"omg uninstall: removed immutable stage {stage_to_cleanup}")
+
     # 7. never touch project .omg/state
     print("omg uninstall: project `.omg/state` was intentionally left untouched")
     return 0
+
+
+def run_uninstall(
+    *,
+    yes: bool = False,
+    runner=subprocess.run,
+    home: Path | None = None,
+    project_root: Path | None = None,
+    include_user_manifest: bool = False,
+) -> int:
+    """Serialize the full cross-runtime uninstall with manifest installs."""
+    from omg_cli.contracts.path_keys import ensure_managed_dir, exclusive_lock
+    from omg_cli.install_manifest import user_store
+
+    lock_root = user_store()
+    ensure_managed_dir(lock_root)
+    with exclusive_lock(lock_root / ".install-manifest.lock"):
+        return _run_uninstall_locked(
+            yes=yes,
+            runner=runner,
+            home=home,
+            project_root=project_root,
+            include_user_manifest=include_user_manifest,
+        )

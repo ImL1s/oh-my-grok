@@ -874,6 +874,7 @@ def plan_owned_uninstall(
     allowed_global_ids = frozenset({"user.grok.hook", "user.grok.rules"})
     remove: list[dict[str, Any]] = []
     remove_external: list[dict[str, Any]] = []
+    release_external_references: list[dict[str, Any]] = []
     preserve: list[dict[str, Any]] = []
     for _scope, doc, _root in documents:
         for row in doc.get("artifacts") or []:
@@ -930,29 +931,83 @@ def plan_owned_uninstall(
                 )
                 continue
             if ident == "user.ag.plugin":
-                if ownership != "OMG-managed" or _scope != "user":
+                from omg_cli.install_manifest import project_manifest_path, user_manifest_path
+
+                reference_path = (
+                    user_manifest_path()
+                    if _scope == "user"
+                    else project_manifest_path(Path(_root))  # type: ignore[arg-type]
+                ).absolute()
+                if ownership not in {"OMG-managed", "imported"}:
                     preserve.append({"id": ident, "path": str(target), "reason": "machine-global"})
                     continue
                 if target.absolute() != ag_plugin.absolute() or target.is_symlink():
                     preserve.append({"id": ident, "path": str(target), "reason": "escape"})
                     continue
-                if not isinstance(claimed, str) or not claimed or not target.is_dir():
+                if not isinstance(claimed, str) or not claimed:
                     preserve.append({"id": ident, "path": str(target), "reason": "not-owned"})
                     continue
                 from omg_cli.antigravity_install import (
+                    committed_owned_uninstall_matches,
                     load_ownership_receipt,
                     package_digest,
                 )
 
                 actual_digest = package_digest(target) or ""
                 ownership_receipt = load_ownership_receipt()
+                references = (
+                    ownership_receipt.get("references", [])
+                    if isinstance(ownership_receipt, dict)
+                    else []
+                )
                 registry_identity = row.get("registry_identity")
+                mcp_registry_identity = row.get("mcp_registry_identity")
+                committed_removal = bool(
+                    isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and committed_owned_uninstall_matches(
+                        expected_digest=claimed,
+                        expected_registry_identity=registry_identity,
+                        expected_mcp_registry_identity=mcp_registry_identity,
+                    )
+                )
+                central_reference_authorizes = bool(
+                    str(reference_path) in references and len(set(references)) == 1
+                )
                 if (
-                    actual_digest != claimed
-                    or ownership_receipt is None
-                    or ownership_receipt.get("plugin_digest") != claimed
-                    or ownership_receipt.get("registry_identity") != registry_identity
-                    or not isinstance(registry_identity, str)
+                    _scope == "project"
+                    and str(reference_path) in references
+                    and len(set(references)) > 1
+                    and isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and actual_digest == claimed
+                ):
+                    release_external_references.append(
+                        {
+                            "reference": str(reference_path),
+                            "content_hash": claimed,
+                            "registry_identity": registry_identity,
+                            "mcp_registry_identity": mcp_registry_identity,
+                        }
+                    )
+                    preserve.append({"id": ident, "path": str(target), "reason": "shared-global"})
+                    continue
+                if (
+                    not committed_removal
+                    and (
+                        (_scope == "project" and not central_reference_authorizes)
+                        or (_scope == "user" and ownership != "OMG-managed")
+                        or
+                        not target.is_dir()
+                        or actual_digest != claimed
+                        or ownership_receipt is None
+                        or ownership_receipt.get("plugin_digest") != claimed
+                        or ownership_receipt.get("registry_identity") != registry_identity
+                        or ownership_receipt.get("mcp_registry_identity")
+                        != mcp_registry_identity
+                        or not isinstance(registry_identity, str)
+                        or not isinstance(mcp_registry_identity, str)
+                    )
                 ):
                     preserve.append({"id": ident, "path": str(target), "reason": "hash-drift"})
                     continue
@@ -962,6 +1017,7 @@ def plan_owned_uninstall(
                         "path": str(target),
                         "content_hash": claimed,
                         "registry_identity": registry_identity,
+                        "mcp_registry_identity": mcp_registry_identity,
                         "action": "agy-plugin-uninstall",
                     }
                 )
@@ -1008,6 +1064,7 @@ def plan_owned_uninstall(
         "has_manifest": bool(documents),
         "remove": remove,
         "remove_external": remove_external,
+        "release_external_references": release_external_references,
         "preserve": preserve,
         **_honesty_fields(),
     }
@@ -1017,6 +1074,21 @@ def apply_owned_uninstall(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Unlink regular files whose on-disk hash still matches the plan."""
     removed: list[str] = []
     preserved: list[str] = [str(row.get("path")) for row in plan.get("preserve") or []]
+    from omg_cli.antigravity_install import release_ownership_reference
+
+    for row in plan.get("release_external_references") or []:
+        if not isinstance(row, dict) or not release_ownership_reference(
+            reference=str(row.get("reference") or ""),
+            expected_digest=str(row.get("content_hash") or ""),
+            expected_registry_identity=str(row.get("registry_identity") or ""),
+            expected_mcp_registry_identity=str(row.get("mcp_registry_identity") or ""),
+        ):
+            return {
+                "ok": False,
+                "removed": removed,
+                "preserved": preserved,
+                **_honesty_fields(),
+            }
     for row in plan.get("remove") or []:
         if not isinstance(row, dict):
             continue

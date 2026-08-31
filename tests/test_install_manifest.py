@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import omg_cli.install_manifest as install_manifest_mod
 
 from omg_cli.host_probe import host_report_for_doctor, probe_host_from_fixture
 from omg_cli.install_manifest import (
@@ -100,10 +101,22 @@ def test_rollback_interrupted_restores_backup(tmp_path: Path) -> None:
     backup = tx / "deadbeef"
     backup.mkdir(parents=True)
     (backup / "project.ag.projection.bak").write_text("original\n", encoding="utf-8")
-    (backup / "project.ag.projection.json").write_text(
-        json.dumps({"target": str(dest)}), encoding="utf-8"
-    )
     dest.write_text("partial\n", encoding="utf-8")
+    (backup / "project.ag.projection.prev.json").write_text(
+        json.dumps(
+            {
+                "target": str(dest),
+                "kind": "file",
+                "backup": str(backup / "project.ag.projection.bak"),
+                "prior_sha256": hashlib.sha256(b"original\n").hexdigest(),
+                "prior_mode": dest.stat().st_mode & 0o777,
+                "post_kind": "file",
+                "post_sha256": hashlib.sha256(b"partial\n").hexdigest(),
+                "post_mode": dest.stat().st_mode & 0o777,
+            }
+        ),
+        encoding="utf-8",
+    )
     (tx / "current.json").write_text(
         json.dumps(
             {
@@ -244,7 +257,16 @@ def test_rollback_unlinks_created_artifact(tmp_path: Path) -> None:
     tx = tmp_path / ".omg" / "install" / "tx" / ("d" * 32)
     tx.mkdir(parents=True)
     (tx / "art.prev.json").write_text(
-        json.dumps({"target": str(dest), "kind": "created"}), encoding="utf-8"
+        json.dumps(
+            {
+                "target": str(dest),
+                "kind": "created",
+                "post_kind": "file",
+                "post_sha256": hashlib.sha256(b"new\n").hexdigest(),
+                "post_mode": dest.stat().st_mode & 0o777,
+            }
+        ),
+        encoding="utf-8",
     )
     marker = tmp_path / ".omg" / "install" / "tx" / "current.json"
     marker.write_text(
@@ -261,6 +283,218 @@ def test_rollback_unlinks_created_artifact(tmp_path: Path) -> None:
     out = rollback_interrupted("project", tmp_path)
     assert dest.exists() is False
     assert str(dest) in out["removed"]
+
+
+def test_rollback_resumes_when_one_created_row_is_already_prior(tmp_path: Path) -> None:
+    first = tmp_path / ".omg/projections/antigravity/README.md"
+    second = tmp_path / ".gitignore"
+    second.parent.mkdir(parents=True, exist_ok=True)
+    second.write_text("owned\n", encoding="utf-8")
+    tx = tmp_path / ".omg/install/tx" / ("r" * 32)
+    tx.mkdir(parents=True)
+    for ident, target, exists in (("first", first, False), ("second", second, True)):
+        payload = {"target": str(target), "kind": "created"}
+        if exists:
+            payload.update(
+                post_kind="file",
+                post_sha256=hashlib.sha256(b"owned\n").hexdigest(),
+                post_mode=target.stat().st_mode & 0o777,
+            )
+        else:
+            payload["post_kind"] = "file"
+            payload["post_sha256"] = hashlib.sha256(b"owned\n").hexdigest()
+            payload["post_mode"] = second.stat().st_mode & 0o777
+        (tx / f"{ident}.prev.json").write_text(json.dumps(payload), encoding="utf-8")
+    marker = tx.parent / "current.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "runtime": "antigravity",
+                "transaction_id": "r" * 32,
+                "backup_dir": str(tx),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = rollback_interrupted("project", tmp_path)
+    assert out["ok"] is True
+    assert not first.exists()
+    assert not second.exists()
+
+
+def test_install_refuses_canonical_grok_uninstall_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    journal = grok_home / "omg/uninstall-current.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text("{}", encoding="utf-8")
+    manifest = build_manifest(
+        runtime="grok",
+        scope="project",
+        project_root=tmp_path,
+        transaction_id="j" * 32,
+        plugin=ROOT,
+    )
+
+    with pytest.raises(InstallManifestError, match="E_RECOVERY"):
+        apply_manifest(manifest, project_root=tmp_path, plugin=ROOT)
+
+
+def test_file_backup_is_digest_verified_before_durable_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / ".omg/projections/antigravity/README.md"
+    target.parent.mkdir(parents=True)
+    payload = b"prior-managed-bytes\n"
+    target.write_bytes(payload)
+    backup = tmp_path / ".omg/install/tx" / ("b" * 32)
+    backup.mkdir(parents=True)
+    original = install_manifest_mod._write_text_nofollow
+    observed: list[str] = []
+
+    def wrapped(path: Path, text: str) -> None:
+        if path.name.endswith(".prev.json"):
+            bak = backup / "project.ag.projection.bak"
+            assert bak.is_file()
+            assert bak.read_bytes() == payload
+            meta = json.loads(text)
+            digest = hashlib.sha256(payload).hexdigest()
+            assert meta["prior_sha256"] == digest
+            assert hashlib.sha256(bak.read_bytes()).hexdigest() == digest
+            observed.append("verified-before-metadata")
+        original(path, text)
+
+    monkeypatch.setattr(install_manifest_mod, "_write_text_nofollow", wrapped)
+    install_manifest_mod._backup_existing(backup, "project.ag.projection", target)
+    assert observed == ["verified-before-metadata"]
+    bak = backup / "project.ag.projection.bak"
+    assert bak.read_bytes() == payload
+
+
+def test_symlink_backup_is_pure_until_durable_intent_exists(tmp_path: Path) -> None:
+    target = tmp_path / ".omg/projections/antigravity/README.md"
+    target.parent.mkdir(parents=True)
+    target.symlink_to("README.user")
+    tx_id = "s" * 32
+    backup = tmp_path / ".omg/install/tx" / tx_id
+    backup.mkdir(parents=True)
+    install_manifest_mod._backup_existing(backup, "project.ag.projection", target)
+    assert target.is_symlink()
+    assert os.readlink(target) == "README.user"
+    marker = backup.parent / "current.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "runtime": "antigravity",
+                "transaction_id": tx_id,
+                "backup_dir": str(backup),
+            }
+        )
+    )
+    assert rollback_interrupted("project", tmp_path)["ok"] is True
+    assert target.is_symlink()
+    assert os.readlink(target) == "README.user"
+
+
+def test_write_ahead_file_recovers_crash_before_observed_post_seal(tmp_path: Path) -> None:
+    target = tmp_path / ".omg/projections/antigravity/README.md"
+    tx_id = "w" * 32
+    backup = tmp_path / ".omg/install/tx" / tx_id
+    backup.mkdir(parents=True)
+    body = b"<!-- OMG:MANAGED -->\nowned\n"
+    install_manifest_mod._backup_existing(backup, "project.ag.projection", target)
+    install_manifest_mod._seal_intended_file(
+        backup, "project.ag.projection", body=body
+    )
+    install_manifest_mod._publish_intended_file(target, body)
+    marker = backup.parent / "current.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "runtime": "antigravity",
+                "transaction_id": tx_id,
+                "backup_dir": str(backup),
+            }
+        )
+    )
+    assert rollback_interrupted("project", tmp_path)["ok"] is True
+    assert not target.exists()
+
+
+def test_agents_atomic_publish_recovers_crash_before_observed_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("user notes\n")
+    original = install_manifest_mod._seal_backup_post_state
+
+    def crash_after_publish(backup_dir: Path, ident: str, target: Path) -> None:
+        if ident == "project.agents" and "<!-- OMG:START -->" in target.read_text():
+            raise SystemExit("crash after atomic AGENTS publish")
+        original(backup_dir, ident, target)
+
+    monkeypatch.setattr(
+        install_manifest_mod, "_seal_backup_post_state", crash_after_publish
+    )
+    with pytest.raises(SystemExit):
+        run_scoped_setup(
+            runtime="grok",
+            scope="project",
+            project_root=tmp_path,
+            here=True,
+            plugin=ROOT,
+        )
+    monkeypatch.setattr(install_manifest_mod, "_seal_backup_post_state", original)
+    assert rollback_interrupted("project", tmp_path)["ok"] is True
+    assert agents.read_text() == "user notes\n"
+
+
+def test_atomic_rollback_retry_survives_failure_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / ".omg/projections/antigravity/README.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"prior\n")
+    tx_id = "a" * 32
+    backup = tmp_path / ".omg/install/tx" / tx_id
+    backup.mkdir(parents=True)
+    install_manifest_mod._backup_existing(backup, "project.ag.projection", target)
+    intended = b"<!-- OMG:MANAGED -->\npost\n"
+    install_manifest_mod._seal_intended_file(
+        backup, "project.ag.projection", body=intended
+    )
+    install_manifest_mod._publish_intended_file(target, intended)
+    marker = backup.parent / "current.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "status": "committing",
+                "runtime": "antigravity",
+                "transaction_id": tx_id,
+                "backup_dir": str(backup),
+            }
+        )
+    )
+    real_replace = os.replace
+
+    def fail_restore(source, destination):
+        if Path(destination) == target:
+            raise OSError("crash before rollback replace")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_restore)
+    with pytest.raises(OSError):
+        rollback_interrupted("project", tmp_path)
+    monkeypatch.setattr(os, "replace", real_replace)
+    assert target.read_bytes() == intended
+    assert rollback_interrupted("project", tmp_path)["ok"] is True
+    assert target.read_bytes() == b"prior\n"
 
 
 def test_user_scope_setup_skips_project_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,14 +591,14 @@ def test_manifest_symlink_replaced_not_followed(tmp_path: Path) -> None:
 def test_failed_commit_rolls_back_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    orig = Path.write_text
+    orig = install_manifest_mod._write_text_nofollow
 
-    def wrapped(self, data="", *args, **kwargs):
-        if self.name == "current.json.tmp" and "committed" in str(data):
+    def wrapped(path: Path, data: str):
+        if path.name == "current.json" and "committed" in data:
             raise OSError("disk full")
-        return orig(self, data, *args, **kwargs)
+        return orig(path, data)
 
-    monkeypatch.setattr(Path, "write_text", wrapped)
+    monkeypatch.setattr(install_manifest_mod, "_write_text_nofollow", wrapped)
     with pytest.raises(InstallManifestError, match="E_TX"):
         run_scoped_setup(
             runtime="antigravity",
@@ -679,7 +913,7 @@ def test_rollback_does_not_unlink_git_config(tmp_path: Path) -> None:
     assert git_config.read_text(encoding="utf-8") == "[core]\n"
 
 
-def test_rollback_uses_fallback_when_marker_malformed(tmp_path: Path) -> None:
+def test_rollback_preserves_malformed_marker_even_with_fallback(tmp_path: Path) -> None:
     dest = tmp_path / ".omg" / "projections" / "antigravity" / "README.md"
     dest.parent.mkdir(parents=True)
     dest.write_text("new\n", encoding="utf-8")
@@ -700,8 +934,10 @@ def test_rollback_uses_fallback_when_marker_malformed(tmp_path: Path) -> None:
             "backup_dir": str(tx),
         },
     )
-    assert dest.exists() is False
-    assert out["rolled_back"] is True
+    assert dest.exists() is True
+    assert out["ok"] is False
+    assert out["recoverable"] is True
+    assert marker.exists()
 
 
 def test_directory_occupying_managed_path_is_foreign(tmp_path: Path) -> None:
@@ -765,14 +1001,14 @@ def test_agents_merge_rolls_back_on_commit_failure(
 ) -> None:
     agents = tmp_path / "AGENTS.md"
     agents.write_text("user notes\n", encoding="utf-8")
-    orig = Path.write_text
+    orig = install_manifest_mod._write_text_nofollow
 
-    def wrapped(self, data="", *args, **kwargs):
-        if self.name == "current.json.tmp" and "committed" in str(data):
+    def wrapped(path: Path, data: str):
+        if path.name == "current.json" and "committed" in data:
             raise OSError("disk full")
-        return orig(self, data, *args, **kwargs)
+        return orig(path, data)
 
-    monkeypatch.setattr(Path, "write_text", wrapped)
+    monkeypatch.setattr(install_manifest_mod, "_write_text_nofollow", wrapped)
     with pytest.raises(InstallManifestError, match="E_TX"):
         run_scoped_setup(
             runtime="grok",
@@ -796,14 +1032,14 @@ def test_global_rules_inside_transaction_rollback(
     bak.write_text("prior-bak\n", encoding="utf-8")
     agents = tmp_path / "AGENTS.md"
     agents.write_text("keep-agents\n", encoding="utf-8")
-    orig = Path.write_text
+    orig = install_manifest_mod._write_text_nofollow
 
-    def wrapped(self, data="", *args, **kwargs):
-        if self.name == "current.json.tmp" and "committed" in str(data):
+    def wrapped(path: Path, data: str):
+        if path.name == "current.json" and "committed" in data:
             raise OSError("disk full")
-        return orig(self, data, *args, **kwargs)
+        return orig(path, data)
 
-    monkeypatch.setattr(Path, "write_text", wrapped)
+    monkeypatch.setattr(install_manifest_mod, "_write_text_nofollow", wrapped)
     with pytest.raises(InstallManifestError, match="E_TX"):
         run_scoped_setup(
             runtime="grok",

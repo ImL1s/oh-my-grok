@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -260,13 +261,26 @@ def _mkdir(path: Path) -> None:
 
 def _write_text_nofollow(path: Path, text: str) -> None:
     """Write a regular file atomically. Never follow a symlink to an outside path."""
-    if path.is_symlink():
-        path.unlink()
-    tmp = path.with_name(path.name + ".tmp")
-    if tmp.is_symlink() or tmp.is_file():
-        tmp.unlink()
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    if path.is_symlink() or (os.path.lexists(path) and not path.is_file()):
+        raise InstallManifestError("E_SYMLINK", f"unsafe managed write target: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
 
 
 def _discard_backup(backup_dir: Path, ident: str) -> None:
@@ -290,10 +304,10 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
                     "target": str(target),
                     "kind": "symlink",
                     "link": os.readlink(target),
+                    "prior_mode": target.lstat().st_mode & 0o777,
                 }
             ),
         )
-        target.unlink()
         return
     if target.is_file():
         data = target.read_bytes()
@@ -303,7 +317,13 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
                 f"refusing to overwrite {target}; file exceeds backup limit",
             )
         bak = backup_dir / f"{ident}.bak"
-        bak.write_bytes(data)
+        digest = _sha256_bytes(data)
+        _publish_intended_file(bak, data)
+        if _sha256_bytes(bak.read_bytes()) != digest:
+            raise InstallManifestError(
+                "E_BACKUP",
+                f"backup digest mismatch for {target}",
+            )
         _write_text_nofollow(bak.with_suffix(".json"), json.dumps({"target": str(target)}))
         _write_text_nofollow(
             prev,
@@ -312,11 +332,114 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
                     "target": str(target),
                     "kind": "file",
                     "backup": str(bak),
+                    "prior_sha256": digest,
+                    "prior_mode": target.stat().st_mode & 0o777,
                 }
             ),
         )
         return
     _write_text_nofollow(prev, json.dumps({"target": str(target), "kind": "created"}))
+
+
+def _seal_backup_post_state(backup_dir: Path, ident: str, target: Path) -> None:
+    """Seal the exact transaction-owned state required for rollback CAS."""
+    prev = backup_dir / f"{ident}.prev.json"
+    if not prev.is_file() or prev.is_symlink():
+        raise InstallManifestError("E_BACKUP", f"missing recovery metadata for {ident}")
+    try:
+        meta = json.loads(prev.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InstallManifestError("E_BACKUP", f"malformed recovery metadata for {ident}") from exc
+    expected_kind = meta.get("post_kind")
+    if expected_kind is not None:
+        actual_matches = False
+        if expected_kind == "absent":
+            actual_matches = not os.path.lexists(target)
+        elif expected_kind == "symlink":
+            actual_matches = target.is_symlink() and os.readlink(target) == meta.get(
+                "post_link"
+            )
+        elif expected_kind == "file":
+            actual_matches = bool(
+                target.is_file()
+                and not target.is_symlink()
+                and _sha256_bytes(target.read_bytes()) == meta.get("post_sha256")
+                and (target.stat().st_mode & 0o777) == meta.get("post_mode")
+            )
+        if not actual_matches:
+            raise InstallManifestError("E_BACKUP", f"intended post-state mismatch for {target}")
+        return
+    if not os.path.lexists(target):
+        meta["post_kind"] = "absent"
+    elif target.is_symlink():
+        meta["post_kind"] = "symlink"
+        meta["post_link"] = os.readlink(target)
+    elif target.is_file():
+        data = target.read_bytes()
+        meta["post_kind"] = "file"
+        meta["post_sha256"] = _sha256_bytes(data)
+        meta["post_mode"] = target.stat().st_mode & 0o777
+    else:
+        raise InstallManifestError("E_BACKUP", f"unsafe post-state for {target}")
+    _write_text_nofollow(prev, json.dumps(meta, sort_keys=True))
+
+
+def _seal_intended_file(
+    backup_dir: Path, ident: str, *, body: bytes, mode: int = 0o644
+) -> None:
+    """Persist exact intended bytes before publishing a managed file."""
+    prev = backup_dir / f"{ident}.prev.json"
+    try:
+        meta = json.loads(prev.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InstallManifestError("E_BACKUP", f"malformed recovery metadata for {ident}") from exc
+    meta.update(
+        {
+            "post_kind": "file",
+            "post_sha256": _sha256_bytes(body),
+            "post_mode": mode,
+        }
+    )
+    _write_text_nofollow(prev, json.dumps(meta, sort_keys=True))
+
+
+def _publish_intended_file(path: Path, body: bytes, *, mode: int = 0o644) -> None:
+    """Publish already-journaled bytes without following a target symlink."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(temporary, flags, mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _publish_intended_symlink(path: Path, link: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp-link")
+    try:
+        temporary.symlink_to(link)
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _seal_observed_identity(row: dict[str, Any], target: Path) -> None:
@@ -623,10 +746,12 @@ def rollback_interrupted(
     tx_root = _tx_dir(scope, project_root)
     marker = tx_root / "current.json"
     if marker.is_symlink():
-        marker.unlink(missing_ok=True)
-        if fallback is None:
-            return {"ok": True, "rolled_back": False, "note": "symlinked tx marker removed"}
-        state = fallback
+        return {
+            "ok": False,
+            "rolled_back": False,
+            "recoverable": True,
+            "note": "symlinked tx marker preserved for manual recovery",
+        }
     elif not marker.is_file():
         if fallback is None:
             return {"ok": True, "rolled_back": False}
@@ -635,10 +760,12 @@ def rollback_interrupted(
         try:
             state = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            if fallback is None:
-                marker.unlink(missing_ok=True)
-                return {"ok": True, "rolled_back": False, "note": "malformed tx marker removed"}
-            state = fallback
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "malformed tx marker preserved for manual recovery",
+            }
     if state.get("status") == "committed":
         return {"ok": True, "rolled_back": False}
     tx_id = str(state.get("transaction_id") or "")
@@ -653,11 +780,11 @@ def rollback_interrupted(
         or backups.absolute() != expected
         or not backups.is_dir()
     ):
-        marker.unlink(missing_ok=True)
         return {
-            "ok": True,
+            "ok": False,
             "rolled_back": False,
-            "note": "tx marker backup_dir rejected",
+            "recoverable": True,
+            "note": "rejected tx marker preserved for manual recovery",
         }
     if state.get("agy_recovery_snapshot") is True:
         from omg_cli.antigravity_install import restore_recovery_snapshot
@@ -672,79 +799,188 @@ def rollback_interrupted(
     try:
         roots = _containment_roots(scope=scope, project_root=project_root, runtime=runtime)
     except InstallManifestError:
-        marker.unlink(missing_ok=True)
-        return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
+        return {
+            "ok": False,
+            "rolled_back": False,
+            "recoverable": True,
+            "note": "tx marker root rejected and preserved",
+        }
     allowed_targets = _writable_restore_paths(
         runtime=runtime,
         scope=scope,
         project_root=project_root,
     )
-    restored = []
-    created_removed = []
-    for prev in backups.glob("*.prev.json"):
+    restored: list[str] = []
+    created_removed: list[str] = []
+    recovery_rows: list[tuple[Path, str, bytes | str | None, int | None, bool]] = []
+    prev_paths = list(backups.glob("*.prev.json"))
+    orphan_backups = [
+        backup
+        for backup in backups.glob("*.bak")
+        if not backup.name.startswith("agy-registry-")
+        if not backup.with_suffix(".prev.json").is_file()
+    ]
+    if orphan_backups:
+        return {
+            "ok": False,
+            "rolled_back": False,
+            "recoverable": True,
+            "note": "incomplete tx backup set preserved for manual recovery",
+        }
+    for prev in prev_paths:
         try:
             meta = json.loads(prev.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            continue
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "malformed tx backup metadata preserved for manual recovery",
+            }
         target = Path(meta.get("target") or "")
         contain = _root_for_path(target, roots)
-        if contain is None:
-            continue
-        if target.absolute() not in allowed_targets:
-            continue
+        if contain is None or target.absolute() not in allowed_targets:
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "out-of-root tx backup preserved for manual recovery",
+            }
         try:
             _assert_parents_not_symlink(target, contain)
         except InstallManifestError:
-            continue
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "unsafe tx restore target preserved for manual recovery",
+            }
         kind = meta.get("kind")
+        post_kind = meta.get("post_kind")
+        if post_kind == "absent":
+            post_matches = not os.path.lexists(target)
+        elif post_kind == "symlink":
+            post_matches = target.is_symlink() and os.readlink(target) == meta.get("post_link")
+        elif post_kind == "file":
+            post_matches = bool(
+                target.is_file()
+                and not target.is_symlink()
+                and _sha256_bytes(target.read_bytes()) == meta.get("post_sha256")
+                and (target.stat().st_mode & 0o777) == meta.get("post_mode")
+            )
+        else:
+            post_matches = False
         if kind == "created":
-            if target.is_symlink() or target.is_file():
-                target.unlink(missing_ok=True)
-            created_removed.append(str(target))
+            prior_matches = not os.path.lexists(target)
+            if not (post_matches or prior_matches):
+                return {
+                    "ok": False,
+                    "rolled_back": False,
+                    "recoverable": True,
+                    "note": "occupied created target preserved; ownership is unproven",
+                }
+            recovery_rows.append((target, kind, None, None, post_matches))
         elif kind == "symlink":
-            target.unlink(missing_ok=True)
             link = meta.get("link")
-            if isinstance(link, str) and link:
-                target.symlink_to(link)
-            restored.append(str(target))
+            if not isinstance(link, str) or not link:
+                return {
+                    "ok": False,
+                    "rolled_back": False,
+                    "recoverable": True,
+                    "note": "invalid symlink backup preserved for manual recovery",
+                }
+            prior_matches = target.is_symlink() and os.readlink(target) == link
+            if not (post_matches or prior_matches):
+                return {
+                    "ok": False, "rolled_back": False, "recoverable": True,
+                    "note": "tx-owned post-state drifted; marker preserved",
+                }
+            recovery_rows.append((target, kind, link, None, post_matches))
         elif kind == "file":
             bak = Path(meta.get("backup") or "")
             if (
-                target.is_symlink()
-                or bak.is_symlink()
+                bak.is_symlink()
                 or not bak.is_file()
                 or not _lexical_under(bak, backups)
             ):
-                continue
-            target.write_bytes(bak.read_bytes())
+                return {
+                    "ok": False,
+                    "rolled_back": False,
+                    "recoverable": True,
+                    "note": "missing or unsafe tx file backup preserved for manual recovery",
+                }
+            prior_bytes = bak.read_bytes()
+            if (
+                _sha256_bytes(prior_bytes) != meta.get("prior_sha256")
+                or not isinstance(meta.get("prior_mode"), int)
+            ):
+                return {
+                    "ok": False,
+                    "rolled_back": False,
+                    "recoverable": True,
+                    "note": "tx file backup identity mismatch; marker preserved",
+                }
+            file_prior_mode = int(meta["prior_mode"])
+            prior_matches = bool(
+                target.is_file()
+                and not target.is_symlink()
+                and target.read_bytes() == prior_bytes
+                and target.stat().st_mode & 0o777 == file_prior_mode
+            )
+            if not (post_matches or prior_matches):
+                return {
+                    "ok": False, "rolled_back": False, "recoverable": True,
+                    "note": "tx-owned post-state drifted; marker preserved",
+                }
+            recovery_rows.append((target, kind, prior_bytes, file_prior_mode, post_matches))
+        else:
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "unknown tx backup kind preserved for manual recovery",
+            }
+    for target, kind, prior, prior_mode, restore_needed in recovery_rows:
+        if not restore_needed:
+            continue
+        if kind == "created":
+            target.unlink(missing_ok=True)
+            if target.parent.is_dir():
+                directory_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            created_removed.append(str(target))
+        elif kind == "symlink":
+            _publish_intended_symlink(target, str(prior))
             restored.append(str(target))
-    for backup in backups.glob("*.bak"):
-        if backup.is_symlink() or not _lexical_under(backup, backups):
-            continue
-        meta_path = backup.with_suffix(".json")
-        if not meta_path.is_file() or meta_path.is_symlink():
-            continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        target = Path(meta.get("target") or "")
-        contain = _root_for_path(target, roots)
-        if contain is None:
-            continue
-        if target.absolute() not in allowed_targets:
-            continue
-        try:
-            _assert_parents_not_symlink(target, contain)
-        except InstallManifestError:
-            continue
-        if any(row == str(target) for row in restored):
-            continue
-        if target.is_symlink():
-            continue
-        target.write_bytes(backup.read_bytes())
-        restored.append(str(target))
+        else:
+            assert isinstance(prior, bytes)
+            assert isinstance(prior_mode, int)
+            _publish_intended_file(target, prior, mode=prior_mode)
+            restored.append(str(target))
+    for target, kind, prior, prior_mode, _restore_needed in recovery_rows:
+        if kind == "created" and os.path.lexists(target):
+            return {"ok": False, "rolled_back": False, "recoverable": True,
+                    "note": "tx rollback readback failed; marker preserved"}
+        if kind == "symlink" and (not target.is_symlink() or os.readlink(target) != prior):
+            return {"ok": False, "rolled_back": False, "recoverable": True,
+                    "note": "tx rollback readback failed; marker preserved"}
+        if kind == "file" and (
+            not target.is_file()
+            or target.read_bytes() != prior
+            or target.stat().st_mode & 0o777 != prior_mode
+        ):
+            return {"ok": False, "rolled_back": False, "recoverable": True,
+                    "note": "tx rollback readback failed; marker preserved"}
     marker.unlink(missing_ok=True)
+    if marker.parent.is_dir():
+        directory_fd = os.open(marker.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     return {
         "ok": True,
         "rolled_back": True,
@@ -816,30 +1052,132 @@ def _apply_merge_or_install(
     else:
         _backup_existing(backup_dir, ident, target)
 
-    if kind == "agents":
-        from omg_cli.setup_fragments import merge_agents_fragment
+    def seal_expected(path: Path, row_id: str, body: bytes, mode: int | None = None) -> None:
+        _seal_intended_file(
+            backup_dir,
+            row_id,
+            body=body,
+            mode=mode
+            if mode is not None
+            else ((path.stat().st_mode & 0o777) if path.is_file() and not path.is_symlink() else 0o644),
+        )
 
-        if project_root is None:
-            raise InstallManifestError("E_SCOPE", "project.agents requires a project root")
-        action = merge_agents_fragment(Path(project_root))
-        label = f"AGENTS.md: {action}"
-    elif kind == "gitignore":
-        from omg_cli.setup_fragments import merge_gitignore_fragment
+    precomputed_action: str | None = None
+    if kind in {"agents", "gitignore"}:
+        from omg_cli import setup_fragments
 
-        if project_root is None:
-            raise InstallManifestError("E_SCOPE", "project.gitignore requires a project root")
-        action = merge_gitignore_fragment(Path(project_root))
-        label = f".gitignore: {action}"
+        existing = (
+            target.read_text(encoding="utf-8")
+            if target.is_file() and not target.is_symlink()
+            else ""
+        )
+        if kind == "agents":
+            fragment = setup_fragments._read_template("AGENTS.fragment.md").rstrip() + "\n"
+            if setup_fragments.OMG_START not in fragment:
+                fragment = (
+                    f"{setup_fragments.OMG_START}\n{fragment}{setup_fragments.OMG_END}\n"
+                )
+            elif setup_fragments.OMG_END not in fragment:
+                fragment = fragment.rstrip() + f"\n{setup_fragments.OMG_END}\n"
+            intended = existing
+            if setup_fragments.OMG_START not in existing:
+                sep = "" if existing.endswith("\n") or not existing else "\n"
+                intended = existing + sep + ("\n" if existing else "") + fragment
+                precomputed_action = "appended" if existing else "created"
+            else:
+                precomputed_action = "unchanged"
+        else:
+            fragment = setup_fragments._read_template("gitignore.fragment").rstrip() + "\n"
+            block = (
+                fragment
+                if setup_fragments.GITIGNORE_MARKER in fragment
+                else f"{setup_fragments.GITIGNORE_MARKER}\n{fragment}"
+            )
+            key_lines = [
+                line.strip()
+                for line in fragment.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            intended = existing
+            if setup_fragments.GITIGNORE_MARKER not in existing and not (
+                key_lines
+                and all(
+                    any(key in line for line in existing.splitlines()) for key in key_lines
+                )
+            ):
+                sep = "" if existing.endswith("\n") or not existing else "\n"
+                intended = existing + sep + ("\n" if existing else "") + block
+                precomputed_action = "appended" if existing else "created"
+            else:
+                precomputed_action = "unchanged"
+        seal_expected(target, ident, intended.encode("utf-8"))
+        _publish_intended_file(target, intended.encode("utf-8"))
     elif kind == "rules":
-        from omg_cli.guidance import GuidanceError, install_global_rules
+        from omg_cli.guidance import reconcile_rules_text, render_managed_block
 
+        existing = (
+            target.read_text(encoding="utf-8")
+            if target.is_file() and not target.is_symlink()
+            else ""
+        )
+        intended, action = reconcile_rules_text(existing, render_managed_block())
+        precomputed_action = action
+        seal_expected(target, ident, intended.encode("utf-8"), 0o600)
+        _publish_intended_file(target, intended.encode("utf-8"), mode=0o600)
         bak_sidecar = target.with_suffix(".md.bak")
         _backup_existing(backup_dir, f"{ident}.md.bak", bak_sidecar)
-        try:
-            rpath, raction = install_global_rules(home=_machine_grok_home())
-        except GuidanceError as exc:
-            raise InstallManifestError("E_TX", f"global rules install failed: {exc}") from exc
-        label = f"{rpath}: {raction}"
+        if action == "unchanged":
+            bak_body = bak_sidecar.read_bytes() if bak_sidecar.is_file() else b""
+            if bak_sidecar.is_file():
+                seal_expected(bak_sidecar, f"{ident}.md.bak", bak_body)
+        elif existing:
+            seal_expected(bak_sidecar, f"{ident}.md.bak", existing.encode("utf-8"))
+            _publish_intended_file(bak_sidecar, existing.encode("utf-8"))
+    elif kind == "hook":
+        from omg_cli.hook_install import (
+            committed_standalone,
+            install_global_hook as live_hook_installer,
+            python3_executable,
+            render_hook_json,
+            render_wrapper,
+        )
+
+        source = committed_standalone()
+        if source.is_file() and live_hook_installer.__module__ == "omg_cli.hook_install":
+            source_body = source.read_bytes()
+            wrapper_body = render_wrapper(
+                py_path, python3=python3_executable()
+            ).encode("utf-8")
+            json_body = render_hook_json(py_path).encode("utf-8")
+            seal_expected(py_path, f"{ident}.py", source_body, 0o755)
+            seal_expected(
+                wrapper_path,
+                f"{ident}.wrapper",
+                wrapper_body,
+                0o755,
+            )
+            seal_expected(target, ident, json_body, 0o644)
+            for candidate, body, mode in (
+                (py_path, source_body, 0o755),
+                (wrapper_path, wrapper_body, 0o755),
+                (target, json_body, 0o644),
+            ):
+                if candidate.is_symlink():
+                    _publish_intended_file(candidate, body, mode=mode)
+
+    if kind == "agents":
+        if project_root is None:
+            raise InstallManifestError("E_SCOPE", "project.agents requires a project root")
+        action = str(precomputed_action)
+        label = f"AGENTS.md: {action}"
+    elif kind == "gitignore":
+        if project_root is None:
+            raise InstallManifestError("E_SCOPE", "project.gitignore requires a project root")
+        action = str(precomputed_action)
+        label = f".gitignore: {action}"
+    elif kind == "rules":
+        bak_sidecar = target.with_suffix(".md.bak")
+        label = f"{target}: {precomputed_action}"
     elif kind == "hook":
         from omg_cli.hook_install import install_global_hook
 
@@ -855,16 +1193,27 @@ def _apply_merge_or_install(
             # "quarantined".
             if "quarantined" in haction or not os.path.lexists(target):
                 _discard_backup(backup_dir, ident)
+            if (backup_dir / f"{ident}.prev.json").is_file():
+                _seal_backup_post_state(backup_dir, ident, target)
+            _seal_backup_post_state(backup_dir, f"{ident}.py", py_path)
+            _seal_backup_post_state(backup_dir, f"{ident}.wrapper", wrapper_path)
             raise InstallManifestError("E_TX", f"global hook install failed: {haction}")
         label = f"{hpath}: {haction}"
     else:
         raise InstallManifestError("E_TX", f"unknown merge kind {kind!r}")
+    _seal_backup_post_state(backup_dir, ident, target)
+    if kind == "hook":
+        py_path, wrapper_path = _hook_companion_paths(target)
+        _seal_backup_post_state(backup_dir, f"{ident}.py", py_path)
+        _seal_backup_post_state(backup_dir, f"{ident}.wrapper", wrapper_path)
+    elif kind == "rules":
+        _seal_backup_post_state(backup_dir, f"{ident}.md.bak", target.with_suffix(".md.bak"))
     _seal_written_identity(row, target)
     row["action"] = label
     return label
 
 
-def apply_manifest(
+def _apply_manifest_locked(
     manifest: dict[str, Any],
     *,
     project_root: Path | None,
@@ -925,9 +1274,6 @@ def apply_manifest(
                     AntigravityInstallError,
                     install_plugin,
                     package_digest,
-                    persist_ownership_receipt,
-                    persist_recovery_snapshot,
-                    plugin_registry_identity,
                 )
 
                 source_digest = package_digest(plugin)
@@ -936,41 +1282,46 @@ def apply_manifest(
                 # Durable pre-state lives inside this transaction. It records
                 # the original canonical config/target, so HOME changes do not
                 # redirect crash recovery.
-                persist_recovery_snapshot(backup_dir)
-                _write_text_nofollow(
-                    marker,
-                    json.dumps(
-                        {
-                            "status": "committing",
-                            "transaction_id": tx_id,
-                            "backup_dir": str(backup_dir),
-                            "runtime": runtime,
-                            "scope": scope,
-                            "agy_recovery_snapshot": True,
-                        }
-                    ),
-                )
+                def mark_agy_snapshot_durable() -> None:
+                    _write_text_nofollow(
+                        marker,
+                        json.dumps(
+                            {
+                                "status": "committing",
+                                "transaction_id": tx_id,
+                                "backup_dir": str(backup_dir),
+                                "runtime": runtime,
+                                "scope": scope,
+                                "agy_recovery_snapshot": True,
+                            }
+                        ),
+                    )
+
                 try:
                     evidence = install_plugin(
                         plugin,
                         force=force,
                         owned_previous_digest=previous_ag_digest,
                         recovery_dir=backup_dir,
+                        snapshot_callback=mark_agy_snapshot_durable,
+                        ownership_reference=str(
+                            (
+                                user_manifest_path()
+                                if scope == "user"
+                                else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
+                            ).absolute()
+                        ),
                     )
                 except AntigravityInstallError as exc:
-                    code = "E_CONFLICT" if "foreign or drifted" in str(exc) else "E_TX"
+                    code = "E_CONFLICT" if "existing Antigravity" in str(exc) else "E_TX"
                     raise InstallManifestError(code, str(exc)) from exc
                 agy_plugin_created = bool(evidence.get("created"))
                 antigravity_evidence = evidence
-                registry_identity = plugin_registry_identity()
-                if not isinstance(registry_identity, str):
-                    raise InstallManifestError("E_TX", "Antigravity registry identity missing")
-                persist_ownership_receipt(
-                    plugin_digest=str(evidence.get("content_hash") or ""),
-                    registry_identity=registry_identity,
-                )
+                registry_identity = str(evidence["registry_identity"])
+                mcp_identity = str(evidence["mcp_registry_identity"])
                 row["content_hash"] = evidence.get("content_hash")
                 row["registry_identity"] = registry_identity
+                row["mcp_registry_identity"] = mcp_identity
                 row["classification"] = "exact"
                 row["observed"] = bool(evidence.get("observed"))
                 row["healthy"] = bool(evidence.get("healthy"))
@@ -1031,7 +1382,9 @@ def apply_manifest(
             _assert_parents_not_symlink(target, contain)
             _mkdir(target.parent)
             _backup_existing(backup_dir, str(row["id"]), target)
-            target.write_bytes(body)
+            _seal_intended_file(backup_dir, str(row["id"]), body=body)
+            _publish_intended_file(target, body)
+            _seal_backup_post_state(backup_dir, str(row["id"]), target)
             written.append(str(target))
             actions.append(f"{row['id']}: written")
         dest = (
@@ -1063,10 +1416,12 @@ def apply_manifest(
         _assert_parents_not_symlink(dest, install_root)
         _mkdir(dest.parent)
         _backup_existing(backup_dir, "omg.install.manifest", dest)
-        _write_text_nofollow(
-            dest,
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        manifest_body = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode(
+            "utf-8"
         )
+        _seal_intended_file(backup_dir, "omg.install.manifest", body=manifest_body)
+        _publish_intended_file(dest, manifest_body)
+        _seal_backup_post_state(backup_dir, "omg.install.manifest", dest)
         _write_text_nofollow(
             marker,
             json.dumps({"status": "committed", "transaction_id": tx_id}),
@@ -1110,7 +1465,7 @@ def apply_manifest(
             ),
         }
     except Exception as exc:
-        rollback_interrupted(
+        rollback = rollback_interrupted(
             scope,
             project_root,
             fallback={
@@ -1121,6 +1476,11 @@ def apply_manifest(
                 "scope": scope,
             },
         )
+        if rollback.get("ok") is not True:
+            raise InstallManifestError(
+                "E_RECOVERY",
+                str(rollback.get("note") or "install rollback was not proven"),
+            ) from exc
         if isinstance(exc, InstallManifestError) and exc.code in {
             "E_TX",
             "E_PATH",
@@ -1131,6 +1491,34 @@ def apply_manifest(
         raise InstallManifestError(
             "E_TX", f"install transaction rolled back ({type(exc).__name__})"
         ) from exc
+
+
+def apply_manifest(
+    manifest: dict[str, Any],
+    *,
+    project_root: Path | None,
+    force: bool = False,
+    plugin: Path | None = None,
+) -> dict[str, Any]:
+    """Serialize marker, backups, runtime mutation, and rollback machine-globally."""
+    from omg_cli.contracts.path_keys import ensure_managed_dir, exclusive_lock
+
+    lock_root = user_store()
+    ensure_managed_dir(lock_root)
+    with exclusive_lock(lock_root / ".install-manifest.lock"):
+        grok_uninstall_journal = _machine_grok_home() / "omg" / "uninstall-current.json"
+        if os.path.lexists(grok_uninstall_journal):
+            _assert_parents_not_symlink(grok_uninstall_journal, _machine_grok_home())
+            raise InstallManifestError(
+                "E_RECOVERY",
+                "unfinished Grok uninstall transaction must be recovered before install",
+            )
+        return _apply_manifest_locked(
+            manifest,
+            project_root=project_root,
+            force=force,
+            plugin=plugin,
+        )
 
 
 def inspect_install_manifest(
@@ -1258,15 +1646,33 @@ def inspect_install_manifest(
         claimed = row.get("content_hash")
         ident = str(row.get("id") or "")
         if row.get("external_cli_managed") is True:
-            from omg_cli.antigravity_install import probe_plugin
+            from omg_cli.antigravity_install import load_ownership_receipt, probe_plugin
 
             antigravity_evidence = probe_plugin(plugin=plugin)
+            ownership = load_ownership_receipt()
+            ownership_references = (
+                ownership.get("references", []) if isinstance(ownership, dict) else []
+            )
             actual = antigravity_evidence.get("plugin_digest")
+            registry_identity = row.get("registry_identity")
+            mcp_registry_identity = row.get("mcp_registry_identity")
             if (
                 antigravity_evidence.get("healthy")
                 and isinstance(claimed, str)
                 and claimed
                 and actual == claimed
+                and isinstance(registry_identity, str)
+                and registry_identity
+                and antigravity_evidence.get("registry_identity") == registry_identity
+                and isinstance(mcp_registry_identity, str)
+                and mcp_registry_identity
+                and antigravity_evidence.get("mcp_registry_identity")
+                == mcp_registry_identity
+                and isinstance(ownership, dict)
+                and ownership.get("plugin_digest") == claimed
+                and ownership.get("registry_identity") == registry_identity
+                and ownership.get("mcp_registry_identity") == mcp_registry_identity
+                and str(path.absolute()) in ownership_references
             ):
                 klasses[ident] = "exact"
             else:

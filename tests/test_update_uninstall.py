@@ -22,7 +22,14 @@ from omg_cli.guidance import (
     uninstall_global_rules,
 )
 from omg_cli.install_manifest import persist_manifest
-from omg_cli.uninstall_cmd import _owned_plan_has_hook_artifact, run_uninstall
+from omg_cli.uninstall_cmd import (
+    _ManagedFileSnapshot,
+    _PluginSnapshot,
+    _owned_plan_has_hook_artifact,
+    _recover_durable_grok_uninstall,
+    _write_durable_grok_uninstall,
+    run_uninstall,
+)
 from omg_cli.update_cmd import run_update
 from omg_cli.setup_cmd import install_package, read_install_receipt
 
@@ -113,6 +120,69 @@ def _fake_runner():
 
     runner.calls = calls  # type: ignore[attr-defined]
     return runner
+
+
+def test_grok_uninstall_recovery_rejects_chmod_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    managed = grok_home / "AGENTS.md"
+    body = b"prior-agents\n"
+    managed.write_bytes(body)
+    managed.chmod(0o644)
+    receipts = grok_home / "omg" / "receipts"
+    receipts.mkdir(parents=True)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "1"}), encoding="utf-8"
+    )
+    receipt_path = receipts / "install.json"
+    receipt = {
+        "receipt_hash": "receipt-hash",
+        "installed": {
+            "stage_realpath": str(stage.resolve()),
+            "plugin_realpath": str(stage.resolve()),
+            "package_digest": "plugin-digest",
+            "inventory": [],
+        },
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    pointer = grok_home / "omg" / "current-receipt"
+    plugin = _PluginSnapshot(True, stage, True, "plugin-digest", [])
+    monkeypatch.setattr(
+        "omg_cli.uninstall_cmd._snapshot_plugin",
+        lambda runner, grok_home: plugin,
+    )
+    monkeypatch.setattr(
+        "omg_cli.setup_cmd.read_install_receipt",
+        lambda path: receipt,
+    )
+    journal = grok_home / "omg" / "uninstall-current.json"
+    _write_durable_grok_uninstall(
+        journal,
+        managed=[_ManagedFileSnapshot(managed, body, 0o644)],
+        rules=managed,
+        plugin=plugin,
+        stage=stage,
+        pointers={pointer: receipt_path.name},
+        receipt_path=receipt_path,
+        receipt_hash="receipt-hash",
+    )
+    managed.chmod(0o600)
+
+    recovered = _recover_durable_grok_uninstall(
+        journal,
+        runner=_fake_runner(),
+        grok_home=grok_home,
+        expected_paths={managed, pointer},
+    )
+
+    assert recovered is False
+    assert journal.is_file()
+    assert managed.read_bytes() == body
+    assert managed.stat().st_mode & 0o777 == 0o600
 
 
 def test_uninstall_global_rules_removed(tmp_path: Path, monkeypatch):
