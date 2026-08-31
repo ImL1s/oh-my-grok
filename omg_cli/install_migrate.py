@@ -1064,7 +1064,9 @@ def plan_owned_uninstall(
         "has_manifest": bool(documents),
         "remove": remove,
         "remove_external": remove_external,
-        "release_external_references": release_external_references,
+        "release_external_references": (
+            [] if remove_external else release_external_references
+        ),
         "preserve": preserve,
         **_honesty_fields(),
     }

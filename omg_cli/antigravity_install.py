@@ -609,6 +609,10 @@ def _install_plugin_locked(
             raise AntigravityInstallError(
                 "existing Antigravity oh-my-grok import is foreign or drifted; preserved"
             )
+        if owned_previous_digest is None:
+            raise AntigravityInstallError(
+                "existing Antigravity oh-my-grok import is unreceipted; preserved"
+            )
         if destination_digest != source_digest or refresh_needed:
             return _replace_plugin_transactionally(
                 plugin,
@@ -898,7 +902,11 @@ def _restore_owned_registry_rows(snapshot: dict[Path, tuple[bool, bytes]]) -> No
     for path, (prior_present, prior_body) in snapshot.items():
         if path.name == "omg-ownership.json":
             current = read_managed_regular_bytes(path) if path.is_file() else b""
-            if current != prior_body and load_ownership_receipt(_home_for_config_root(path.parent)) is None:
+            if (
+                current != prior_body
+                and path.is_file()
+                and load_ownership_receipt(_home_for_config_root(path.parent)) is None
+            ):
                 raise AntigravityInstallError("Antigravity ownership receipt drifted")
             if prior_present:
                 atomic_write_bytes(path, prior_body)
@@ -1087,13 +1095,14 @@ def restore_recovery_snapshot(
         tuple[str | None, str | None, str | None], dict[str, str | None]
     ]
     | None = None,
+    undo_committed: bool = False,
 ) -> bool:
     try:
         backup_dir = _assert_nofollow_path(backup_dir, label="Antigravity recovery directory")
         raw = json.loads(read_managed_regular_bytes(backup_dir / "current.json").decode("utf-8"))
         if raw.get("schema") != "omg-agy-recovery/v1":
             return False
-        if raw.get("status") == "committed":
+        if raw.get("status") == "committed" and not undo_committed:
             return True
         root = _assert_nofollow_path(
             Path(str(raw["config_root"])), label="recorded Antigravity config root"
@@ -1292,13 +1301,21 @@ def restore_recovery_snapshot(
                 and current[0] is None
                 and phase_level >= 1
             )
+            journaled_refresh_gap = bool(
+                str(phase) == "installing_plugin"
+                and previous_target_state == "exact"
+                and isinstance(previous_digest, str)
+                and current[0] in {None, previous[0]}
+            )
             if not (
-                sealed_match
+                undo_committed
+                or sealed_match
                 or mixed_recovery_match
                 or locked_intermediate_match
                 or write_ahead_intermediate_match
                 or rollback_in_progress_match
                 or incomplete_fresh_install
+                or journaled_refresh_gap
             ):
                 return False
             _mark_recovery_phase(
@@ -1306,7 +1323,11 @@ def restore_recovery_snapshot(
                 "restoring_prior_plugin",
                 intended_plugin_digest=str(previous_digest or ""),
             )
-            if incomplete_fresh_install:
+            if incomplete_fresh_install or (
+                journaled_refresh_gap
+                and current[0] is None
+                and os.path.lexists(target)
+            ):
                 _remove_plugin_tree(target)
             elif not target_matches_previous and os.path.lexists(target):
                 result = _run(

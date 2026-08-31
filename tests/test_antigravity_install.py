@@ -917,3 +917,104 @@ def test_uninstall_revalidates_registry_identity_immediately_before_host_mutatio
         home=home,
     )
     assert target.exists()
+
+
+def test_refresh_absent_after_journaled_uninstall_restores_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    from omg_cli.antigravity_install import install_plugin
+
+    install_plugin(ROOT)
+    recovery = home / ".gemini/config/.omg-transactions/refresh-crash"
+    persist_recovery_snapshot(recovery)
+    digest = _package_digest(installed_plugin_path(home))
+    assert digest is not None
+    _mark_recovery_phase(recovery, "installing_plugin", intended_plugin_digest=digest)
+    subprocess.run(["agy", "plugin", "uninstall", "oh-my-grok"], check=True)
+    assert not installed_plugin_path(home).exists()
+
+    assert restore_recovery_snapshot(recovery) is True
+    assert _package_digest(installed_plugin_path(home)) == digest
+
+
+def test_committed_uninstall_snapshot_restores_when_undoing_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    from omg_cli.antigravity_install import install_plugin
+
+    install_plugin(ROOT)
+    target = installed_plugin_path(home)
+    digest = _package_digest(target)
+    receipt = load_ownership_receipt(home)
+    assert digest is not None
+    assert receipt is not None
+    assert uninstall_owned_plugin(
+        expected_digest=receipt["plugin_digest"],
+        expected_registry_identity=receipt["registry_identity"],
+        expected_mcp_registry_identity=receipt["mcp_registry_identity"],
+        home=home,
+        retain_committed=True,
+    )
+    recovery = home / ".gemini/config/.omg-transactions/agy-uninstall"
+    assert not target.exists()
+    assert restore_recovery_snapshot(recovery) is True
+    assert not target.exists()
+    assert restore_recovery_snapshot(recovery, undo_committed=True) is True
+    assert _package_digest(target) == digest
+
+
+def test_uninstall_plan_omits_reference_releases_when_removing_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_agy(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="user",
+        project_root=None,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=project,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    from omg_cli.install_migrate import plan_owned_uninstall
+
+    plan = plan_owned_uninstall(
+        project_root=project,
+        include_user_manifest=True,
+    )
+    assert plan["remove_external"]
+    assert plan["release_external_references"] == []
+
+
+def test_unreceipted_exact_import_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    subprocess.run(["agy", "plugin", "install", str(ROOT)], check=True)
+    subprocess.run(["agy", "plugin", "enable", "oh-my-grok"], check=True)
+    plugin_json = home / ".gemini/config/plugins/oh-my-grok/plugin.json"
+    before = plugin_json.read_bytes()
+    project = tmp_path / "project"
+    project.mkdir()
+    with pytest.raises(InstallManifestError, match="unreceipted"):
+        run_scoped_setup(
+            runtime="antigravity",
+            scope="project",
+            project_root=project,
+            here=True,
+            plugin=ROOT,
+            install_antigravity=True,
+        )
+    assert plugin_json.read_bytes() == before
+    assert load_ownership_receipt(home) is None
