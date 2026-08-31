@@ -680,6 +680,28 @@ def test_legacy_version_marker_content_is_never_disclosed(tmp_path: Path) -> Non
     assert "marker-present" in result["versions"]
 
 
+def test_legacy_version_marker_parent_symlink_is_never_followed(
+    tmp_path: Path,
+) -> None:
+    real_home = tmp_path / "real-home"
+    root = real_home / ".gemini" / "antigravity-cli"
+    root.mkdir(parents=True)
+    secret = "PRIVATE-EXTERNAL-MARKER"
+    (root / "VERSION").write_text(secret, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gemini").symlink_to(
+        real_home / ".gemini", target_is_directory=True
+    )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["present"] is False
+    assert result["supported"] is False
+    assert result["versions"] == []
+    assert secret not in json.dumps(result)
+
+
 def test_workspace_uri_import_has_per_row_and_aggregate_bounds(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)

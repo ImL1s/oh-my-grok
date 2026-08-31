@@ -72,14 +72,20 @@ class AgHistoryError(ValueError):
 
 
 def _existing_dir(path: Path) -> Path | None:
+    descriptors: list[int] = []
     try:
-        if path.is_symlink():
-            return None
-        if path.is_dir():
-            return path
-    except OSError:
+        # Reuse the same descriptor-relative, no-follow ancestor walk as the
+        # SQLite importer.  A synthetic leaf makes ``path`` itself the pinned
+        # parent directory without reading any host-private entry.
+        descriptors, _directory_fd, _name = _open_summary_parent(
+            path / ".omg-antigravity-directory-probe"
+        )
+    except (AgHistoryError, OSError):
         return None
-    return None
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+    return path
 
 
 def _candidate_dirs(project_root: Path, *, home: Path) -> list[Path]:
@@ -143,18 +149,33 @@ def _candidate_summary_dbs(project_root: Path, *, home: Path) -> list[Path]:
 def _read_version_label(directory: Path) -> str | None:
     """Classify legacy marker layouts without reading marker contents."""
 
-    for name in _VERSION_FILES:
-        path = directory / name
-        try:
-            if not path.is_file() or path.is_symlink():
+    descriptors: list[int] = []
+    try:
+        descriptors, directory_fd, _name = _open_summary_parent(
+            directory / ".omg-antigravity-marker-probe"
+        )
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        for name in _VERSION_FILES:
+            try:
+                marker_fd = os.open(name, flags, dir_fd=directory_fd)
+            except OSError:
                 continue
-            if path.stat().st_size > 65_536:
-                return "oversized"
-        except OSError:
-            continue
-        # Marker contents are host-private and not required for the supported
-        # SQLite summary pin. Never surface or parse them as public metadata.
-        return "marker-present"
+            try:
+                info = os.fstat(marker_fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    continue
+                if info.st_size > 65_536:
+                    return "oversized"
+            finally:
+                os.close(marker_fd)
+            # Marker contents are host-private and not required for the
+            # supported SQLite summary pin. Never surface or parse them.
+            return "marker-present"
+    except (AgHistoryError, OSError):
+        return None
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
     return None
 
 
@@ -417,10 +438,10 @@ def _descriptor_path(descriptor: int) -> str:
 def _open_summary_db(path: Path) -> Iterator[sqlite3.Connection]:
     """Open a pinned source descriptor as immutable SQLite.
 
-    Active WAL/SHM state is skipped explicitly. Native read-only SQLite may
-    write reader marks into the host ``-shm`` file, while immutable mode
-    intentionally ignores WAL.  Failing closed is therefore the only stdlib
-    sqlite3 option that is both honest and source-non-mutating.
+    A non-empty WAL is skipped explicitly. Native read-only SQLite may write
+    reader marks into the host ``-shm`` file, while immutable mode intentionally
+    ignores WAL. A stale SHM alone contains no committed database content, but
+    every sidecar leaf is still validated without following links.
     """
 
     descriptors, parent_fd, name = _open_summary_parent(path)
