@@ -522,6 +522,38 @@ def test_duplicate_antigravity_tool_blocks_fail_closed_and_are_repaired(
     assert check_antigravity_agent_tools(tmp_path) == []
 
 
+def test_antigravity_tool_writer_repairs_inline_and_spaced_declarations(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    record = load_agents_catalog(
+        tmp_path, require_projections=False
+    ).by_id()["omg-executor"]
+    path = tmp_path / "agents" / "omg-executor.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "---\n# omg-executor",
+        "tools: [run_command]\ntools : [generate_image]\n---\n# omg-executor",
+    )
+
+    repaired = render_antigravity_agent_tools(record, text)
+
+    assert repaired.count("\ntools:\n") == 1
+    assert "tools: [" not in repaired
+    assert "tools :" not in repaired
+    assert "run_command" not in repaired
+    assert "generate_image" not in repaired
+    path.write_text(repaired, encoding="utf-8")
+    assert check_antigravity_agent_tools(tmp_path) == []
+
+
 def test_inspect_payload_never_claims_verified() -> None:
     payload = inspect_agents_catalog(ROOT)
     assert payload["ok"] is True

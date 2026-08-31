@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 import uuid
 from dataclasses import dataclass
@@ -1306,7 +1307,7 @@ def render_antigravity_agent_tools(record: AgentRecord, source_text: str) -> str
 
     blocks: list[tuple[int, int]] = []
     for index in range(1, end):
-        if lines[index] == "tools:":
+        if re.fullmatch(r"tools\s*:.*", lines[index]):
             block_end = index + 1
             while block_end < end and lines[block_end].startswith((" ", "\t")):
                 block_end += 1
