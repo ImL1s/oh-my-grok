@@ -1874,6 +1874,7 @@ def persist_manifest(
     payload["verified"] = False
     payload["observed"] = False
     payload["healthy"] = False
+    payload["live_verified"] = False
     if not payload.get("transaction_id"):
         payload["transaction_id"] = uuid.uuid4().hex
     if not payload.get("created_at"):
@@ -1917,6 +1918,7 @@ def upsert_manifest_artifacts(
     payload["verified"] = False
     payload["observed"] = False
     payload["healthy"] = False
+    payload["live_verified"] = False
     return payload
 
 

@@ -1041,6 +1041,45 @@ def test_undo_committed_restore_refuses_foreign_post_state(
     assert json.loads((target / "plugin.json").read_text())["version"] == "foreign"
 
 
+def test_clear_ownership_receipt_fsyncs_parent_after_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="user",
+        project_root=None,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    receipt = load_ownership_receipt(home)
+    assert receipt is not None
+    from omg_cli.antigravity_install import (
+        _fsync_directory,
+        clear_ownership_receipt,
+        ownership_receipt_path,
+    )
+
+    synced: list[Path] = []
+    real = _fsync_directory
+
+    def capture(path: Path) -> None:
+        synced.append(path)
+        real(path)
+
+    monkeypatch.setattr("omg_cli.antigravity_install._fsync_directory", capture)
+    assert clear_ownership_receipt(
+        expected_digest=receipt["plugin_digest"],
+        expected_registry_identity=receipt["registry_identity"],
+        expected_mcp_registry_identity=receipt["mcp_registry_identity"],
+        home=home,
+    )
+    parent = ownership_receipt_path(home).parent
+    assert parent in synced
+    assert not ownership_receipt_path(home).exists()
+
+
 def test_locked_restore_refuses_foreign_plugin_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

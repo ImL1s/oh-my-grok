@@ -220,6 +220,8 @@ def clear_ownership_receipt(
         ownership_receipt_path(home), label="Antigravity ownership receipt"
     )
     path.unlink(missing_ok=True)
+    if path.parent.is_dir():
+        _fsync_directory(path.parent)
     return True
 
 
