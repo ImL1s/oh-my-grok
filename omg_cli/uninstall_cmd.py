@@ -1,4 +1,5 @@
 """omg uninstall — remove plugin, global hook, OMG rules block (never project .omg/)."""
+
 from __future__ import annotations
 
 import json
@@ -107,8 +108,7 @@ def _plugin_rows(runner) -> list[dict]:
         for row in payload
         if isinstance(row, dict)
         and (
-            str(row.get("name") or row.get("id") or row.get("plugin") or "")
-            == "oh-my-grok"
+            str(row.get("name") or row.get("id") or row.get("plugin") or "") == "oh-my-grok"
             or str(row.get("name") or row.get("id") or row.get("plugin") or "").startswith(
                 "oh-my-grok@"
             )
@@ -166,10 +166,7 @@ def _restore_plugin(
         if not snapshot.path.is_dir() and source is not None:
             install_source = source
         identity = compute_package_identity(install_source)
-        if (
-            identity["digest"] != snapshot.digest
-            or identity["inventory"] != snapshot.inventory
-        ):
+        if identity["digest"] != snapshot.digest or identity["inventory"] != snapshot.inventory:
             raise OSError("plugin rollback source bytes drifted")
         result = runner(
             ["grok", "plugin", "install", str(install_source), "--trust"],
@@ -307,18 +304,15 @@ def run_uninstall(
         if receipt is not None:
             print(f"  - receipt-owned immutable stage: {receipt['installed']['stage_realpath']}")
             print(f"  - managed current/receipt pointers under: {store}")
-        print(
-            f"  - ~/.local/bin/omg only if it is a symlink into this checkout "
-            f"({checkout})"
-        )
+        print(f"  - ~/.local/bin/omg only if it is a symlink into this checkout ({checkout})")
         print("  - project .omg/state: NOT removed (intentionally left untouched)")
         if owned_plan.get("has_manifest"):
+            for row in owned_plan.get("remove_external") or []:
+                print(f"  - manifest-owned Agy plugin via uninstall: {row.get('path')}")
             for row in owned_plan.get("remove") or []:
                 print(f"  - manifest-owned unchanged: {row.get('path')}")
             for row in owned_plan.get("preserve") or []:
-                print(
-                    f"  - preserve ({row.get('reason')}): {row.get('path')}"
-                )
+                print(f"  - preserve ({row.get('reason')}): {row.get('path')}")
         print("re-run with --yes to actually perform removal")
         return 0
 
@@ -334,9 +328,10 @@ def run_uninstall(
             plugin_path = verified_stage
             if plugin_path is None:  # pragma: no cover - guarded by receipt
                 raise ValueError("verified receipt has no stage")
-            if compute_package_identity(
-                plugin_path, canonicalize_posix_launchers=False
-            )["digest"] != expected:
+            if (
+                compute_package_identity(plugin_path, canonicalize_posix_launchers=False)["digest"]
+                != expected
+            ):
                 print("omg uninstall: host plugin bytes drifted; preserved", file=sys.stderr)
                 return 1
             owned_hooks = {
@@ -351,7 +346,9 @@ def run_uninstall(
                     or expected_file is None
                     or hashlib.sha256(managed.read_bytes()).hexdigest() != expected_file
                 ):
-                    print(f"omg uninstall: drifted global hook preserved: {managed}", file=sys.stderr)
+                    print(
+                        f"omg uninstall: drifted global hook preserved: {managed}", file=sys.stderr
+                    )
                     return 1
             from omg_cli.guidance import render_managed_block, rules_status
 
@@ -367,9 +364,9 @@ def run_uninstall(
             if status.get("present"):
                 expected_guidance = guidance_rows.get(str(rules))
                 actual_guidance = hashlib.sha256(
-                    render_managed_block(
-                        str(receipt["installed"]["package_version"])
-                    ).encode("utf-8")
+                    render_managed_block(str(receipt["installed"]["package_version"])).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
                 if (
                     status.get("corrupt")
@@ -672,8 +669,61 @@ def run_uninstall(
             else:
                 print(f"omg uninstall: removed immutable stage {stage}")
 
-    # 6. manifest-owned unchanged regular files (never .omg/state, never drift)
+    # 6. Manifest-owned exact Agy import, then unchanged regular files.  The
+    # plugin is removed only through the host CLI and only when its package
+    # digest still matches the manifest.
     if owned_plan.get("has_manifest"):
+        external = owned_plan.get("remove_external") or []
+        if external:
+            if len(external) != 1:
+                print(
+                    "omg uninstall: ambiguous Antigravity ownership; plugin preserved",
+                    file=sys.stderr,
+                )
+                return 1
+            external_row = external[0]
+            target = Path(str(external_row.get("path") or ""))
+            try:
+                agy_home = target.parents[3]
+                expected_digest = str(external_row["content_hash"])
+                expected_registry = str(external_row["registry_identity"])
+                from omg_cli.antigravity_install import (
+                    clear_ownership_receipt,
+                    probe_plugin,
+                    uninstall_owned_plugin,
+                )
+
+                removed = uninstall_owned_plugin(
+                    expected_digest=expected_digest,
+                    expected_registry_identity=expected_registry,
+                    runner=runner,
+                    home=agy_home,
+                )
+            except (OSError, KeyError, IndexError, ValueError):
+                removed = False
+            if not removed:
+                print(
+                    "omg uninstall: Antigravity plugin changed before locked uninstall; preserved",
+                    file=sys.stderr,
+                )
+                return 1
+            if probe_plugin(runner=runner, home=agy_home).get("installed"):
+                print(
+                    "omg uninstall: Antigravity plugin still discovered after uninstall",
+                    file=sys.stderr,
+                )
+                return 1
+            if not clear_ownership_receipt(
+                expected_digest=expected_digest,
+                expected_registry_identity=expected_registry,
+                home=agy_home,
+            ):
+                print(
+                    "omg uninstall: Antigravity ownership receipt changed; plugin removed but receipt preserved",
+                    file=sys.stderr,
+                )
+                return 1
+            print("omg uninstall: removed manifest-owned Antigravity plugin")
         applied = apply_owned_uninstall(owned_plan)
         for path in applied.get("removed") or []:
             print(f"omg uninstall: removed manifest-owned {path}")
@@ -681,7 +731,5 @@ def run_uninstall(
             print(f"omg uninstall: preserved {path}")
 
     # 7. never touch project .omg/state
-    print(
-        "omg uninstall: project `.omg/state` was intentionally left untouched"
-    )
+    print("omg uninstall: project `.omg/state` was intentionally left untouched")
     return 0

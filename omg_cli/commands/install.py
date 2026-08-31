@@ -38,10 +38,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 scope="user",
                 force=force,
                 source_version=__version__,
+                install_antigravity=runtime in {"antigravity", "both"},
             )
             print(f"oh-my-grok user-scope setup (runtime={runtime})")
             print(f"  manifest: {result.get('manifest')}")
-            print(f"  written: {len(result.get('written') or [])} (not live-verified)")
+            suffix = (
+                "live-verified by agy agent + OMG MCP tool/hook evidence"
+                if result.get("live_verified")
+                else "not live-verified"
+            )
+            print(f"  written: {len(result.get('written') or [])} ({suffix})")
             print("  did not create a project .omg")
             return 0
         root = project_root()
@@ -62,12 +68,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
             source_version=__version__,
             install_rules=want_rules,
             install_hook=want_hook,
+            install_antigravity=runtime in {"antigravity", "both"},
         )
         print(f"oh-my-grok setup complete in {root}")
         print("  .omg/ dirs: ensured")
         for line in result.get("actions") or []:
             print(f"  {line}")
-        print(f"  install manifest: {result.get('manifest')} (not live-verified)")
+        suffix = (
+            "live-verified by agy agent + OMG MCP tool/hook evidence"
+            if result.get("live_verified")
+            else "not live-verified"
+        )
+        print(f"  install manifest: {result.get('manifest')} ({suffix})")
         if result.get("skipped"):
             print(f"  preserved foreign/user-owned: {len(result['skipped'])}")
         if grok_machine and not install_hook:

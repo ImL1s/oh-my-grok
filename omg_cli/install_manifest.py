@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 SCHEMA = "omg-install-manifest/v1"
 RUNTIMES = ("grok", "antigravity", "both")
@@ -45,22 +45,18 @@ RUNTIME_ENABLED_TYPES = frozenset(
         "MCP config",
     }
 )
-OPTIONAL_ARTIFACT_IDS = frozenset({"user.grok.rules", "user.grok.hook"})
+OPTIONAL_ARTIFACT_IDS = frozenset({"user.grok.rules", "user.grok.hook", "user.ag.plugin"})
 # Exact id set for each (runtime, scope). Optional machine-scoped grok
 # rules/hook rows are extra and are subtracted before this comparison.
 EXPECTED_IDS_BY_RUNTIME_SCOPE = MappingProxyType(
     {
         ("grok", "project"): frozenset({"project.agents", "project.gitignore"}),
-        ("antigravity", "project"): frozenset(
-            {"project.ag.projection", "project.gitignore"}
-        ),
+        ("antigravity", "project"): frozenset({"project.ag.projection", "project.gitignore"}),
         ("both", "project"): frozenset(
             {"project.agents", "project.gitignore", "project.ag.projection"}
         ),
         ("grok", "user"): frozenset({"user.manifest.marker"}),
-        ("antigravity", "user"): frozenset(
-            {"user.ag.projection", "user.manifest.marker"}
-        ),
+        ("antigravity", "user"): frozenset({"user.ag.projection", "user.manifest.marker"}),
         ("both", "user"): frozenset({"user.ag.projection", "user.manifest.marker"}),
     }
 )
@@ -149,7 +145,7 @@ def _is_real_directory(path: Path) -> bool:
 
 
 def assert_expected_artifact_ids(
-    runtime: str, scope: str, rows: list[Mapping[str, Any]]
+    runtime: str, scope: str, rows: Sequence[Mapping[str, Any]]
 ) -> None:
     """Fail-closed: desired ids must match the frozen expected set."""
     ids = [str(row.get("id") or "") for row in rows]
@@ -169,7 +165,12 @@ def assert_expected_artifact_ids(
             f"desired artifact ids {sorted(core)} != expected {sorted(expected)}",
         )
     extras = frozenset(ids) & OPTIONAL_ARTIFACT_IDS
-    if extras and not (scope == "project" and runtime in {"grok", "both"}):
+    allowed_extras: set[str] = set()
+    if scope == "project" and runtime in {"grok", "both"}:
+        allowed_extras.update({"user.grok.rules", "user.grok.hook"})
+    if runtime in {"antigravity", "both"}:
+        allowed_extras.add("user.ag.plugin")
+    if not extras.issubset(allowed_extras):
         raise InstallManifestError(
             "E_IDS",
             f"optional artifact ids not allowed for runtime={runtime!r} scope={scope!r}",
@@ -219,6 +220,12 @@ def _machine_grok_home() -> Path:
     return hook_grok_home()
 
 
+def _machine_antigravity_config() -> Path:
+    from omg_cli.antigravity_install import config_root
+
+    return config_root()
+
+
 def _containment_roots(
     *,
     scope: str,
@@ -228,6 +235,8 @@ def _containment_roots(
     roots = [_install_root(scope, project_root)]
     if scope == "project" and runtime in {"grok", "both"}:
         roots.append(_machine_grok_home())
+    if runtime in {"antigravity", "both"}:
+        roots.append(_machine_antigravity_config())
     return tuple(roots)
 
 
@@ -295,9 +304,7 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
             )
         bak = backup_dir / f"{ident}.bak"
         bak.write_bytes(data)
-        _write_text_nofollow(
-            bak.with_suffix(".json"), json.dumps({"target": str(target)})
-        )
+        _write_text_nofollow(bak.with_suffix(".json"), json.dumps({"target": str(target)}))
         _write_text_nofollow(
             prev,
             json.dumps(
@@ -309,9 +316,7 @@ def _backup_existing(backup_dir: Path, ident: str, target: Path) -> None:
             ),
         )
         return
-    _write_text_nofollow(
-        prev, json.dumps({"target": str(target), "kind": "created"})
-    )
+    _write_text_nofollow(prev, json.dumps({"target": str(target), "kind": "created"}))
 
 
 def _seal_observed_identity(row: dict[str, Any], target: Path) -> None:
@@ -350,6 +355,7 @@ def desired_artifacts(
     plugin: Path | None = None,
     install_rules: bool = False,
     install_hook: bool = False,
+    install_antigravity: bool = False,
 ) -> list[dict[str, Any]]:
     if runtime not in RUNTIMES:
         raise InstallManifestError("E_RUNTIME", f"runtime must be one of {RUNTIMES}")
@@ -468,6 +474,26 @@ def desired_artifacts(
                 "mergeable": False,
             }
         )
+    if install_antigravity and "antigravity" in runtimes:
+        from omg_cli.antigravity_install import installed_plugin_path
+
+        rows.append(
+            {
+                "id": "user.ag.plugin",
+                "runtime": "antigravity",
+                "scope": "user",
+                "type": "plugin metadata",
+                "target": str(installed_plugin_path()),
+                # The host plugin is machine-global. Project manifests observe
+                # it but cannot independently claim uninstall ownership.
+                "ownership": "OMG-managed" if scope == "user" else "imported",
+                "enabled": True,
+                "mergeable": False,
+                "machine_scoped": True,
+                "external_cli_managed": True,
+                "note": "installed and discovered through the official agy plugin CLI",
+            }
+        )
     assert_expected_artifact_ids(runtime, scope, rows)
     for row in rows:
         target = Path(row["target"])
@@ -550,6 +576,7 @@ def build_manifest(
     source_version: str | None = None,
     install_rules: bool = False,
     install_hook: bool = False,
+    install_antigravity: bool = False,
 ) -> dict[str, Any]:
     artifacts = desired_artifacts(
         runtime=runtime,
@@ -558,6 +585,7 @@ def build_manifest(
         plugin=plugin,
         install_rules=install_rules,
         install_hook=install_hook,
+        install_antigravity=install_antigravity,
     )
     return {
         "schema": SCHEMA,
@@ -572,8 +600,8 @@ def build_manifest(
         "observed": False,
         "healthy": False,
         "note": (
-            "File copy is not live verification. Antigravity projections are not "
-            "an installed agy plugin. Foreign/user-owned files are preserved."
+            "File copy is not live verification. Antigravity truth comes from "
+            "fresh agy validate/list/agent probes. Foreign/user-owned files are preserved."
         ),
         "artifacts": artifacts,
     }
@@ -631,10 +659,18 @@ def rollback_interrupted(
             "rolled_back": False,
             "note": "tx marker backup_dir rejected",
         }
+    if state.get("agy_recovery_snapshot") is True:
+        from omg_cli.antigravity_install import restore_recovery_snapshot
+
+        if runtime not in {"antigravity", "both"} or not restore_recovery_snapshot(backups):
+            return {
+                "ok": False,
+                "rolled_back": False,
+                "recoverable": True,
+                "note": "agy plugin durable rollback failed; transaction marker preserved",
+            }
     try:
-        roots = _containment_roots(
-            scope=scope, project_root=project_root, runtime=runtime
-        )
+        roots = _containment_roots(scope=scope, project_root=project_root, runtime=runtime)
     except InstallManifestError:
         marker.unlink(missing_ok=True)
         return {"ok": True, "rolled_back": False, "note": "tx marker root rejected"}
@@ -791,9 +827,7 @@ def _apply_merge_or_install(
         from omg_cli.setup_fragments import merge_gitignore_fragment
 
         if project_root is None:
-            raise InstallManifestError(
-                "E_SCOPE", "project.gitignore requires a project root"
-            )
+            raise InstallManifestError("E_SCOPE", "project.gitignore requires a project root")
         action = merge_gitignore_fragment(Path(project_root))
         label = f".gitignore: {action}"
     elif kind == "rules":
@@ -843,10 +877,21 @@ def apply_manifest(
     runtime = manifest["runtime"]
     tx_id = manifest["transaction_id"]
     install_root = _install_root(scope, project_root)
-    roots = _containment_roots(
-        scope=scope, project_root=project_root, runtime=runtime
-    )
-    rollback_interrupted(scope, project_root)
+    roots = _containment_roots(scope=scope, project_root=project_root, runtime=runtime)
+    recovery = rollback_interrupted(scope, project_root)
+    if recovery.get("ok") is False:
+        raise InstallManifestError(
+            "E_RECOVERY", str(recovery.get("note") or "interrupted recovery failed")
+        )
+    previous_ag_digest: str | None = None
+    from omg_cli.antigravity_install import AntigravityInstallError, load_ownership_receipt
+
+    try:
+        ownership_receipt = load_ownership_receipt()
+    except AntigravityInstallError as exc:
+        raise InstallManifestError("E_TX", str(exc)) from exc
+    if ownership_receipt is not None:
+        previous_ag_digest = str(ownership_receipt["plugin_digest"])
     tx_root = _tx_dir(scope, project_root)
     backup_dir = tx_root / tx_id
     _assert_parents_not_symlink(backup_dir, install_root)
@@ -868,19 +913,79 @@ def apply_manifest(
     written: list[str] = []
     skipped: list[dict[str, str]] = []
     actions: list[str] = []
+    agy_plugin_created = False
+    antigravity_evidence: dict[str, Any] | None = None
     try:
         if scope == "project" and project_root is not None:
             _ensure_project_omg_dirs(Path(project_root))
         for row in manifest["artifacts"]:
             target = Path(row["target"])
+            if row.get("external_cli_managed") is True:
+                from omg_cli.antigravity_install import (
+                    AntigravityInstallError,
+                    install_plugin,
+                    package_digest,
+                    persist_ownership_receipt,
+                    persist_recovery_snapshot,
+                    plugin_registry_identity,
+                )
+
+                source_digest = package_digest(plugin)
+                if source_digest is None:
+                    raise InstallManifestError("E_TX", "invalid Antigravity package identity")
+                # Durable pre-state lives inside this transaction. It records
+                # the original canonical config/target, so HOME changes do not
+                # redirect crash recovery.
+                persist_recovery_snapshot(backup_dir)
+                _write_text_nofollow(
+                    marker,
+                    json.dumps(
+                        {
+                            "status": "committing",
+                            "transaction_id": tx_id,
+                            "backup_dir": str(backup_dir),
+                            "runtime": runtime,
+                            "scope": scope,
+                            "agy_recovery_snapshot": True,
+                        }
+                    ),
+                )
+                try:
+                    evidence = install_plugin(
+                        plugin,
+                        force=force,
+                        owned_previous_digest=previous_ag_digest,
+                        recovery_dir=backup_dir,
+                    )
+                except AntigravityInstallError as exc:
+                    code = "E_CONFLICT" if "foreign or drifted" in str(exc) else "E_TX"
+                    raise InstallManifestError(code, str(exc)) from exc
+                agy_plugin_created = bool(evidence.get("created"))
+                antigravity_evidence = evidence
+                registry_identity = plugin_registry_identity()
+                if not isinstance(registry_identity, str):
+                    raise InstallManifestError("E_TX", "Antigravity registry identity missing")
+                persist_ownership_receipt(
+                    plugin_digest=str(evidence.get("content_hash") or ""),
+                    registry_identity=registry_identity,
+                )
+                row["content_hash"] = evidence.get("content_hash")
+                row["registry_identity"] = registry_identity
+                row["classification"] = "exact"
+                row["observed"] = bool(evidence.get("observed"))
+                row["healthy"] = bool(evidence.get("healthy"))
+                row["live_verified"] = bool(evidence.get("live_verified"))
+                row["action"] = "agy plugin: installed and discovered"
+                actions.append(str(row["action"]))
+                if agy_plugin_created:
+                    written.append(str(target))
+                continue
             body = _desired_body(row, plugin=plugin)
             klass = classify_path(target, desired=body)
             row["classification"] = klass
             contain = _root_for_path(target, roots)
             if contain is None:
-                raise InstallManifestError(
-                    "E_PATH", f"target escapes install roots: {target}"
-                )
+                raise InstallManifestError("E_PATH", f"target escapes install roots: {target}")
             merge_kind = _merge_kind(row)
             if _is_real_directory(target):
                 if not force:
@@ -930,9 +1035,30 @@ def apply_manifest(
             written.append(str(target))
             actions.append(f"{row['id']}: written")
         dest = (
-            user_manifest_path()
-            if scope == "user"
-            else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
+            user_manifest_path() if scope == "user" else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
+        )
+        manifest["runtime_evidence"] = (
+            {"antigravity": antigravity_evidence} if antigravity_evidence is not None else {}
+        )
+        manifest["observed"] = bool(
+            runtime == "antigravity"
+            and antigravity_evidence
+            and antigravity_evidence.get("observed")
+        )
+        manifest["healthy"] = bool(
+            runtime == "antigravity"
+            and antigravity_evidence
+            and antigravity_evidence.get("healthy")
+        )
+        manifest["verified"] = bool(
+            runtime == "antigravity"
+            and antigravity_evidence
+            and antigravity_evidence.get("verified")
+        )
+        manifest["live_verified"] = bool(
+            runtime == "antigravity"
+            and antigravity_evidence
+            and antigravity_evidence.get("live_verified")
         )
         _assert_parents_not_symlink(dest, install_root)
         _mkdir(dest.parent)
@@ -947,9 +1073,29 @@ def apply_manifest(
         )
         return {
             "ok": True,
-            "verified": False,
-            "observed": False,
-            "healthy": False,
+            "verified": bool(
+                runtime == "antigravity"
+                and antigravity_evidence
+                and antigravity_evidence.get("verified")
+            ),
+            "observed": bool(
+                runtime == "antigravity"
+                and antigravity_evidence
+                and antigravity_evidence.get("observed")
+            ),
+            "healthy": bool(
+                runtime == "antigravity"
+                and antigravity_evidence
+                and antigravity_evidence.get("healthy")
+            ),
+            "live_verified": bool(
+                runtime == "antigravity"
+                and antigravity_evidence
+                and antigravity_evidence.get("live_verified")
+            ),
+            "runtime_evidence": (
+                {"antigravity": antigravity_evidence} if antigravity_evidence is not None else {}
+            ),
             "runtime": runtime,
             "scope": scope,
             "transaction_id": tx_id,
@@ -957,7 +1103,11 @@ def apply_manifest(
             "skipped": skipped,
             "actions": actions,
             "manifest": str(dest),
-            "note": "manifest written; not live-verified; not agy discovery",
+            "note": (
+                "manifest written; Antigravity was live-discovered through agy"
+                if antigravity_evidence is not None
+                else "manifest written; not live-verified"
+            ),
         }
     except Exception as exc:
         rollback_interrupted(
@@ -971,7 +1121,12 @@ def apply_manifest(
                 "scope": scope,
             },
         )
-        if isinstance(exc, InstallManifestError) and exc.code in {"E_TX", "E_PATH"}:
+        if isinstance(exc, InstallManifestError) and exc.code in {
+            "E_TX",
+            "E_PATH",
+            "E_CONFLICT",
+            "E_RECOVERY",
+        }:
             raise
         raise InstallManifestError(
             "E_TX", f"install transaction rolled back ({type(exc).__name__})"
@@ -983,8 +1138,10 @@ def inspect_install_manifest(
     project_root: Path | None,
     scope: str = "project",
 ) -> dict[str, Any]:
-    path = user_manifest_path() if scope == "user" else (
-        project_manifest_path(project_root) if project_root is not None else None
+    path = (
+        user_manifest_path()
+        if scope == "user"
+        else (project_manifest_path(project_root) if project_root is not None else None)
     )
     if path is None:
         return {
@@ -1008,9 +1165,7 @@ def inspect_install_manifest(
             "observed": False,
             "healthy": False,
             "verified": False,
-            "drift": [
-                {"id": "manifest", "class": "foreign", "target": str(path)}
-            ],
+            "drift": [{"id": "manifest", "class": "foreign", "target": str(path)}],
             "error": "manifest path is a symlink",
         }
     if not path.is_file():
@@ -1025,8 +1180,10 @@ def inspect_install_manifest(
             "verified": False,
             "note": "no install manifest yet",
         }
-    inspect_root = user_store() if scope == "user" else (
-        Path(project_root) if project_root is not None else None
+    inspect_root = (
+        user_store()
+        if scope == "user"
+        else (Path(project_root) if project_root is not None else None)
     )
     if inspect_root is not None:
         try:
@@ -1041,9 +1198,7 @@ def inspect_install_manifest(
                 "observed": False,
                 "healthy": False,
                 "verified": False,
-                "drift": [
-                    {"id": "manifest", "class": "foreign", "target": str(path)}
-                ],
+                "drift": [{"id": "manifest", "class": "foreign", "target": str(path)}],
                 "error": str(exc),
             }
     try:
@@ -1086,6 +1241,7 @@ def inspect_install_manifest(
     drift = []
     plugin = plugin_root()
     klasses: dict[str, str] = {}
+    antigravity_evidence: dict[str, Any] | None = None
     inspect_runtime = str(raw.get("runtime") or "")
     try:
         inspect_roots = _containment_roots(
@@ -1101,20 +1257,33 @@ def inspect_install_manifest(
         target = Path(row.get("target") or "")
         claimed = row.get("content_hash")
         ident = str(row.get("id") or "")
+        if row.get("external_cli_managed") is True:
+            from omg_cli.antigravity_install import probe_plugin
+
+            antigravity_evidence = probe_plugin(plugin=plugin)
+            actual = antigravity_evidence.get("plugin_digest")
+            if (
+                antigravity_evidence.get("healthy")
+                and isinstance(claimed, str)
+                and claimed
+                and actual == claimed
+            ):
+                klasses[ident] = "exact"
+            else:
+                klass = "stale" if actual else "missing"
+                klasses[ident] = klass
+                drift.append({"id": ident, "class": klass, "target": str(target)})
+            continue
         contain = _root_for_path(target, inspect_roots)
         if contain is None:
             klasses[ident] = "foreign"
-            drift.append(
-                {"id": row.get("id"), "class": "foreign", "target": str(target)}
-            )
+            drift.append({"id": ident, "class": "foreign", "target": str(target)})
             continue
         try:
             _assert_parents_not_symlink(target, contain)
         except InstallManifestError:
             klasses[ident] = "foreign"
-            drift.append(
-                {"id": row.get("id"), "class": "foreign", "target": str(target)}
-            )
+            drift.append({"id": ident, "class": "foreign", "target": str(target)})
             continue
         if target.is_symlink() or _is_real_directory(target):
             klass = "foreign"
@@ -1133,17 +1302,13 @@ def inspect_install_manifest(
             klass = classify_path(target, desired=body)
         klasses[ident] = klass
         if klass in {"stale", "missing", "malformed", "foreign"}:
-            drift.append({"id": row.get("id"), "class": klass, "target": str(target)})
+            drift.append({"id": ident, "class": klass, "target": str(target)})
     enabled_rows = [row for row in rows if row.get("enabled") is not False]
     enabled_markers = [
-        str(row["id"])
-        for row in enabled_rows
-        if row.get("type") == STATE_MARKER_TYPE
+        str(row["id"]) for row in enabled_rows if row.get("type") == STATE_MARKER_TYPE
     ]
     enabled_runtime = [
-        str(row["id"])
-        for row in enabled_rows
-        if row.get("type") != STATE_MARKER_TYPE
+        str(row["id"]) for row in enabled_rows if row.get("type") != STATE_MARKER_TYPE
     ]
     runtime_exact = False
     for row in enabled_rows:
@@ -1152,17 +1317,35 @@ def inspect_install_manifest(
         if klasses.get(str(row.get("id") or "")) == "exact":
             runtime_exact = True
             break
+    runtime_name = str(raw.get("runtime") or "")
+    ag_enabled = bool(antigravity_evidence and antigravity_evidence.get("enabled"))
+    if runtime_name == "antigravity" and antigravity_evidence is not None:
+        enabled_value = bool(not drift and ag_enabled)
+        observed_value = bool(not drift and antigravity_evidence.get("observed"))
+        healthy_value = bool(not drift and antigravity_evidence.get("healthy"))
+        verified_value = bool(not drift and antigravity_evidence.get("verified"))
+        live_verified_value = bool(not drift and antigravity_evidence.get("live_verified"))
+    else:
+        enabled_value = bool(runtime_exact and (ag_enabled if runtime_name == "both" else True))
+        observed_value = False
+        healthy_value = False
+        verified_value = False
+        live_verified_value = False
     return {
         "ok": not drift,
         "configured": True,
         "installed": bool(enabled_rows),
-        "enabled": runtime_exact,
+        "enabled": enabled_value,
         "enabled_runtime": enabled_runtime,
         "enabled_markers": enabled_markers,
-        "loadable": runtime_exact,
-        "observed": False,
-        "healthy": False,
-        "verified": False,
+        "loadable": observed_value if antigravity_evidence is not None else runtime_exact,
+        "observed": observed_value,
+        "healthy": healthy_value,
+        "verified": verified_value,
+        "live_verified": live_verified_value,
+        "runtime_evidence": (
+            {"antigravity": antigravity_evidence} if antigravity_evidence is not None else {}
+        ),
         "runtime": raw.get("runtime"),
         "scope": raw.get("scope"),
         "transaction_id": raw.get("transaction_id"),
@@ -1247,9 +1430,7 @@ def load_manifest(
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         if strict:
-            raise InstallManifestError(
-                "E_MALFORMED", f"malformed install manifest: {exc}"
-            ) from exc
+            raise InstallManifestError("E_MALFORMED", f"malformed install manifest: {exc}") from exc
         return None
     if (
         not isinstance(raw, dict)
@@ -1292,9 +1473,7 @@ def persist_manifest(
         payload["created_at"] = _utc_now()
     payload["updated_at"] = _utc_now()
     dest = (
-        user_manifest_path()
-        if scope == "user"
-        else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
+        user_manifest_path() if scope == "user" else project_manifest_path(Path(project_root))  # type: ignore[arg-type]
     )
     install_root = _install_root(scope, project_root)
     _assert_parents_not_symlink(dest, install_root)
@@ -1350,6 +1529,7 @@ def run_scoped_setup(
     plugin: Path | None = None,
     install_rules: bool = False,
     install_hook: bool = False,
+    install_antigravity: bool = False,
 ) -> dict[str, Any]:
     if scope == "project":
         if project_root is None:
@@ -1368,6 +1548,7 @@ def run_scoped_setup(
         source_version=source_version,
         install_rules=install_rules,
         install_hook=install_hook,
+        install_antigravity=install_antigravity,
     )
     return apply_manifest(manifest, project_root=project_root, force=force, plugin=plugin)
 
