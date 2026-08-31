@@ -10,6 +10,13 @@ disallowedTools:
   - search_replace
   - run_terminal_command
   - run_terminal_cmd
+tools:
+  - find_by_name
+  - grep_search
+  - view_file
+  - list_dir
+  - read_url_content
+  - search_web
 ---
 
 # omg-document-specialist — Read-only librarian (leaf)

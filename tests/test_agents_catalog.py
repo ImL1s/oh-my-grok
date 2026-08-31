@@ -21,16 +21,20 @@ from omg_cli.agents_catalog import (
     HostProjection,
     YAML_RELATIVE,
     assert_agent_capability,
+    antigravity_tools_for,
+    check_antigravity_agent_tools,
     check_antigravity_projections,
     inspect_agents_catalog,
     load_agents_catalog,
     load_yaml_catalog_document,
     lookup_agent,
     plugin_root,
+    render_antigravity_agent_tools,
     render_antigravity_projections,
     render_handoff,
     resolve_category,
     write_antigravity_projections,
+    write_antigravity_agent_tools,
     _read_plugin_regular_text,
 )
 from omg_cli.catalog_yaml import dump_yaml, parse_yaml
@@ -430,6 +434,190 @@ def test_plugin_orchestrator_frontmatter_matches_catalog() -> None:
     text = (ROOT / "agents" / "omg-orchestrator.md").read_text(encoding="utf-8")
     assert "capabilityMode: read-write" in text
     assert catalog.by_id()["omg-orchestrator"].capability_mode == "read-write"
+
+
+def test_antigravity_tool_profiles_are_catalog_driven_and_fail_closed() -> None:
+    catalog = load_agents_catalog(ROOT)
+
+    executor = antigravity_tools_for(catalog.by_id()["omg-executor"])
+    assert "write_to_file" in executor
+    assert "replace_file_content" in executor
+    assert "run_command" not in executor
+
+    orchestrator = antigravity_tools_for(catalog.by_id()["omg-orchestrator"])
+    assert "write_to_file" in orchestrator
+    assert "run_command" in orchestrator
+
+    verifier = antigravity_tools_for(catalog.by_id()["omg-verifier"])
+    assert "view_file" in verifier
+    assert "grep_search" in verifier
+    assert "write_to_file" not in verifier
+    assert "replace_file_content" not in verifier
+    assert "run_command" not in verifier
+
+    designer = antigravity_tools_for(catalog.by_id()["omg-designer"])
+    assert "generate_image" in designer
+    vision = antigravity_tools_for(catalog.by_id()["omg-vision"])
+    assert "generate_image" not in vision
+
+
+def test_installed_agent_frontmatter_has_current_antigravity_tools() -> None:
+    assert check_antigravity_agent_tools(ROOT) == []
+
+
+def test_antigravity_agent_tool_writer_repairs_drift(tmp_path: Path) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+
+    assert check_antigravity_agent_tools(tmp_path) == [
+        "stale agents/omg-executor.md Antigravity tools"
+    ]
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    assert check_antigravity_agent_tools(tmp_path) == []
+    text = (tmp_path / "agents" / "omg-executor.md").read_text(encoding="utf-8")
+    assert "tools:\n  - find_by_name" in text
+    assert "  - write_to_file\n" in text
+    assert "  - run_command\n" not in text
+
+
+def test_duplicate_antigravity_tool_blocks_fail_closed_and_are_repaired(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    path = tmp_path / "agents" / "omg-executor.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "---\n# omg-executor",
+        "tools:\n  - view_file\ntools:\n  - run_command\n---\n# omg-executor",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
+        check_antigravity_agent_tools(tmp_path)
+
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    repaired = path.read_text(encoding="utf-8")
+    assert repaired.count("\ntools:\n") == 1
+    assert "run_command" not in repaired
+    assert check_antigravity_agent_tools(tmp_path) == []
+
+
+def test_antigravity_tool_writer_repairs_inline_and_spaced_declarations(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    path = tmp_path / "agents" / "omg-executor.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "---\n# omg-executor",
+        "tools: [run_command]\ntools : [generate_image]\n"
+        "'tools': [run_command]\n\"tools\" : [generate_image]\n"
+        "---\n# omg-executor",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter"):
+        check_antigravity_agent_tools(tmp_path)
+
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    repaired = path.read_text(encoding="utf-8")
+
+    assert repaired.count("\ntools:\n") == 1
+    assert "tools: [" not in repaired
+    assert "tools :" not in repaired
+    assert "'tools':" not in repaired
+    assert '"tools"' not in repaired
+    assert "run_command" not in repaired
+    assert "generate_image" not in repaired
+    assert check_antigravity_agent_tools(tmp_path) == []
+
+
+def test_quoted_antigravity_tool_key_is_a_semantic_duplicate(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    record = load_agents_catalog(
+        tmp_path, require_projections=False
+    ).by_id()["omg-executor"]
+    path = tmp_path / "agents" / "omg-executor.md"
+    canonical = render_antigravity_agent_tools(
+        record, path.read_text(encoding="utf-8")
+    )
+    ambiguous = canonical.replace(
+        "tools:\n",
+        "'tools': [run_command]\ntools:\n",
+        1,
+    )
+    path.write_text(ambiguous, encoding="utf-8")
+
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
+        load_agents_catalog(tmp_path, require_projections=False, pin_files=False)
+
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    assert check_antigravity_agent_tools(tmp_path) == []
+
+
+def test_escaped_quoted_tool_keys_are_semantic_duplicates_and_repaired(
+    tmp_path: Path,
+) -> None:
+    entry = _agent_entry(
+        "omg-executor",
+        capability_mode="read-write",
+        permission_mode="default",
+        tier="implementer",
+        spawn_policy="leaf",
+    )
+    _stub_agent(tmp_path, "omg-executor", mode="read-write")
+    _write_catalog(tmp_path, [entry])
+    path = tmp_path / "agents" / "omg-executor.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "---\n# omg-executor",
+        '"\\x74ools": [run_command]\n'
+        '"t\\u006fols": [generate_image]\n'
+        '"\\U00000074ools": [run_command]\n'
+        "---\n# omg-executor",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
+        load_agents_catalog(tmp_path, require_projections=False, pin_files=False)
+
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
+    repaired = path.read_text(encoding="utf-8")
+    assert "\\x74ools" not in repaired
+    assert "\\u006f" not in repaired
+    assert "\\U00000074" not in repaired
+    assert repaired.count("\ntools:\n") == 1
+    assert check_antigravity_agent_tools(tmp_path) == []
 
 
 def test_inspect_payload_never_claims_verified() -> None:

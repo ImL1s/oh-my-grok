@@ -707,7 +707,12 @@ Machine-readable plugin agent catalog: [`agents/catalog.yaml`](../agents/catalog
 `omg_cli/agents_catalog.py`; inspect via `omg capabilities` →
 `agents_catalog`). **23** `omg-*` plugin agents. YAML is the source of truth;
 `--check` on `scripts/generate_agents_catalog.py` fails on JSON/projection
-drift. Load fail-closes when an agent's frontmatter omits,
+drift and on installable `agents/*.md` Agy `tools:` drift. Those tool lists
+are derived from the same catalog posture: read-only roles receive only
+read/search tools, read-write roles receive edit tools, only the orchestrator
+receives `run_command`, and only read-write visual implementers receive
+`generate_image`. Load fail-closes when
+an agent's frontmatter omits,
 uses snake_case aliases (`capability_mode` / `permission_mode`), or
 disagrees with catalog `capabilityMode` / `permissionMode` (host defaults
 must not conceal a more permissive plugin definition). Agent markdown is
@@ -720,7 +725,7 @@ receive `read-write`. Antigravity
 `agent.md` files under
 [`docs/parity/projections/antigravity/agents/`](./parity/projections/antigravity/agents/)
 are **projections only** — not an installed AG plugin and not live AG evidence
-(Antigravity is not installed in this slice; live AG smoke remains a gap).
+(the installable dual-host definitions are the root `agents/*.md` files).
 Team routing floors remain in `omg_cli/team/roles.py`. Dual-host model policy
 (#131) consumes this catalog via `agents/model_policies.json` and
 `omg agents list|explain` (Grok baseline shipped; optional Medley inspect via

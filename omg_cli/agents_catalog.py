@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 import uuid
 from dataclasses import dataclass
@@ -45,6 +46,27 @@ KIND = "read_only_machine_catalog"
 CATALOG_RELATIVE = "agents/catalog.json"
 YAML_RELATIVE = "agents/catalog.yaml"
 ANTIGRAVITY_PROJECTION_ROOT = "docs/parity/projections/antigravity/agents"
+
+# Antigravity CLI custom agents are discovered directly from ``agents/*.md``
+# when this repository is installed as a plugin. Unlike Grok, Agy grants only
+# the tools named in frontmatter. Keep these profiles derived from the canonical
+# capability/category catalog so read-only roles cannot inherit mutation tools.
+ANTIGRAVITY_READ_TOOLS = (
+    "find_by_name",
+    "grep_search",
+    "view_file",
+    "list_dir",
+    "read_url_content",
+    "search_web",
+)
+ANTIGRAVITY_WRITE_TOOLS = (
+    "multi_replace_file_content",
+    "replace_file_content",
+    "write_to_file",
+    "notebook_edit",
+)
+ANTIGRAVITY_ORCHESTRATOR_TOOLS = ("run_command",)
+ANTIGRAVITY_VISUAL_WRITE_TOOLS = ("generate_image",)
 
 ALLOWED_CAPABILITY_MODES = frozenset({"read-only", "read-write"})
 FORBIDDEN_CAPABILITY_MODES = frozenset({"execute", "all"})
@@ -557,6 +579,7 @@ def load_agents_catalog(
     *,
     require_projections: bool = True,
     pin_files: bool = True,
+    allow_duplicate_tool_keys: bool = False,
 ) -> AgentsCatalog:
     """Load and fail-closed validate the plugin agent catalog."""
     base = Path(root) if root is not None else plugin_root()
@@ -618,7 +641,11 @@ def load_agents_catalog(
             text = _read_plugin_regular_text(base, record.file)
         else:
             text = _read_agent_text_generation(base, record.file)
-        _require_frontmatter_matches_catalog(text, record)
+        _require_frontmatter_matches_catalog(
+            text,
+            record,
+            allow_duplicate_tool_keys=allow_duplicate_tool_keys,
+        )
         if require_projections:
             rel = record.projections["antigravity"].path
             proj = base / rel
@@ -1117,6 +1144,26 @@ def _atomic_nofollow_write(path: Path, data: bytes) -> None:
 
 
 _FRONTMATTER_VALUE_MAX = 64
+_FRONTMATTER_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_YAML_DOUBLE_KEY_ESCAPES = {
+    "0": "\0",
+    "a": "\a",
+    "b": "\b",
+    "t": "\t",
+    "n": "\n",
+    "v": "\v",
+    "f": "\f",
+    "r": "\r",
+    "e": "\x1b",
+    " ": " ",
+    '"': '"',
+    "/": "/",
+    "\\": "\\",
+    "N": "\u0085",
+    "_": "\u00a0",
+    "L": "\u2028",
+    "P": "\u2029",
+}
 
 
 def strip_markdown_frontmatter(text: str) -> str:
@@ -1129,7 +1176,60 @@ def strip_markdown_frontmatter(text: str) -> str:
     return text.strip()
 
 
-def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
+def _decode_double_quoted_yaml_key(value: str, *, agent_id: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        escape = value[index]
+        if escape in _YAML_DOUBLE_KEY_ESCAPES:
+            decoded.append(_YAML_DOUBLE_KEY_ESCAPES[escape])
+            index += 1
+            continue
+        digits = {"x": 2, "u": 4, "U": 8}.get(escape)
+        if digits is None:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        start = index + 1
+        stop = start + digits
+        token = value[start:stop]
+        if len(token) != digits or re.fullmatch(r"[0-9A-Fa-f]+", token) is None:
+            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+        try:
+            decoded.append(chr(int(token, 16)))
+        except (OverflowError, ValueError) as exc:
+            raise AgentsCatalogError(
+                f"{agent_id}: malformed YAML frontmatter key"
+            ) from exc
+        index = stop
+    return "".join(decoded)
+
+
+def _semantic_frontmatter_key(raw_key: str, *, agent_id: str) -> str:
+    key = raw_key.strip()
+    if len(key) >= 2 and key[0] == key[-1] == "'":
+        key = key[1:-1].replace("''", "'")
+    elif len(key) >= 2 and key[0] == key[-1] == '"':
+        key = _decode_double_quoted_yaml_key(key[1:-1], agent_id=agent_id)
+    elif key[:1] in {"'", '"'} or key[-1:] in {"'", '"'}:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter key")
+    if _FRONTMATTER_KEY_RE.fullmatch(key) is None:
+        raise AgentsCatalogError(f"{agent_id}: unsupported YAML frontmatter key")
+    return key
+
+
+def _parse_agent_frontmatter(
+    text: str,
+    *,
+    agent_id: str,
+    allow_duplicate_tool_keys: bool = False,
+) -> dict[str, str]:
     """Parse scalar YAML-ish agent frontmatter. Fail closed on a missing fence."""
 
     lines = text.splitlines()
@@ -1152,13 +1252,13 @@ def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
         if ":" not in line:
             raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
         key, raw_value = line.split(":", 1)
-        key = key.strip()
-        if not key:
-            raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter")
+        key = _semantic_frontmatter_key(key, agent_id=agent_id)
         scalar = raw_value.strip()
         if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
             scalar = scalar[1:-1]
         if key in fields:
+            if allow_duplicate_tool_keys and key == "tools":
+                continue
             raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter key")
         fields[key] = scalar
     return fields
@@ -1185,10 +1285,19 @@ def _frontmatter_canonical(
     return value
 
 
-def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None:
+def _require_frontmatter_matches_catalog(
+    text: str,
+    record: AgentRecord,
+    *,
+    allow_duplicate_tool_keys: bool = False,
+) -> None:
     """Reject source frontmatter that omits or disagrees with the catalog posture."""
 
-    fields = _parse_agent_frontmatter(text, agent_id=record.id)
+    fields = _parse_agent_frontmatter(
+        text,
+        agent_id=record.id,
+        allow_duplicate_tool_keys=allow_duplicate_tool_keys,
+    )
     declared_cap = _frontmatter_canonical(
         fields,
         camel="capabilityMode",
@@ -1218,6 +1327,142 @@ def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None
 
 def _yaml_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def antigravity_tools_for(record: AgentRecord) -> tuple[str, ...]:
+    """Return the least-privilege Agy tool profile for one catalog record."""
+
+    tools = list(ANTIGRAVITY_READ_TOOLS)
+    if record.capability_mode == "read-write":
+        tools.extend(ANTIGRAVITY_WRITE_TOOLS)
+        if record.tier == "orchestrator":
+            tools.extend(ANTIGRAVITY_ORCHESTRATOR_TOOLS)
+        if "visual-engineering" in record.categories:
+            tools.extend(ANTIGRAVITY_VISUAL_WRITE_TOOLS)
+    return tuple(tools)
+
+
+def _is_top_level_frontmatter_key(line: str, *, key: str) -> bool:
+    if line[:1].isspace() or ":" not in line:
+        return False
+    raw_key, _raw_value = line.split(":", 1)
+    try:
+        return _semantic_frontmatter_key(raw_key, agent_id="agent") == key
+    except AgentsCatalogError:
+        return False
+
+
+def _frontmatter_list(text: str, *, key: str, agent_id: str) -> tuple[str, ...] | None:
+    """Read one top-level YAML list from fenced agent frontmatter."""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{agent_id}: missing YAML frontmatter")
+    try:
+        end = next(
+            index for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration as exc:
+        raise AgentsCatalogError(f"{agent_id}: malformed YAML frontmatter") from exc
+    starts = [
+        index
+        for index, line in enumerate(lines[1:end], start=1)
+        if _is_top_level_frontmatter_key(line, key=key)
+    ]
+    if len(starts) > 1:
+        raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter {key} keys")
+    if not starts:
+        return None
+    if lines[starts[0]] != f"{key}:":
+        raise AgentsCatalogError(f"{agent_id}: malformed frontmatter {key} list")
+    start = starts[0] + 1
+    values: list[str] = []
+    for line in lines[start:end]:
+        if not line.startswith((" ", "\t")):
+            break
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not stripped.startswith("- ") or not stripped[2:].strip():
+            raise AgentsCatalogError(f"{agent_id}: malformed frontmatter {key} list")
+        values.append(stripped[2:].strip())
+    return tuple(values)
+
+
+def render_antigravity_agent_tools(record: AgentRecord, source_text: str) -> str:
+    """Insert/replace the Agy ``tools`` list while preserving agent content."""
+
+    lines = source_text.replace("\r\n", "\n").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AgentsCatalogError(f"{record.id}: missing YAML frontmatter")
+    try:
+        end = next(
+            index for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration as exc:
+        raise AgentsCatalogError(f"{record.id}: malformed YAML frontmatter") from exc
+
+    blocks: list[tuple[int, int]] = []
+    for index in range(1, end):
+        if _is_top_level_frontmatter_key(lines[index], key="tools"):
+            block_end = index + 1
+            while block_end < end and lines[block_end].startswith((" ", "\t")):
+                block_end += 1
+            blocks.append((index, block_end))
+    block_start = blocks[0][0] if blocks else end
+    for start, stop in reversed(blocks):
+        del lines[start:stop]
+
+    block = ["tools:", *(f"  - {tool}" for tool in antigravity_tools_for(record))]
+    rendered = lines[:block_start] + block + lines[block_start:]
+    return "\n".join(rendered) + "\n"
+
+
+def check_antigravity_agent_tools(root: Path) -> list[str]:
+    """Report installable Agy tool frontmatter drift from the catalog."""
+
+    errors: list[str] = []
+    catalog = load_agents_catalog(root, require_projections=False, pin_files=False)
+    for record in catalog.agents:
+        path = root / record.file
+        try:
+            text = path.read_text(encoding="utf-8")
+            actual = _frontmatter_list(text, key="tools", agent_id=record.id)
+        except (OSError, UnicodeDecodeError, AgentsCatalogError) as exc:
+            errors.append(f"{record.file}: {exc}")
+            continue
+        expected = antigravity_tools_for(record)
+        if actual != expected:
+            errors.append(f"stale {record.file} Antigravity tools")
+    return errors
+
+
+def write_antigravity_agent_tools(root: Path) -> list[str]:
+    """Synchronize Agy tools in installable root agent frontmatter."""
+
+    catalog = load_agents_catalog(
+        root,
+        require_projections=False,
+        pin_files=False,
+        allow_duplicate_tool_keys=True,
+    )
+    written: list[str] = []
+    for record in catalog.agents:
+        path = root / record.file
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise AgentsCatalogError(f"cannot read agent {record.file}: {exc}") from exc
+        rendered = render_antigravity_agent_tools(record, source)
+        if source.replace("\r\n", "\n") != rendered:
+            _atomic_write_text(path, rendered)
+            written.append(record.file)
+    # The repair-only parser exception must not escape this writer. Re-open the
+    # generated files through the normal fail-closed catalog path.
+    load_agents_catalog(root, require_projections=False, pin_files=False)
+    return written
 
 
 def render_antigravity_agent_md(record: AgentRecord, source_text: str) -> str:
@@ -1411,11 +1656,13 @@ __all__ = [
     "READ_ONLY_TIERS",
     "SCHEMA",
     "YAML_RELATIVE",
+    "antigravity_tools_for",
     "antigravity_projection_relative",
     "assert_agent_capability",
     "canonical_catalog_json",
     "catalog_path",
     "check_antigravity_projections",
+    "check_antigravity_agent_tools",
     "check_catalog_yaml",
     "inspect_agents_catalog",
     "json_document_from_yaml",
@@ -1430,6 +1677,7 @@ __all__ = [
     "resolve_category",
     "strip_markdown_frontmatter",
     "write_antigravity_projections",
+    "write_antigravity_agent_tools",
     "write_catalog_json_from_yaml",
     "yaml_catalog_path",
 ]
