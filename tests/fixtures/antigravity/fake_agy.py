@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic fake ``agy`` binary for Antigravity provider tests (#67-A/B).
 
-Responds to ``--version`` / ``--help`` / headless ``--print`` via argv only
+Responds to ``--version`` / ``--help`` / headless ``--print=<prompt>`` via argv only
 (no network). Version and help text are overridable via env for compat-range
 fixtures:
 
@@ -105,22 +105,43 @@ def _flag_value(args: list[str], *names: str) -> str | None:
 
 
 def _has_flag(args: list[str], *names: str) -> bool:
-    for tok in args:
+    i = 0
+    value_flags = {
+        "--output-format",
+        "--model",
+        "--effort",
+        "--mode",
+        "--conversation",
+        "--agent",
+        "--project",
+        "--json-schema",
+        "--log-file",
+        "--print-timeout",
+        "--add-dir",
+    }
+    while i < len(args):
+        tok = args[i]
         if tok == "--":
             break
         if not tok.startswith("-"):
             break
         if tok in names or any(tok.startswith(n + "=") for n in names):
             return True
+        i += 2 if tok in value_flags else 1
     return False
 
 
 def _prompt_positional(args: list[str]) -> str | None:
-    """Return the prompt after ``--`` (preferred) or the trailing positional.
+    """Return the attached print prompt, legacy ``--`` prompt, or positional.
 
     Enforces flags-before-prompt / end-of-options: after ``--``, the next
     token is the prompt even when it starts with ``-``.
     """
+    for tok in args:
+        for name in ("--print=", "--prompt=", "-p="):
+            if tok.startswith(name):
+                return tok[len(name) :]
+
     i = 0
     while i < len(args):
         tok = args[i]

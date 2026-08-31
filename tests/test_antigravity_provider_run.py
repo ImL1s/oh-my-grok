@@ -90,8 +90,7 @@ def test_headless_success_text(fake_agy_path: Path) -> None:
     assert result.exit_class == "success"
     assert result.returncode == 0
     assert "echo:hello" in result.output
-    assert result.argv[1] == "--print"
-    assert result.argv[-1] == "hello"
+    assert result.argv[-1] == "--print=hello"
     assert "--dangerously-skip-permissions" not in result.argv
 
 
@@ -306,6 +305,55 @@ def test_stream_json_success(
     assert result.events[1].index == 1
 
 
+def test_json_parser_accepts_agy_1_1_22_result_shape() -> None:
+    from omg_cli.providers.antigravity import parse_json_result
+
+    body = json.dumps(
+        {
+            "conversation_id": "conv-1122",
+            "status": "SUCCESS",
+            "response": "LIVE_AGY_JSON_1122_OK\n",
+            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        }
+    )
+    output, events, usage, meta = parse_json_result(body)
+    assert output == "LIVE_AGY_JSON_1122_OK\n"
+    assert events[0].type == "result"
+    assert meta["session_id"] == "conv-1122"
+    assert usage is not None and usage.total_tokens == 5
+
+
+def test_stream_parser_accepts_agy_1_1_22_nested_result_shape() -> None:
+    from omg_cli.providers.antigravity import parse_stream_json
+
+    body = "\n".join(
+        (
+            json.dumps({"event": "init", "conversation_id": "conv-1122"}),
+            json.dumps(
+                {
+                    "event": "result",
+                    "result": {
+                        "conversation_id": "conv-1122",
+                        "status": "SUCCESS",
+                        "response": "LIVE_AGY_STREAM_1122_OK\n",
+                        "usage": {
+                            "input_tokens": 4,
+                            "output_tokens": 3,
+                            "total_tokens": 7,
+                        },
+                    },
+                }
+            ),
+        )
+    )
+    output, events, usage, meta, malformed = parse_stream_json(body)
+    assert malformed is False
+    assert [event.type for event in events] == ["init", "result"]
+    assert output == "LIVE_AGY_STREAM_1122_OK\n"
+    assert meta["session_id"] == "conv-1122"
+    assert usage is not None and usage.total_tokens == 7
+
+
 def test_truncated_stream_keeps_events() -> None:
     from omg_cli.providers.antigravity import parse_stream_json
 
@@ -355,16 +403,16 @@ def test_argv_injection_stays_single_element(fake_agy_path: Path) -> None:
 
     evil = "hello; rm -rf / --output-format json"
     argv = build_run_argv(str(fake_agy_path), evil, output_format="text")
-    assert argv[-1] == evil
+    assert argv[-1] == f"--print={evil}"
     assert "--output-format" not in argv  # text default omits flag
     result = run(ProviderRunRequest(prompt=evil, timeout_s=5.0))
     assert result.ok
     assert evil in result.output
-    assert result.argv[-1] == evil
+    assert result.argv[-1] == f"--print={evil}"
 
 
-def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
-    """Go flag semantics: flags before ``--``; prompt is the sole token after."""
+def test_flags_before_attached_print_prompt(fake_agy_path: Path) -> None:
+    """Agy 1.1.x requires the prompt attached to the ``--print`` flag."""
     from omg_cli.providers.antigravity import (
         assert_flags_before_prompt,
         build_run_argv,
@@ -382,11 +430,9 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         mode="plan",
         resume_id="conv-9",
     )
-    assert argv[-2:] == ["--", "prompt-text"]
+    assert argv[-1] == "--print=prompt-text"
     assert_flags_before_prompt(argv, "prompt-text")
-    ddash = argv.index("--")
     for flag in (
-        "--print",
         "--output-format",
         "--model",
         "--effort",
@@ -394,10 +440,11 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         "--conversation",
     ):
         assert flag in argv
-        assert argv.index(flag) < ddash
-    # Negative: flag after prompt (no end-of-options) must fail the guard.
+        assert argv.index(flag) < len(argv) - 1
+    # Negative: a bare --print consumes the next flag as its prompt on current
+    # agy, so the old end-of-options shape must fail the guard.
     bad = [str(fake_agy_path), "--print", "prompt-text", "--output-format", "json"]
-    with pytest.raises(ProviderRunError, match="end-of-options|final argv positional"):
+    with pytest.raises(ProviderRunError, match="attached|final argv"):
         assert_flags_before_prompt(bad, "prompt-text")
 
     result = run(
@@ -409,13 +456,13 @@ def test_flags_before_prompt_positional(fake_agy_path: Path) -> None:
         )
     )
     assert result.ok
-    assert result.argv[-2:] == ("--", "prompt-text")
+    assert result.argv[-1] == "--print=prompt-text"
     assert "--output-format" in result.argv
-    assert result.argv.index("--output-format") < result.argv.index("--")
+    assert result.argv.index("--output-format") < len(result.argv) - 1
 
 
-def test_leading_dash_prompt_via_end_of_options(fake_agy_path: Path) -> None:
-    """Prompts starting with ``-`` must not be parsed as flags (``--`` guard)."""
+def test_leading_dash_prompt_via_attached_print(fake_agy_path: Path) -> None:
+    """Leading-dash prompts stay data when attached to ``--print=``."""
     from omg_cli.providers.antigravity import assert_flags_before_prompt, build_run_argv, run
     from omg_cli.providers.models import ProviderRunRequest
 
@@ -426,13 +473,12 @@ def test_leading_dash_prompt_via_end_of_options(fake_agy_path: Path) -> None:
         "--output-format",
     ):
         argv = build_run_argv(str(fake_agy_path), prompt, output_format="text")
-        assert argv[-2:] == ["--", prompt]
+        assert argv[-1] == f"--print={prompt}"
         assert_flags_before_prompt(argv, prompt)
         result = run(ProviderRunRequest(prompt=prompt, timeout_s=5.0))
         assert result.ok, (prompt, result.exit_class, result.error_message)
         assert prompt in result.output
-        assert result.argv[-1] == prompt
-        assert result.argv[-2] == "--"
+        assert result.argv[-1] == f"--print={prompt}"
 
 
 def test_cjk_prompt_preserved(fake_agy_path: Path) -> None:
@@ -443,7 +489,7 @@ def test_cjk_prompt_preserved(fake_agy_path: Path) -> None:
     result = run(ProviderRunRequest(prompt=prompt, timeout_s=5.0))
     assert result.ok
     assert prompt in result.output
-    assert result.argv[-1] == prompt
+    assert result.argv[-1] == f"--print={prompt}"
 
 
 def test_cwd_respected(

@@ -112,8 +112,17 @@ Background admits `fake` and `agy` only (maps to jobs `fake` / `antigravity`).
 - Large outputs stay in `artifacts/`; status/collect return descriptors only.
 - Jobs never grant `verified`.
 
-## Open follow-ups (owned by #69)
+## Live evidence and open follow-ups (owned by #69)
 
-Authenticated live Antigravity evidence, live grok job smoke, and live
-Team job-backed workers remain open under #69. Hermetic grok job provider
-admission landed; #68 is closed; do not treat it as a current blocker.
+On 2026-08-31, an authenticated `agy 1.1.22` host completed an isolated
+`omg job start --provider antigravity` → `wait` → `collect` lifecycle with
+`state=succeeded`, `exit.class=success`, a bound/exited inner provider process,
+session and usage descriptors, and a content-addressed bounded
+`artifacts/result.md`. The provider contract remains fail-closed above the
+captured `1.1.22` maximum; current 1.1.x requires the prompt attached as one
+argv element (`--print=<prompt>`).
+
+This live smoke proves the durable Antigravity Jobs lane only. Live grok job
+smoke and live Team job-backed workers remain separate #69 follow-ups.
+Hermetic grok job provider admission landed; #68 is closed; do not treat it as
+a current blocker.

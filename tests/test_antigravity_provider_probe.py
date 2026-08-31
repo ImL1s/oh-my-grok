@@ -154,7 +154,7 @@ def test_parse_version_anchors_first_line_only() -> None:
 
 
 def test_parse_version_requires_exact_triple_on_first_line() -> None:
-    """Pin-only window: reject trailing junk / prerelease / extra components."""
+    """Bounded window: reject trailing junk / prerelease / extra components."""
     from omg_cli.providers.antigravity import classify_compat, parse_version
 
     info = parse_version("1.1.10")
@@ -337,7 +337,7 @@ def test_probe_version_parse(fake_agy_path: Path) -> None:
     binary = discover_binary()
     info = probe_version(binary)
     assert info.raw == FIXTURES.joinpath("version.txt").read_text(encoding="utf-8").strip()
-    assert info.as_tuple() == (1, 1, 10)
+    assert info.as_tuple() == (1, 1, 22)
 
 
 def test_probe_version_nonzero_with_semver_fails(
@@ -487,13 +487,16 @@ def test_compat_classification_range(tmp_path: Path, monkeypatch: pytest.MonkeyP
         parse_version,
     )
 
-    # Compat window is fixture-backed (version.txt pin only).
-    assert TESTED_MIN == TESTED_MAX == (1, 1, 10)
+    # Compat window is bounded by captured 1.1.x endpoints. Future patches
+    # remain fail-closed until their help/argv surface is captured.
+    assert TESTED_MIN == (1, 1, 10)
+    assert TESTED_MAX == (1, 1, 22)
     pin = FIXTURES.joinpath("version.txt").read_text(encoding="utf-8").strip()
-    assert pin == "1.1.10"
+    assert pin == "1.1.22"
+    assert classify_compat(parse_version("1.1.10")) == "compatible"
     assert classify_compat(parse_version(pin)) == "compatible"
     assert classify_compat(parse_version("1.1.0")) == "too_old"
-    assert classify_compat(parse_version("1.1.99")) == "too_new"
+    assert classify_compat(parse_version("1.1.23")) == "too_new"
     assert classify_compat(parse_version("0.9.0")) == "too_old"
     assert classify_compat(parse_version("9.9.9")) == "too_new"
     assert classify_compat(None) == "unknown"
@@ -507,7 +510,7 @@ def test_probe_capabilities_golden_schema(fake_agy_path: Path) -> None:
     assert data["schema"] == "omg-provider-capabilities/v1"
     assert data["provider"] == "antigravity"
     assert data["binary"]
-    assert data["version"] == "1.1.10"
+    assert data["version"] == "1.1.22"
     assert data["compat"]["status"] == "compatible"
     assert data["compat"]["pin_revision"].startswith("bfab12da")
     assert data["ready"]["installed"] is True

@@ -57,12 +57,12 @@ ENV_BIN_OVERRIDE: Final[str] = "OMG_AGY_BIN"
 # version-string based, not git SHA).
 PIN_REVISION: Final[str] = "bfab12dac5bd090015a89cf82e65093d13b567d9"
 
-# Fixture-backed tested window only (tests/fixtures/antigravity/version.txt).
-# Do not widen past captures that lack hermetic evidence.
+# Fixture-backed tested window only (tests/fixtures/antigravity/version*.txt).
+# Do not widen past captures that lack hermetic and live argv evidence.
 TESTED_MIN: Final[tuple[int, int, int]] = (1, 1, 10)
-TESTED_MAX: Final[tuple[int, int, int]] = (1, 1, 10)
+TESTED_MAX: Final[tuple[int, int, int]] = (1, 1, 22)
 TESTED_MIN_STR: Final[str] = "1.1.10"
-TESTED_MAX_STR: Final[str] = "1.1.10"
+TESTED_MAX_STR: Final[str] = "1.1.22"
 
 _AG_LIMITATIONS: Final[tuple[str, ...]] = (
     "Slice D: Team panes use build_launch_envelope (supervisor owns PTY/PID/"
@@ -79,7 +79,7 @@ _TEAM_POSTURES: Final[frozenset[str]] = frozenset({"read-only", "read-write"})
 
 # Exact ASCII-decimal triple on the first non-empty line — never scoop a
 # prefix from prerelease / extra components / trailing child-controlled junk
-# (pin-only window must not false-green ``1.1.10-rc.1`` / ``1.1.10.1``).
+# (bounded window must not false-green ``1.1.22-rc.1`` / ``1.1.22.1``).
 # Use ``[0-9]`` (not ``\d``) so Unicode digits cannot match.
 _VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 # Parser-owned bounds — do not rely on CPython's global int digit limit.
@@ -716,10 +716,10 @@ def build_run_argv(
 ) -> list[str]:
     """Assemble headless ``agy`` argv (list only; never a shell string).
 
-    Go flag semantics: flags after the first positional are ignored, and a
-    prompt that itself starts with ``-`` would be parsed as a flag. Therefore
-    every flag precedes ``--``, and the prompt is the sole token after
-    end-of-options: ``agy --print [flags...] -- <prompt>``.
+    Current Antigravity 1.1.x defines ``--print`` as a value-taking flag. A
+    bare ``--print`` consumes the following flag token as its prompt, so all
+    options come first and the prompt is attached as the final single argv
+    token: ``agy [flags...] --print=<prompt>``.
 
     Least-permissive by default: no ``--dangerously-skip-permissions``.
     ``session_id`` is execution metadata and is not injected into argv;
@@ -727,7 +727,7 @@ def build_run_argv(
     """
     if output_format not in _OUTPUT_FORMATS:
         raise ProviderRunError(f"unsupported output_format: {output_format!r}")
-    argv: list[str] = [binary, "--print"]
+    argv: list[str] = [binary]
     if output_format != "text":
         argv.extend(["--output-format", output_format])
     if model:
@@ -738,8 +738,9 @@ def build_run_argv(
         argv.extend(["--mode", mode])
     if resume_id:
         argv.extend(["--conversation", resume_id])
-    # End-of-options so leading-dash prompts cannot be parsed as flags.
-    argv.extend(["--", prompt])
+    # Attached value keeps leading-dash prompts and whitespace inside one argv
+    # element and prevents --print from consuming another option as its value.
+    argv.append(f"--print={prompt}")
     return argv
 
 
@@ -759,7 +760,7 @@ def build_team_argv(
 
     * ``-p`` value is a **path placeholder**; pane/supervisor substitutes the
       prompt body (``prompt_delivery=positional-text``). This differs from
-      headless :func:`build_run_argv`, which uses ``--print … -- <prompt>``.
+      headless :func:`build_run_argv`, which uses ``… --print=<prompt>``.
     * ``--dangerously-skip-permissions`` remains part of the Team contract
       (intentional; headless run stays least-permissive and does **not** add
       this flag).
@@ -866,39 +867,24 @@ def build_launch_envelope(request: ProviderLaunchRequest) -> ProviderLaunchEnvel
 
 
 def assert_flags_before_prompt(argv: Sequence[str], prompt: str) -> None:
-    """Require ``… -- <prompt>`` with no flags after end-of-options.
+    """Require a single final ``--print=<prompt>`` argv element.
 
-    The prompt is the final argv token and must be immediately preceded by
-    ``--``. This keeps Go flag parsing from treating ``--help``-shaped prompts
-    as options and rejects flags after the first positional.
+    Current agy treats a bare ``--print`` as value-taking and otherwise may
+    consume the next option token as the prompt. Keeping the attached prompt
+    final preserves flags-before-prompt and makes leading-dash prompt text data.
     """
-    if len(argv) < 3:
-        raise ProviderRunError("argv too short for --print … -- <prompt>")
-    if argv[-1] != prompt:
+    if len(argv) < 2:
+        raise ProviderRunError("argv too short for attached --print=<prompt>")
+    expected = f"--print={prompt}"
+    if argv[-1] != expected:
         raise ProviderRunError(
-            "prompt must be the final argv positional "
+            "prompt must be attached to the final argv --print flag "
             f"(tail={list(argv[-3:])!r})"
         )
-    if argv[-2] != "--":
-        raise ProviderRunError(
-            "expected end-of-options '--' immediately before prompt "
-            f"(tail={list(argv[-3:])!r})"
-        )
-    # Nothing may appear after the prompt; nothing but the prompt after '--'.
-    try:
-        ddash = list(argv).index("--")
-    except ValueError as exc:
-        raise ProviderRunError("missing end-of-options '--' before prompt") from exc
-    if ddash != len(argv) - 2:
-        raise ProviderRunError(
-            "only the prompt may follow end-of-options '--' "
-            f"(after={list(argv[ddash + 1 :])!r})"
-        )
-    for tok in argv[ddash + 1 : -1]:
-        if tok.startswith("-"):
-            raise ProviderRunError(
-                f"flag {tok!r} appears after end-of-options (Go flag order)"
-            )
+    if any(tok == "--print" or tok == "--prompt" or tok == "-p" for tok in argv[:-1]):
+        raise ProviderRunError("bare print flag rejected; use final --print=<prompt>")
+    if "--" in argv[:-1]:
+        raise ProviderRunError("end-of-options rejected before attached --print prompt")
 
 
 def _usage_from_mapping(raw: Any) -> ProviderUsage | None:
@@ -929,7 +915,7 @@ def _usage_from_mapping(raw: Any) -> ProviderUsage | None:
 
 
 def _text_from_payload(payload: dict[str, Any]) -> str:
-    for key in ("result", "message", "content", "text", "output"):
+    for key in ("response", "result", "message", "content", "text", "output"):
         val = payload.get(key)
         if isinstance(val, str):
             return val
@@ -962,7 +948,11 @@ def parse_json_result(
     )
     usage = _usage_from_mapping(payload.get("usage"))
     meta = {
-        "session_id": payload.get("session_id") or payload.get("sessionId"),
+        "session_id": (
+            payload.get("session_id")
+            or payload.get("sessionId")
+            or payload.get("conversation_id")
+        ),
         "resume_token": payload.get("resume_token") or payload.get("resumeToken"),
     }
     return _text_from_payload(payload) or body, (event,), usage, meta
@@ -1017,7 +1007,7 @@ def parse_stream_json(
                 )
             )
             continue
-        etype = str(payload.get("type") or "event")
+        etype = str(payload.get("type") or payload.get("event") or "event")
         events.append(
             ProviderRunEvent(
                 type=etype,
@@ -1028,22 +1018,36 @@ def parse_stream_json(
             )
         )
         if etype in {"result", "final", "completion"} or "result" in payload:
-            chunk = _text_from_payload(payload)
+            nested = payload.get("result")
+            result_payload = nested if isinstance(nested, dict) else payload
+            chunk = _text_from_payload(result_payload)
             if chunk:
                 output = chunk
-            u = _usage_from_mapping(payload.get("usage"))
+            u = _usage_from_mapping(result_payload.get("usage"))
             if u is not None:
                 usage = u
-            sid = payload.get("session_id") or payload.get("sessionId")
+            sid = (
+                result_payload.get("session_id")
+                or result_payload.get("sessionId")
+                or result_payload.get("conversation_id")
+                or payload.get("conversation_id")
+            )
             if sid:
                 meta["session_id"] = sid
-            tok = payload.get("resume_token") or payload.get("resumeToken")
+            tok = result_payload.get("resume_token") or result_payload.get("resumeToken")
             if tok:
                 meta["resume_token"] = tok
         elif not output:
             chunk = _text_from_payload(payload)
             if chunk:
                 output = chunk
+            sid = (
+                payload.get("session_id")
+                or payload.get("sessionId")
+                or payload.get("conversation_id")
+            )
+            if sid:
+                meta["session_id"] = sid
     if not output and events and not had_malformed:
         parts = [
             _text_from_payload(e.payload)
@@ -1138,7 +1142,7 @@ def run(request: ProviderRunRequest) -> ProviderRunResult:
         resume_id=request.resume_id,
         session_id=request.session_id,
     )
-    # Contract: no --flag after the prompt positional (Go flag semantics).
+    # Contract: all options precede one final attached --print prompt token.
     assert_flags_before_prompt(argv, prompt)
 
     try:

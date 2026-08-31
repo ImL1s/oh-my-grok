@@ -5,7 +5,8 @@ or network in CI.
 
 | File | Source | Notes |
 |------|--------|-------|
-| `version.txt` | `agy --version` (host capture) | Semver string only; currently `1.1.10` |
+| `version-min.txt` | `agy --version` (prior host capture) | Lower tested bound `1.1.10` |
+| `version.txt` | `agy --version` (host capture) | Semver string only; currently `1.1.22` |
 | `help.txt` | `agy --help` (host capture) | Flag/subcommand surface for capability envelope |
 | `fake_agy.py` | stub | Executable via PATH / `OMG_AGY_BIN`; honors `FAKE_AGY_VERSION` |
 
@@ -15,9 +16,10 @@ Upstream inventory pin (docs cross-ref only; compat is version-string based):
 `bfab12dac5bd090015a89cf82e65093d13b567d9`.
 
 **Tested compat window** in `omg_cli/providers/antigravity.py` is **fixture-backed
-only**: `TESTED_MIN`/`TESTED_MAX` match this capture (`1.1.10`..`1.1.10`). Do not
-widen to `1.1.0`/`1.1.99` (or any other band) without adding hermetic version
-fixtures and re-running identity-bound probes.
+only**: `TESTED_MIN`/`TESTED_MAX` match captured bounds
+(`1.1.10`..`1.1.22`). Do not widen beyond them without adding hermetic version
+fixtures and re-running identity-bound probes plus the live attached
+`--print=<prompt>` argv smoke. Unknown and future patches remain fail-closed.
 
 Identity gates: `OMG_AGY_BIN` basename must be `agy`, and help output must carry
 a `Usage of agy` header before strict doctor can green.
