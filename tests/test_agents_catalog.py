@@ -499,9 +499,6 @@ def test_duplicate_antigravity_tool_blocks_fail_closed_and_are_repaired(
     )
     _stub_agent(tmp_path, "omg-executor", mode="read-write")
     _write_catalog(tmp_path, [entry])
-    record = load_agents_catalog(
-        tmp_path, require_projections=False
-    ).by_id()["omg-executor"]
     path = tmp_path / "agents" / "omg-executor.md"
     text = path.read_text(encoding="utf-8").replace(
         "---\n# omg-executor",
@@ -512,10 +509,7 @@ def test_duplicate_antigravity_tool_blocks_fail_closed_and_are_repaired(
     with pytest.raises(AgentsCatalogError, match="duplicate frontmatter key"):
         check_antigravity_agent_tools(tmp_path)
 
-    path.write_text(
-        render_antigravity_agent_tools(record, text),
-        encoding="utf-8",
-    )
+    assert write_antigravity_agent_tools(tmp_path) == ["agents/omg-executor.md"]
     repaired = path.read_text(encoding="utf-8")
     assert repaired.count("\ntools:\n") == 1
     assert "run_command" not in repaired

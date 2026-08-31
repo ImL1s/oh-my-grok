@@ -579,6 +579,7 @@ def load_agents_catalog(
     *,
     require_projections: bool = True,
     pin_files: bool = True,
+    allow_duplicate_tool_keys: bool = False,
 ) -> AgentsCatalog:
     """Load and fail-closed validate the plugin agent catalog."""
     base = Path(root) if root is not None else plugin_root()
@@ -640,7 +641,11 @@ def load_agents_catalog(
             text = _read_plugin_regular_text(base, record.file)
         else:
             text = _read_agent_text_generation(base, record.file)
-        _require_frontmatter_matches_catalog(text, record)
+        _require_frontmatter_matches_catalog(
+            text,
+            record,
+            allow_duplicate_tool_keys=allow_duplicate_tool_keys,
+        )
         if require_projections:
             rel = record.projections["antigravity"].path
             proj = base / rel
@@ -1151,7 +1156,12 @@ def strip_markdown_frontmatter(text: str) -> str:
     return text.strip()
 
 
-def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
+def _parse_agent_frontmatter(
+    text: str,
+    *,
+    agent_id: str,
+    allow_duplicate_tool_keys: bool = False,
+) -> dict[str, str]:
     """Parse scalar YAML-ish agent frontmatter. Fail closed on a missing fence."""
 
     lines = text.splitlines()
@@ -1181,6 +1191,8 @@ def _parse_agent_frontmatter(text: str, *, agent_id: str) -> dict[str, str]:
         if len(scalar) >= 2 and scalar[0] == scalar[-1] and scalar[0] in {"'", '"'}:
             scalar = scalar[1:-1]
         if key in fields:
+            if allow_duplicate_tool_keys and key == "tools":
+                continue
             raise AgentsCatalogError(f"{agent_id}: duplicate frontmatter key")
         fields[key] = scalar
     return fields
@@ -1207,10 +1219,19 @@ def _frontmatter_canonical(
     return value
 
 
-def _require_frontmatter_matches_catalog(text: str, record: AgentRecord) -> None:
+def _require_frontmatter_matches_catalog(
+    text: str,
+    record: AgentRecord,
+    *,
+    allow_duplicate_tool_keys: bool = False,
+) -> None:
     """Reject source frontmatter that omits or disagrees with the catalog posture."""
 
-    fields = _parse_agent_frontmatter(text, agent_id=record.id)
+    fields = _parse_agent_frontmatter(
+        text,
+        agent_id=record.id,
+        allow_duplicate_tool_keys=allow_duplicate_tool_keys,
+    )
     declared_cap = _frontmatter_canonical(
         fields,
         camel="capabilityMode",
@@ -1351,7 +1372,12 @@ def check_antigravity_agent_tools(root: Path) -> list[str]:
 def write_antigravity_agent_tools(root: Path) -> list[str]:
     """Synchronize Agy tools in installable root agent frontmatter."""
 
-    catalog = load_agents_catalog(root, require_projections=False, pin_files=False)
+    catalog = load_agents_catalog(
+        root,
+        require_projections=False,
+        pin_files=False,
+        allow_duplicate_tool_keys=True,
+    )
     written: list[str] = []
     for record in catalog.agents:
         path = root / record.file
@@ -1363,6 +1389,9 @@ def write_antigravity_agent_tools(root: Path) -> list[str]:
         if source.replace("\r\n", "\n") != rendered:
             _atomic_write_text(path, rendered)
             written.append(record.file)
+    # The repair-only parser exception must not escape this writer. Re-open the
+    # generated files through the normal fail-closed catalog path.
+    load_agents_catalog(root, require_projections=False, pin_files=False)
     return written
 
 
