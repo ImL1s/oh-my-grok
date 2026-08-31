@@ -854,6 +854,28 @@ def test_declared_rowid_alias_returns_bounded_diagnostic(
     assert db.read_bytes() == before
 
 
+def test_legacy_markers_are_discovered_without_secure_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    root = home / ".gemini" / "antigravity-cli"
+    root.mkdir(parents=True)
+    secret = "PRIVATE-AUTH-TOKEN-123456"
+    (root / "VERSION").write_text(secret, encoding="utf-8")
+    monkeypatch.setattr(ag_history, "_descriptor_open_ready", lambda: False)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["present"] is True
+    assert result["imported"] is False
+    assert result["supported"] is False
+    assert result["reason"] != "ag_history_absent"
+    assert result["pin"] == "unknown_version"
+    dumped = json.dumps(result)
+    assert secret not in dumped
+    assert "ag_history_absent" not in dumped
+
+
 def test_project_local_db_reports_secure_open_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -98,9 +98,21 @@ def _candidate_dirs(project_root: Path, *, home: Path) -> list[Path]:
     seen: set[str] = set()
 
     def _add(raw: Path) -> None:
-        existing = _existing_dir(raw)
-        if existing is None:
-            return
+        if _descriptor_open_ready():
+            existing = _existing_dir(raw)
+            if existing is None:
+                return
+        else:
+            # Marker-only layouts must still be discovered on hosts without
+            # descriptor-relative opens so inspect reports present/unclassified
+            # rather than ag_history_absent. The later open remains fail-closed.
+            try:
+                info = raw.lstat()
+            except OSError:
+                return
+            if not stat.S_ISDIR(info.st_mode):
+                return
+            existing = raw
         key = os.path.abspath(os.fspath(existing))
         if key in seen:
             return
