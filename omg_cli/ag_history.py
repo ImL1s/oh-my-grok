@@ -694,7 +694,7 @@ def inspect_ag_history(
         try:
             version, imported, workspace_budget = _import_summary_db(
                 path,
-                remaining=max(0, MAX_AG_HISTORY_RECORDS - len(records)),
+                remaining=MAX_AG_HISTORY_RECORDS,
                 workspace_budget=workspace_budget,
             )
         except AgHistoryError as exc:
@@ -758,6 +758,12 @@ def inspect_ag_history(
         versions.append(version_label)
         location["version"] = version_label
         records.extend(imported)
+
+    records.sort(
+        key=lambda row: str(row.get("last_modified_time") or ""),
+        reverse=True,
+    )
+    records = records[:MAX_AG_HISTORY_RECORDS]
 
     # Preserve classification for older marker-only layouts without reading
     # transcript-like files inside them.

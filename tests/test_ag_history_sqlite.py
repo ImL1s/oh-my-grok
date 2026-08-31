@@ -854,6 +854,35 @@ def test_declared_rowid_alias_returns_bounded_diagnostic(
     assert db.read_bytes() == before
 
 
+def test_newest_records_are_merged_across_databases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ag_history, "MAX_AG_HISTORY_RECORDS", 1)
+    project_root = tmp_path / "project"
+    local_dir = project_root / ".antigravity"
+    local_dir.mkdir(parents=True)
+    local_home = tmp_path / "project-home"
+    local_db = local_dir / "conversation_summaries.db"
+    local_db.write_bytes(_summary_db(local_home).read_bytes())
+    with sqlite3.connect(local_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, step_count = ?",
+            ("2026-01-01T00:00:00Z", 1),
+        )
+    home = tmp_path / "home"
+    home_db = _summary_db(home)
+    with sqlite3.connect(home_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, step_count = ?",
+            ("2026-08-31T12:00:00Z", 99),
+        )
+
+    result = inspect_ag_history(project_root, home=home)
+
+    assert result["record_count"] == 1
+    assert result["records"][0]["step_count"] == 99
+
+
 def test_legacy_markers_are_discovered_without_secure_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
