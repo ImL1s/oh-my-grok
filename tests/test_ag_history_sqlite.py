@@ -406,6 +406,81 @@ def test_custom_summary_labels_are_hashed_not_disclosed(tmp_path: Path) -> None:
     assert row["source_hash"] != row["agent_name_hash"]
 
 
+def test_boundary_timestamp_overflow_is_omitted(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    boundary = "9999-12-31T23:59:59-23:59"
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            """UPDATE conversation_summaries
+                  SET last_modified_time = ?, last_user_input_time = ?""",
+            (boundary, boundary),
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    row = result["records"][0]
+    assert "last_modified_time" not in row
+    assert "last_user_input_time" not in row
+
+
+def test_lone_surrogate_workspace_uri_is_not_hashed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE conversation_summaries SET workspace_uris = ?",
+            (r'["\ud800"]',),
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    row = result["records"][0]
+    assert row["workspace_count"] == 1
+    assert row["workspace_hashes"] == []
+
+
+def test_dynamic_numeric_blobs_are_rejected_inside_sqlite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            """UPDATE conversation_summaries
+                  SET step_count = zeroblob(4096),
+                      nesting_depth = zeroblob(4096),
+                      killed = zeroblob(4096),
+                      last_user_input_step_index = zeroblob(4096)"""
+        )
+    original_public_row = ag_history._public_row
+
+    def _require_bounded_scalars(
+        row: sqlite3.Row, *, workspace_uris: str | None
+    ) -> dict[str, Any]:
+        for name in (
+            "step_count",
+            "nesting_depth",
+            "killed",
+            "last_user_input_step_index",
+        ):
+            assert type(row[name]) is int
+        return original_public_row(row, workspace_uris=workspace_uris)
+
+    monkeypatch.setattr(ag_history, "_public_row", _require_bounded_scalars)
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    row = result["records"][0]
+    assert row["step_count"] == 0
+    assert row["nesting_depth"] == 0
+    assert row["killed"] is False
+    assert row["last_user_input_step_index"] == -1
+
+
 def test_sqlite_sidecar_symlink_is_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)

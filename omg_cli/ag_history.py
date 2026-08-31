@@ -161,7 +161,11 @@ def _read_version_label(directory: Path) -> str | None:
 def _hash_descriptor(value: object, *, namespace: str) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    digest = hashlib.sha256(f"{namespace}\0{value}".encode("utf-8")).hexdigest()
+    try:
+        encoded = f"{namespace}\0{value}".encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    digest = hashlib.sha256(encoded).hexdigest()
     return digest[:20]
 
 
@@ -181,11 +185,11 @@ def _safe_timestamp(value: object) -> str | None:
         return None
     try:
         parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _workspace_descriptors(value: object) -> tuple[int, list[str]]:
@@ -542,7 +546,8 @@ def _import_summary_db(
         rows = connection.execute(
             """SELECT rowid AS summary_rowid,
                       substr(conversation_id, 1, 4096) AS conversation_id,
-                      step_count,
+                      CASE WHEN typeof(step_count) = 'integer'
+                           THEN step_count ELSE 0 END AS step_count,
                       substr(last_modified_time, 1, 128) AS last_modified_time,
                       substr(status, 1, 128) AS status,
                       substr(source, 1, 128) AS source,
@@ -550,10 +555,15 @@ def _import_summary_db(
                       substr(agent_name, 1, 128) AS agent_name,
                       substr(parent_conversation_id, 1, 4096)
                         AS parent_conversation_id,
-                      nesting_depth, killed,
+                      CASE WHEN typeof(nesting_depth) = 'integer'
+                           THEN nesting_depth ELSE 0 END AS nesting_depth,
+                      CASE WHEN typeof(killed) = 'integer'
+                           THEN killed ELSE 0 END AS killed,
                       substr(last_user_input_time, 1, 128)
                         AS last_user_input_time,
-                      last_user_input_step_index
+                      CASE WHEN typeof(last_user_input_step_index) = 'integer'
+                           THEN last_user_input_step_index ELSE -1 END
+                        AS last_user_input_step_index
                  FROM conversation_summaries
              ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
