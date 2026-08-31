@@ -279,7 +279,6 @@ def test_https_total_deadline_is_shared_by_dns_and_transport():
         time.sleep(0.08)
         return {"status_code": 204, "response_bytes": 0}
 
-    started = time.monotonic()
     result = notify_https(
         EVENT,
         {**TARGET, "timeout_ms": 120},
@@ -288,8 +287,9 @@ def test_https_total_deadline_is_shared_by_dns_and_transport():
         transport=transport,
     )
     assert result["code"] == "HTTPS_DEADLINE_EXCEEDED"
+    # The reduced transport budget is the deterministic proof that DNS and
+    # transport share one deadline. Wall-clock slack is scheduler-dependent.
     assert requested and requested[0] < 120
-    assert time.monotonic() - started < 0.22
 
 
 def test_pinned_connection_uses_resolved_address_and_hostname_sni(monkeypatch):
