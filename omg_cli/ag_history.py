@@ -309,14 +309,14 @@ def _open_summary_parent(path: Path) -> tuple[list[int], int, str]:
         ) from exc
 
 
-def _probe_sidecar(parent_fd: int, name: str) -> bool:
-    """Return whether a regular SQLite sidecar exists without following it."""
+def _probe_sidecar_size(parent_fd: int, name: str) -> int | None:
+    """Return a regular SQLite sidecar's size without following it."""
 
     flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
-        return False
+        return None
     except OSError as exc:
         raise AgHistoryError(
             "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
@@ -327,7 +327,7 @@ def _probe_sidecar(parent_fd: int, name: str) -> bool:
             raise AgHistoryError(
                 "unsafe Antigravity summary sidecar", code="E_AG_HISTORY_PATH"
             )
-        return True
+        return info.st_size
     finally:
         os.close(descriptor)
 
@@ -370,9 +370,12 @@ def _assert_no_active_sqlite_sidecars(
             "active Antigravity rollback journal cannot be imported safely",
             code="E_AG_HISTORY_JOURNAL_ACTIVE",
         )
-    if _probe_sidecar(parent_fd, f"{database_name}-wal") or _probe_sidecar(
-        parent_fd, f"{database_name}-shm"
-    ):
+    wal_size = _probe_sidecar_size(parent_fd, f"{database_name}-wal")
+    # The shared-memory index never contains committed database content by
+    # itself.  Still validate any stale file as a regular, singly-linked leaf
+    # so a symlink or other unsafe object cannot hide beside the database.
+    _probe_sidecar_size(parent_fd, f"{database_name}-shm")
+    if wal_size not in (None, 0):
         raise AgHistoryError(
             "active Antigravity WAL state cannot be imported without mutation",
             code="E_AG_HISTORY_WAL_ACTIVE",

@@ -241,6 +241,42 @@ def test_live_wal_is_skipped_without_mutating_database_files(tmp_path: Path) -> 
         writer.close()
 
 
+def test_empty_wal_and_stale_shm_are_imported_without_mutation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    wal = Path(f"{db}-wal")
+    shm = Path(f"{db}-shm")
+    wal.write_bytes(b"")
+    shm.write_bytes(b"stale shared-memory index")
+    before = {
+        path.name: (
+            path.read_bytes(),
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+            path.stat().st_ctime_ns,
+        )
+        for path in (db, wal, shm)
+    }
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    assert result["record_count"] == 1
+    assert result["pin"] == "sqlite-summary-v1"
+    after = {
+        path.name: (
+            path.read_bytes(),
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+            path.stat().st_ctime_ns,
+        )
+        for path in (db, wal, shm)
+    }
+    assert after == before
+
+
 def test_live_rollback_journal_is_skipped_without_reading_uncommitted_data(
     tmp_path: Path,
 ) -> None:
@@ -481,12 +517,13 @@ def test_dynamic_numeric_blobs_are_rejected_inside_sqlite(
     assert row["last_user_input_step_index"] == -1
 
 
-def test_sqlite_sidecar_symlink_is_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_sqlite_sidecar_symlink_is_rejected(tmp_path: Path, suffix: str) -> None:
     home = tmp_path / "home"
     db = _summary_db(home)
-    target = tmp_path / "outside-wal"
+    target = tmp_path / "outside-sidecar"
     target.write_bytes(b"private")
-    Path(f"{db}-wal").symlink_to(target)
+    Path(f"{db}{suffix}").symlink_to(target)
 
     result = inspect_ag_history(tmp_path / "project", home=home)
 
