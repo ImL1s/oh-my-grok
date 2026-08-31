@@ -546,8 +546,8 @@ def _read_workspace_uris(
 
 
 def _import_summary_db(
-    path: Path, *, remaining: int, workspace_budget: int
-) -> tuple[int, list[dict[str, Any]], int]:
+    path: Path, *, remaining: int
+) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
     with _open_summary_db(path) as connection:
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if user_version != SQLITE_SUMMARY_VERSION:
@@ -573,6 +573,11 @@ def _import_summary_db(
             """EXPLAIN QUERY PLAN
                SELECT rowid
                  FROM conversation_summaries
+                WHERE typeof(last_modified_time) = 'text'
+                  AND (
+                        last_modified_time LIKE '%Z'
+                     OR last_modified_time LIKE '%+00:00'
+                  )
              ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
             (remaining,),
@@ -615,11 +620,16 @@ def _import_summary_db(
                            THEN last_user_input_step_index ELSE -1 END
                         AS last_user_input_step_index
                  FROM conversation_summaries
+                WHERE typeof(last_modified_time) = 'text'
+                  AND (
+                        last_modified_time LIKE '%Z'
+                     OR last_modified_time LIKE '%+00:00'
+                  )
              ORDER BY last_modified_time DESC, rowid DESC
                 LIMIT ?""",
             (remaining,),
         )
-        imported: list[dict[str, Any]] = []
+        imported: list[tuple[int, dict[str, Any]]] = []
         for row in rows:
             try:
                 summary_rowid = int(row["summary_rowid"])
@@ -628,13 +638,10 @@ def _import_summary_db(
                     "unsupported Antigravity conversation_summaries rowid",
                     code="E_AG_HISTORY_VERSION",
                 ) from exc
-            workspace_uris, workspace_budget = _read_workspace_uris(
-                connection,
-                rowid=summary_rowid,
-                workspace_budget=workspace_budget,
+            imported.append(
+                (summary_rowid, _public_row(row, workspace_uris=None))
             )
-            imported.append(_public_row(row, workspace_uris=workspace_uris))
-    return user_version, imported, workspace_budget
+    return user_version, imported
 
 
 def _empty_result() -> dict[str, Any]:
@@ -686,16 +693,15 @@ def inspect_ag_history(
     saw_changed = False
     saw_platform = False
     saw_unbounded = False
-    workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
+    pending: list[tuple[Path, int, dict[str, Any]]] = []
 
     for path in databases:
         location = {"kind": "sqlite_summary", "name": _SUMMARY_DB}
         locations.append(location)
         try:
-            version, imported, workspace_budget = _import_summary_db(
+            version, imported = _import_summary_db(
                 path,
                 remaining=MAX_AG_HISTORY_RECORDS,
-                workspace_budget=workspace_budget,
             )
         except AgHistoryError as exc:
             if exc.code == "E_AG_HISTORY_PATH":
@@ -757,13 +763,48 @@ def inspect_ag_history(
         version_label = f"sqlite-summary-v{version}"
         versions.append(version_label)
         location["version"] = version_label
-        records.extend(imported)
+        pending.extend((path, rowid, row) for rowid, row in imported)
 
-    records.sort(
-        key=lambda row: str(row.get("last_modified_time") or ""),
+    pending.sort(
+        key=lambda item: str(item[2].get("last_modified_time") or ""),
         reverse=True,
     )
-    records = records[:MAX_AG_HISTORY_RECORDS]
+    pending = pending[:MAX_AG_HISTORY_RECORDS]
+    workspace_budget = MAX_WORKSPACE_URI_AGGREGATE_BYTES
+    by_path: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    order: list[str] = []
+    for path, rowid, row in pending:
+        key = os.path.abspath(os.fspath(path))
+        if key not in by_path:
+            order.append(key)
+            by_path[key] = []
+        by_path[key].append((rowid, row))
+    filled: dict[tuple[str, int], dict[str, Any]] = {}
+    for key in order:
+        path = Path(key)
+        try:
+            with _open_summary_db(path) as connection:
+                for rowid, row in by_path[key]:
+                    workspace_uris, workspace_budget = _read_workspace_uris(
+                        connection,
+                        rowid=rowid,
+                        workspace_budget=workspace_budget,
+                    )
+                    count, hashes = _workspace_descriptors(workspace_uris)
+                    updated = dict(row)
+                    updated["workspace_count"] = count
+                    if hashes:
+                        updated["workspace_hashes"] = hashes
+                    filled[(key, rowid)] = {
+                        k: v for k, v in updated.items() if v is not None
+                    }
+        except AgHistoryError:
+            for rowid, row in by_path[key]:
+                filled[(key, rowid)] = row
+        except (OSError, sqlite3.DatabaseError):
+            for rowid, row in by_path[key]:
+                filled[(key, rowid)] = row
+    records = [filled[(os.path.abspath(os.fspath(path)), rowid)] for path, rowid, _row in pending]
 
     # Preserve classification for older marker-only layouts without reading
     # transcript-like files inside them.

@@ -456,9 +456,7 @@ def test_boundary_timestamp_overflow_is_omitted(tmp_path: Path) -> None:
     result = inspect_ag_history(tmp_path / "project", home=home)
 
     assert result["imported"] is True
-    row = result["records"][0]
-    assert "last_modified_time" not in row
-    assert "last_user_input_time" not in row
+    assert result["records"] == []
 
 
 def test_lone_surrogate_workspace_uri_is_not_hashed(tmp_path: Path) -> None:
@@ -852,6 +850,66 @@ def test_declared_rowid_alias_returns_bounded_diagnostic(
     assert "RAW PRIVATE TITLE" not in dumped
     assert "conversation-secret-id" not in dumped
     assert db.read_bytes() == before
+
+
+def test_offset_timestamps_are_excluded_from_sortable_utc_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ag_history, "MAX_AG_HISTORY_RECORDS", 1)
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, step_count = ?",
+            ("2026-08-31T23:30:00-02:00", 7),
+        )
+        conn.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('older-utc', '', '', 3, '2026-09-01T00:30:00Z',
+                       '[]', 'idle', 'antigravity', '', '', '', 0, 0,
+                       '2026-09-01T00:30:00Z', 0, '')"""
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["record_count"] == 1
+    assert result["records"][0]["step_count"] == 3
+
+
+def test_workspace_budget_is_spent_only_on_retained_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ag_history, "MAX_AG_HISTORY_RECORDS", 1)
+    monkeypatch.setattr(ag_history, "MAX_WORKSPACE_URI_AGGREGATE_BYTES", 80)
+    project_root = tmp_path / "project"
+    local_dir = project_root / ".antigravity"
+    local_dir.mkdir(parents=True)
+    local_db = local_dir / "conversation_summaries.db"
+    local_db.write_bytes(_summary_db(tmp_path / "project-home").read_bytes())
+    large = json.dumps(["file:///" + ("x" * 48)])
+    small = json.dumps(["file:///n"])
+    with sqlite3.connect(local_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, workspace_uris = ?",
+            ("2026-01-01T00:00:00Z", large),
+        )
+    home = tmp_path / "home"
+    home_db = _summary_db(home)
+    with sqlite3.connect(home_db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?, workspace_uris = ?, step_count = ?",
+            ("2026-08-31T12:00:00Z", small, 99),
+        )
+
+    result = inspect_ag_history(project_root, home=home)
+
+    assert result["record_count"] == 1
+    assert result["records"][0]["step_count"] == 99
+    assert result["records"][0]["workspace_count"] == 1
 
 
 def test_newest_records_are_merged_across_databases(
