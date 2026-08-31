@@ -829,6 +829,71 @@ def _shadowed_rowid_summary_db(home: Path, *, alias: str) -> Path:
     return path
 
 
+def test_generated_rowid_column_is_rejected(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = home / ".gemini" / "antigravity-cli"
+    root.mkdir(parents=True)
+    path = root / "conversation_summaries.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            PRAGMA user_version = 1;
+            CREATE TABLE conversation_summaries (
+              conversation_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL DEFAULT '',
+              preview TEXT NOT NULL DEFAULT '',
+              step_count INTEGER NOT NULL DEFAULT 0,
+              last_modified_time DATETIME NOT NULL,
+              workspace_uris TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT '',
+              source TEXT NOT NULL DEFAULT '',
+              project_id TEXT NOT NULL DEFAULT '',
+              agent_name TEXT NOT NULL DEFAULT '',
+              parent_conversation_id TEXT NOT NULL DEFAULT '',
+              nesting_depth INTEGER NOT NULL DEFAULT 0,
+              killed NUMERIC NOT NULL DEFAULT false,
+              last_user_input_time DATETIME NOT NULL,
+              last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
+              app_data_dir TEXT NOT NULL DEFAULT '',
+              rowid INTEGER GENERATED ALWAYS AS (1) VIRTUAL
+            );
+            CREATE INDEX idx_conversation_summaries_last_modified_time
+              ON conversation_summaries(last_modified_time);
+            """
+        )
+        conn.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('c', '', '', 1, '2026-08-31T00:00:00Z', '[]', 'idle',
+                       'antigravity', '', '', '', 0, 0, '2026-08-31T00:00:00Z', 0, '')"""
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert any(
+        item["reason"] == "unsupported_schema_version" for item in result["diagnostics"]
+    )
+
+
+def test_impossible_canonical_timestamp_is_omitted(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?",
+            ("9999-99-99T99:99:99Z",),
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    assert result["records"] == []
+
+
 @pytest.mark.parametrize("alias", ("rowid", "_rowid_", "oid", "ROWID"))
 def test_declared_rowid_alias_returns_bounded_diagnostic(
     tmp_path: Path, alias: str
@@ -879,6 +944,33 @@ def test_basic_iso_utc_timestamps_are_excluded_from_canonical_order(
     steps = [row["step_count"] for row in result["records"]]
     assert 9 in steps
     assert 1 not in steps
+
+
+def test_workspace_pass_wal_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    _summary_db(home)
+    real = ag_history._open_summary_db
+    calls = {"n": 0}
+
+    @contextmanager
+    def wrap(path: Path):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ag_history.AgHistoryError(
+                "active Antigravity WAL state cannot be imported without mutation",
+                code="E_AG_HISTORY_WAL_ACTIVE",
+            )
+        with real(path) as value:
+            yield value
+
+    monkeypatch.setattr(ag_history, "_open_summary_db", wrap)
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["pin"] == "active_wal"
+    assert result["records"] == []
 
 
 def test_workspace_pass_rejects_changed_source_identity(

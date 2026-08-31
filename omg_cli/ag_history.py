@@ -561,7 +561,7 @@ def _import_summary_db(
             )
         columns = {
             str(row[1])
-            for row in connection.execute("PRAGMA table_info(conversation_summaries)")
+            for row in connection.execute("PRAGMA table_xinfo(conversation_summaries)")
         }
         if not _REQUIRED_SUMMARY_COLUMNS.issubset(columns):
             raise AgHistoryError(
@@ -626,7 +626,11 @@ def _import_summary_db(
         imported: list[tuple[int, dict[str, Any]]] = []
         for row in rows:
             raw_modified = row["last_modified_time"]
-            if not isinstance(raw_modified, str) or _CANONICAL_UTC.match(raw_modified) is None:
+            if (
+                not isinstance(raw_modified, str)
+                or _CANONICAL_UTC.match(raw_modified) is None
+                or _safe_timestamp(raw_modified) is None
+            ):
                 continue
             try:
                 summary_rowid = int(row["summary_rowid"])
@@ -802,18 +806,55 @@ def inspect_ag_history(
                         k: v for k, v in updated.items() if v is not None
                     }
         except AgHistoryError as exc:
-            if exc.code == "E_AG_HISTORY_CHANGED":
+            if exc.code == "E_AG_HISTORY_PATH":
+                saw_unsafe = True
+                diagnostics.append(
+                    {"source": _SUMMARY_DB, "reason": "unsafe_path_skipped"}
+                )
+            elif exc.code == "E_AG_HISTORY_WAL_ACTIVE":
+                saw_busy = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "live_wal_readonly_unsupported",
+                    }
+                )
+            elif exc.code == "E_AG_HISTORY_JOURNAL_ACTIVE":
+                saw_journal = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "live_journal_readonly_unsupported",
+                    }
+                )
+            elif exc.code == "E_AG_HISTORY_CHANGED":
                 saw_changed = True
                 diagnostics.append(
                     {"source": _SUMMARY_DB, "reason": "sqlite_source_changed"}
                 )
-                records = []
-                break
-            for rowid, row, _identity in by_path[key]:
-                filled[(key, rowid)] = row
+            elif exc.code == "E_AG_HISTORY_PLATFORM":
+                saw_platform = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "secure_sqlite_open_unavailable",
+                    }
+                )
+            else:
+                saw_unknown = True
+                diagnostics.append(
+                    {
+                        "source": _SUMMARY_DB,
+                        "reason": "unsupported_schema_version",
+                    }
+                )
+            records = []
+            break
         except (OSError, sqlite3.DatabaseError):
-            for rowid, row, _identity in by_path[key]:
-                filled[(key, rowid)] = row
+            saw_corrupt = True
+            diagnostics.append({"source": _SUMMARY_DB, "reason": "sqlite_read_failed"})
+            records = []
+            break
     else:
         records = [
             filled[(os.path.abspath(os.fspath(path)), rowid)]
@@ -832,7 +873,15 @@ def inspect_ag_history(
             versions.append(label)
         saw_unknown = True
 
-    if opened and not saw_changed:
+    import_ok = opened > 0 and not (
+        saw_changed
+        or saw_busy
+        or saw_journal
+        or saw_unsafe
+        or saw_corrupt
+        or saw_platform
+    )
+    if import_ok:
         pin = f"sqlite-summary-v{SQLITE_SUMMARY_VERSION}"
         reason = "supported_summary_imported"
     elif saw_unsafe:
@@ -866,8 +915,8 @@ def inspect_ag_history(
     return {
         "schema_version": AG_HISTORY_SCHEMA,
         "present": bool(databases or legacy_locations),
-        "supported": opened > 0 and not saw_changed,
-        "imported": opened > 0 and not saw_changed,
+        "supported": import_ok,
+        "imported": import_ok,
         "mutated": False,
         "read_only": True,
         "pin": pin,
@@ -880,7 +929,7 @@ def inspect_ag_history(
         "content_fields_read": False,
         "raw_content": False,
         "private_content": False,
-        "live_import": opened > 0 and not saw_changed,
+        "live_import": import_ok,
     }
 
 
