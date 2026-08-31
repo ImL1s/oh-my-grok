@@ -1132,3 +1132,55 @@ def test_project_local_db_reports_secure_open_unavailable(
     ]
     assert result["reason"] != "ag_history_absent"
     assert "ag_history_absent" not in json.dumps(result)
+
+
+def test_fractional_utc_is_excluded_from_whole_second_order(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO conversation_summaries
+               (conversation_id, title, preview, step_count, last_modified_time,
+                workspace_uris, status, source, project_id, agent_name,
+                parent_conversation_id, nesting_depth, killed,
+                last_user_input_time, last_user_input_step_index, app_data_dir)
+               VALUES ('fractional-newer', '', '', 9, '2026-08-31T00:00:00.9Z',
+                       '[]', 'idle', 'antigravity', '', '', '', 0, 0,
+                       '2026-08-31T00:00:00.9Z', 0, '')"""
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is True
+    steps = [row["step_count"] for row in result["records"]]
+    assert 12 in steps
+    assert 9 not in steps
+    assert all(
+        row.get("last_modified_time") == "2026-08-31T00:00:00Z"
+        for row in result["records"]
+    )
+
+
+def test_full_window_of_impossible_timestamps_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ag_history, "MAX_AG_HISTORY_RECORDS", 1)
+    home = tmp_path / "home"
+    db = _summary_db(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE conversation_summaries SET last_modified_time = ?",
+            ("9999-99-99T99:99:99Z",),
+        )
+
+    result = inspect_ag_history(tmp_path / "project", home=home)
+
+    assert result["imported"] is False
+    assert result["supported"] is False
+    assert result["records"] == []
+    assert result["pin"] == "unbounded_query"
+    assert result["reason"] == "ag_history_unbounded_query_skipped"
+    assert any(
+        item["reason"] == "unbounded_sqlite_query_plan"
+        for item in result["diagnostics"]
+    )

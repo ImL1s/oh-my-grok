@@ -68,7 +68,7 @@ _REQUIRED_SUMMARY_COLUMNS = frozenset(
 # makes ORDER BY / blobopen rowid resolve to user data instead of the key.
 _ROWID_ALIAS_COLUMNS = frozenset({"rowid", "_rowid_", "oid"})
 _CANONICAL_UTC = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
 class AgHistoryError(ValueError):
     """AG history probe failed closed without mutating anything."""
@@ -623,14 +623,17 @@ def _import_summary_db(
                 LIMIT ?""",
             (remaining,),
         )
+        fetched = list(rows)
         imported: list[tuple[int, dict[str, Any]]] = []
-        for row in rows:
+        skipped = 0
+        for row in fetched:
             raw_modified = row["last_modified_time"]
             if (
                 not isinstance(raw_modified, str)
                 or _CANONICAL_UTC.match(raw_modified) is None
                 or _safe_timestamp(raw_modified) is None
             ):
+                skipped += 1
                 continue
             try:
                 summary_rowid = int(row["summary_rowid"])
@@ -641,6 +644,11 @@ def _import_summary_db(
                 ) from exc
             imported.append(
                 (summary_rowid, _public_row(row, workspace_uris=None))
+            )
+        if skipped and len(fetched) == remaining:
+            raise AgHistoryError(
+                "bounded newest window contains non-canonical timestamps",
+                code="E_AG_HISTORY_UNBOUNDED_QUERY",
             )
     return user_version, imported, identity
 
