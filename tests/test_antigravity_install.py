@@ -965,6 +965,78 @@ def test_committed_uninstall_snapshot_restores_when_undoing_commit(
     assert _package_digest(target) == digest
 
 
+def test_undo_committed_restore_refuses_foreign_post_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    from omg_cli.antigravity_install import install_plugin
+
+    install_plugin(ROOT)
+    receipt = load_ownership_receipt(home)
+    assert receipt is not None
+    assert uninstall_owned_plugin(
+        expected_digest=receipt["plugin_digest"],
+        expected_registry_identity=receipt["registry_identity"],
+        expected_mcp_registry_identity=receipt["mcp_registry_identity"],
+        home=home,
+        retain_committed=True,
+    )
+    target = installed_plugin_path(home)
+    target.mkdir(parents=True)
+    (target / "plugin.json").write_text(
+        json.dumps({"name": "oh-my-grok", "version": "foreign"}), encoding="utf-8"
+    )
+    (home / ".gemini/config/import_manifest.json").write_text(
+        json.dumps(
+            {"imports": [{"name": "oh-my-grok", "source": "foreign", "components": []}]}
+        ),
+        encoding="utf-8",
+    )
+    recovery = home / ".gemini/config/.omg-transactions/agy-uninstall"
+    assert restore_recovery_snapshot(recovery, undo_committed=True) is False
+    assert json.loads((target / "plugin.json").read_text())["version"] == "foreign"
+
+
+def test_plan_resumes_uncommitted_uninstall_journal_when_plugin_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _install_fake_agy(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    run_scoped_setup(
+        runtime="antigravity",
+        scope="project",
+        project_root=project,
+        here=True,
+        plugin=ROOT,
+        install_antigravity=True,
+    )
+    receipt = load_ownership_receipt(home)
+    assert receipt is not None
+
+    def crash_after_plugin(argv, **kwargs):
+        result = subprocess.run(argv, **kwargs)
+        command = list(argv)
+        if command[:3] == ["agy", "plugin", "uninstall"]:
+            raise SystemExit("crash after plugin removal")
+        return result
+
+    with pytest.raises(SystemExit):
+        uninstall_owned_plugin(
+            expected_digest=receipt["plugin_digest"],
+            expected_registry_identity=receipt["registry_identity"],
+            expected_mcp_registry_identity=receipt["mcp_registry_identity"],
+            runner=crash_after_plugin,
+            home=home,
+        )
+    assert not installed_plugin_path(home).exists()
+    from omg_cli.install_migrate import plan_owned_uninstall
+
+    plan = plan_owned_uninstall(project_root=project, include_user_manifest=False)
+    assert plan["remove_external"]
+    assert all(row.get("reason") != "hash-drift" for row in plan.get("preserve") or [])
+
+
 def test_uninstall_plan_omits_reference_releases_when_removing_plugin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

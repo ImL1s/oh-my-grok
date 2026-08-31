@@ -951,6 +951,7 @@ def plan_owned_uninstall(
                     committed_owned_uninstall_matches,
                     load_ownership_receipt,
                     package_digest,
+                    resumable_owned_uninstall_matches,
                 )
 
                 actual_digest = package_digest(target) or ""
@@ -966,6 +967,15 @@ def plan_owned_uninstall(
                     isinstance(registry_identity, str)
                     and isinstance(mcp_registry_identity, str)
                     and committed_owned_uninstall_matches(
+                        expected_digest=claimed,
+                        expected_registry_identity=registry_identity,
+                        expected_mcp_registry_identity=mcp_registry_identity,
+                    )
+                )
+                resumable_removal = bool(
+                    isinstance(registry_identity, str)
+                    and isinstance(mcp_registry_identity, str)
+                    and resumable_owned_uninstall_matches(
                         expected_digest=claimed,
                         expected_registry_identity=registry_identity,
                         expected_mcp_registry_identity=mcp_registry_identity,
@@ -994,6 +1004,7 @@ def plan_owned_uninstall(
                     continue
                 if (
                     not committed_removal
+                    and not resumable_removal
                     and (
                         (_scope == "project" and not central_reference_authorizes)
                         or (_scope == "user" and ownership != "OMG-managed")

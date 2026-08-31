@@ -1307,9 +1307,11 @@ def restore_recovery_snapshot(
                 and isinstance(previous_digest, str)
                 and current[0] in {None, previous[0]}
             )
-            if not (
-                undo_committed
-                or sealed_match
+            if undo_committed:
+                if not sealed_match:
+                    return False
+            elif not (
+                sealed_match
                 or mixed_recovery_match
                 or locked_intermediate_match
                 or write_ahead_intermediate_match
@@ -1582,6 +1584,35 @@ def committed_owned_uninstall_matches(
             and mcp_registry_identity(home) is None
             and not os.path.lexists(ownership_receipt_path(home))
             and _registry_file_identities(home) == state.get("post_registry_files")
+        )
+    except (
+        AntigravityInstallError,
+        ContractPathError,
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return False
+
+
+def resumable_owned_uninstall_matches(
+    *,
+    expected_digest: str,
+    expected_registry_identity: str,
+    expected_mcp_registry_identity: str,
+    home: Path | None = None,
+) -> bool:
+    """Recognize an uncommitted owned uninstall journal so planning can resume it."""
+    recovery_dir = config_root(home) / ".omg-transactions" / "agy-uninstall"
+    state_path = recovery_dir / "current.json"
+    try:
+        state = json.loads(read_managed_regular_bytes(state_path).decode("utf-8"))
+        return bool(
+            state.get("schema") == "omg-agy-recovery/v1"
+            and state.get("status") != "committed"
+            and state.get("previous_plugin_digest") == expected_digest
+            and state.get("previous_registry_identity") == expected_registry_identity
+            and state.get("previous_mcp_registry_identity") == expected_mcp_registry_identity
         )
     except (
         AntigravityInstallError,
