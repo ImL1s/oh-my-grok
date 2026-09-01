@@ -9,6 +9,28 @@ Product version source of truth: [`plugin.json`](./plugin.json).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-01
+
+### Fixed
+- **Release writer-ownership for post-0.8.0 paths:** register Antigravity
+  projections, team interactive/composition modules, agents/skills catalogs,
+  hash-edit/install/session/visual surfaces, and `.gitattributes` under
+  `OMG_OWNER_PATTERNS` so `release.yml` verify no longer fails closed on
+  unowned dirty paths (same class as #144).
+
+### Highlights
+- **Antigravity install + session:** live-verify plugin setup (#240),
+  read-only Antigravity history import (#234), Windows no-follow migrate/
+  import paths, and managed-store hardening. Does **not** close #77.
+- **Team / Jobs / composition:** grok composition execute workers, OMX
+  catalog ops v6, TUI TOCTOU promote + attempt-scoped inbox (#147 leftovers),
+  and live Antigravity durable-jobs restores. Does **not** close #69 / #68.
+- **Agents dual-host UX leftovers:** Medley inspect JSON routing +
+  inspect-absent fallback (#205/#193). Does **not** close #134.
+- **Edit / tools / visual:** hash-edit verify + simplify Jobs path,
+  LSP/CodeGraph SCIP + rust-analyzer hover, Wikipedia research provider,
+  PNG pixel overlay evidence. Does **not** close #76 / #73 / #75.
+
 ### Changed
 - **#76 leftover: honest OmO gap text for CLI hash-edit/comments:**
   MATRIX-OmO / GAPS now describe `omg edit plan/apply/verify` and
