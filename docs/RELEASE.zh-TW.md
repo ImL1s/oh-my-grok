@@ -6,9 +6,9 @@ English | [简体中文](./RELEASE.zh.md) | [繁體中文](./RELEASE.zh-TW.md)
 
 | 欄位 | 值 |
 |---|---|
-| Version | **0.8.0** |
-| Intended tag | `v0.8.0` |
-| Public assets | `oh-my-grok-0.8.0.tar.gz`，再來是 `SHA256SUMS` |
+| Version | **0.9.0** |
+| Intended tag | `v0.9.0` |
+| Public assets | `oh-my-grok-0.9.0.tar.gz`，再來是 `SHA256SUMS` |
 | Install | GitHub release transaction；不依賴 PyPI |
 
 發佈成功**不是**因為測試通過或 tag 存在就算數。產品成功條件是：不可變的 release transaction 狀態為 `complete`，且 run manifest 在精確的 branch、commit、bundle、GitHub asset 與 latest-release readback 之後 finalized 為 `closed`。
@@ -88,7 +88,7 @@ manifest 綁定候選 commit／tree、toolchain、環境 allowlist、source date
 ```bash
 omg parity release-bundle \
   --run-id RUN_ID \
-  --archive dist/release-bundle/oh-my-grok-0.8.0.tar.gz \
+  --archive dist/release-bundle/oh-my-grok-0.9.0.tar.gz \
   --checksums dist/release-bundle/SHA256SUMS \
   --candidate-commit COMMIT \
   --candidate-tree TREE \
@@ -97,7 +97,7 @@ omg parity release-bundle \
 omg parity release-readback \
   --manifest .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle-manifest.json
 python3 scripts/release_attest.py \
-  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.8.0.tar.gz \
+  --asset .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/oh-my-grok-0.9.0.tar.gz \
   --checksums .omg/artifacts/dual-parity/RUN_ID/OMG-W6/release-bundle/SHA256SUMS
 ```
 
@@ -145,12 +145,12 @@ curl -fsSL https://raw.githubusercontent.com/ImL1s/oh-my-grok/main/scripts/insta
 釘版／手動、僅 GitHub：
 
 ```bash
-TAG=v0.8.0
-curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.8.0.tar.gz"
+TAG=v0.9.0
+curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/oh-my-grok-0.9.0.tar.gz"
 curl -fLO "https://github.com/ImL1s/oh-my-grok/releases/download/${TAG}/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 curl -fsSLo install.sh "https://raw.githubusercontent.com/ImL1s/oh-my-grok/${TAG}/scripts/install.sh"
-bash install.sh --offline --archive ./oh-my-grok-0.8.0.tar.gz \
+bash install.sh --offline --archive ./oh-my-grok-0.9.0.tar.gz \
   --checksums ./SHA256SUMS --source-tag "${TAG}"
 ```
 
