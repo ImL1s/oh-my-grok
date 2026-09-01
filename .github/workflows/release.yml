@@ -215,6 +215,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+      - name: Restore annotated tag object
+        run: |
+          set -euo pipefail
+          # actions/checkout can leave refs/tags/<name> pointing at the peeled
+          # commit OID; re-fetch the annotated tag object for identity gates.
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          test "$(git cat-file -t "${GITHUB_REF_NAME}")" = "tag"
+          PEEL="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          echo "tag_object=$(git rev-parse "${GITHUB_REF_NAME}") peel=${PEEL} github_sha=${GITHUB_SHA}"
+          # GITHUB_SHA may be either the tag object or the peeled commit depending on event.
+          test "${PEEL}" = "${GITHUB_SHA}" || test "$(git rev-parse "${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
